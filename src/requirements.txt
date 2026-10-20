@@ -1,0 +1,1 @@
+# T1 and its offline tests use only the Python standard library (Python >= 3.10).
