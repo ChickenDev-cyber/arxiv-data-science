@@ -1,6 +1,6 @@
 # arXiv Data Science — Milestone 1
 
-Repo mã nguồn cho đồ án Nhập môn Khoa học Dữ liệu. Hiện đã triển khai **T1: lập danh sách bài trong dải ID qua API arXiv**. Các task metadata, nguồn, references và runner toàn pipeline chưa triển khai.
+Repo mã nguồn cho đồ án Nhập môn Khoa học Dữ liệu: thu thập bài báo arXiv, phân tích nội dung và đối sánh tài liệu tham khảo. Hiện đã triển khai **T1: lập danh sách bài trong dải ID qua API arXiv**. Các task metadata, nguồn, references và runner toàn pipeline chưa triển khai.
 
 ## Cấu trúc code
 
