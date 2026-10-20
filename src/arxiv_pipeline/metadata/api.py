@@ -35,6 +35,10 @@ class OaiClient(ApiClient):
     def __init__(self, *, user_agent="arxiv-data-science/T2 (academic course project)", **kwargs):
         super().__init__(user_agent=user_agent, **kwargs)
 
+    def provenance(self, arxiv_id):
+        return {"source": OAI_URL, "url": record_url(arxiv_id), "metadata_prefix": "arXivRaw",
+                "method": "one OAI GetRecord per paper; versions and dates as listed by arXivRaw"}
+
     def record(self, arxiv_id):
         url = record_url(arxiv_id)
         with self._lock:
@@ -75,14 +79,28 @@ class FileClient:
 
     def record(self, arxiv_id):
         if arxiv_id not in self.paths:
-            raise RemoteError("network_error", f"No saved response for {arxiv_id}", True)
+            raise ValueError(f"No saved response configured for {arxiv_id}")
         return self.paths[arxiv_id].read_bytes()
+
+    def provenance(self, arxiv_id):
+        # Say exactly where the data came from; a saved file is not a live arXiv check.
+        return {"source": "saved-arXivRaw-file", "file": self.paths[arxiv_id].name,
+                "metadata_prefix": "arXivRaw"}
 
 
 def _text(element, tag):
-    value = element.findtext(RAW + tag)
-    value = " ".join(value.split()) if value else ""
-    return value or None
+    """Whitespace-normalised text of the first <tag>, including any nested markup; blank -> None."""
+    found = element.find(RAW + tag)
+    if found is None:
+        return None
+    return " ".join("".join(found.itertext()).split()) or None
+
+
+def _single(element, tag):
+    """A field that must appear at most once; two different values cannot be trusted."""
+    if len(element.findall(RAW + tag)) > 1:
+        raise RemoteError("invalid_payload", f"OAI record has more than one <{tag}>")
+    return _text(element, tag)
 
 
 def _timestamp(value):
@@ -98,29 +116,63 @@ def _timestamp(value):
     return date.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _split_authors(value):
-    """Split 'A, B (Univ X, Lab Y) and C' at top level; drop parenthesised affiliations.
+NAME_SUFFIX = re.compile(r"(?:Jr|Sr)\.?|I{2,3}|IV|V|VI{1,3}", re.IGNORECASE)
+ET_AL = re.compile(r"\bet\.? al\.?(?=\s|$)", re.IGNORECASE)
 
-    An absent or blank authors field is unknown (None), never a confirmed empty list.
+
+def _split_authors(value):
+    """Split 'A (1), B (1 and 2), C (2) ((1) Univ X, (2) Lab Y)' into ['A', 'B', 'C'].
+
+    - Parenthesised groups are affiliations and are removed at any nesting depth.
+    - Commas and ' and ' inside {...} (LaTeX groups) do not split names.
+    - 'Smith, Jr.' stays one author, so the author count is not inflated.
+    Returns None (unknown) instead of a wrong list when the field is absent or blank,
+    brackets are unbalanced, or the list is truncated with 'et al.'.
     """
     if value is None or not value.strip():
         return None
-    names, current, depth = [], [], 0
     text = " ".join(value.split())
-    index = 0
+    names, current, paren, brace, index = [], [], 0, 0, 0
     while index < len(text):
         char = text[index]
-        depth += (char == "(") - (char == ")")
-        if depth == 0 and (char == "," or text.startswith(" and ", index)):
+        if char == "(":
+            paren += 1
+        elif char == ")":
+            paren -= 1
+            if paren < 0:
+                return None
+        elif paren > 0:
+            pass  # inside an affiliation
+        elif char == "{":
+            brace += 1
+            current.append(char)
+        elif char == "}":
+            brace -= 1
+            if brace < 0:
+                return None
+            current.append(char)
+        elif brace == 0 and (char == "," or text.startswith(" and ", index)):
             names.append("".join(current))
             current = []
             index += 1 if char == "," else 5
             continue
-        current.append(char)
+        else:
+            current.append(char)
         index += 1
+    if paren != 0 or brace != 0:
+        return None
     names.append("".join(current))
-    cleaned = [re.sub(r"\s*\([^()]*\)", "", name).strip() for name in names]
-    return [name for name in cleaned if name] or None
+    authors = []
+    for name in (" ".join(n.split()) for n in names):
+        if not name:
+            continue
+        if NAME_SUFFIX.fullmatch(name) and authors:
+            authors[-1] += ", " + name
+        elif ET_AL.search(name):
+            return None  # the source itself says the list is incomplete
+        else:
+            authors.append(name)
+    return authors or None
 
 
 def parse_record(body, arxiv_id):
@@ -148,10 +200,17 @@ def parse_record(body, arxiv_id):
         if error.get("code") == "idDoesNotExist":
             raise RemoteError("not_found", f"arXiv OAI has no record for {arxiv_id}")
         raise RemoteError("remote_error", f"arXiv OAI error: {error.get('code') or 'unknown'}")
-    raw = root.find(f"{OAI}GetRecord/{OAI}record/{OAI}metadata/{RAW}arXivRaw")
-    if raw is None:
-        raise RemoteError("invalid_payload", "OAI record has no arXivRaw metadata")
-    if _text(raw, "id") != arxiv_id:
+    records = root.findall(f"{OAI}GetRecord/{OAI}record")
+    if len(records) != 1:
+        raise RemoteError("invalid_payload", "OAI GetRecord must contain exactly one record")
+    header = records[0].find(OAI + "header")
+    if header is not None and header.get("status") == "deleted":
+        raise RemoteError("not_found", f"arXiv OAI marks {arxiv_id} as deleted")
+    raws = records[0].findall(f"{OAI}metadata/{RAW}arXivRaw")
+    if len(raws) != 1:
+        raise RemoteError("invalid_payload", "OAI record must contain exactly one arXivRaw block")
+    raw = raws[0]
+    if _single(raw, "id") != arxiv_id:
         raise RemoteError("invalid_payload", "OAI record ID does not match the requested ID")
 
     versions = []
@@ -159,6 +218,8 @@ def parse_record(body, arxiv_id):
         match = re.fullmatch(r"v([1-9]\d*)", element.get("version", ""))
         if not match:
             raise RemoteError("invalid_payload", "OAI record has an invalid version label")
+        if len(element.findall(RAW + "date")) > 1:
+            raise RemoteError("invalid_payload", "OAI record has a version with more than one date")
         versions.append({"version": int(match.group(1)), "submitted_at": _timestamp(element.findtext(RAW + "date"))})
     numbers = [v["version"] for v in versions]
     if len(set(numbers)) != len(numbers):
@@ -169,12 +230,11 @@ def parse_record(body, arxiv_id):
     contiguous = bool(versions) and sorted(numbers) == list(range(1, len(numbers) + 1))
     return {
         "arxiv_id": arxiv_id,
-        "title": _text(raw, "title"),
-        "authors": _split_authors(raw.findtext(RAW + "authors")),
+        "title": _single(raw, "title"),
+        "authors": _split_authors(_single(raw, "authors")),
         "submission_date": first["submitted_at"] if first else None,
         "revised_dates": [v["submitted_at"] for v in versions if v["version"] >= 2 and v["submitted_at"]],
-        "venue": _text(raw, "journal-ref"),
+        "venue": _single(raw, "journal-ref"),
         "versions": versions,
         "versions_complete": contiguous and all(v["submitted_at"] for v in versions),
     }
-
