@@ -1,0 +1,4 @@
+{"task_type": "discovery", "arxiv_id": "2301.00001", "status": "success", "owner": "Trong", "is_mock": true}
+{"task_type": "metadata", "arxiv_id": "2301.00001", "status": "success", "versions_complete": true, "versions": ["v1", "v2"], "owner": "HuynhNhi", "is_mock": true}
+{"task_type": "sources", "arxiv_id": "2301.00001", "status": "success", "download_bytes": 102400, "extracted_bytes_before_filter": 500000, "retained_source_bytes": 80000, "removed_figure_bytes": 350000, "removed_other_bytes": 70000, "owner": "Khang", "is_mock": true}
+{"task_type": "references", "arxiv_id": "2301.00001", "status": "success", "complete": true, "s2_reference_count": 15, "arxiv_reference_count": 10, "complete_reference_count": 10, "owner": "ManhNhi", "is_mock": true}

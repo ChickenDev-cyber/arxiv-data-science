@@ -14,3 +14,6 @@ preview/
 *.sqlite-*
 /context/
 /docs/
+
+# MyST build outputs
+_build

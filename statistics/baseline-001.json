@@ -1,0 +1,26 @@
+{
+  "run_id": "baseline-001",
+  "is_mock": true,
+  "summary": {
+    "papers_discovered": 2,
+    "metadata_complete_papers": 1,
+    "papers_complete": 1,
+    "total_download_bytes": 102400,
+    "total_retained_source_bytes": 80000,
+    "avg_references_per_paper": 15.0
+  },
+  "by_owner": {
+    "Trong": {
+      "success_count": 1
+    },
+    "HuynhNhi": {
+      "success_count": 1
+    },
+    "Khang": {
+      "success_count": 1
+    },
+    "ManhNhi": {
+      "success_count": 1
+    }
+  }
+}
