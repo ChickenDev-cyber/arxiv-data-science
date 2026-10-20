@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- DU LIEU GIA LAP: OAI-PMH bao ID khong ton tai -> not_found. -->
+<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">
+  <error code="idDoesNotExist">Value of the identifier argument is unknown or illegal in this repository.</error>
+</OAI-PMH>

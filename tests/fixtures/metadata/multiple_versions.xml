@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- DU LIEU GIA LAP: mo phong dinh dang arXivRaw cua OAI-PMH arXiv. Khong phai lich su that cua ID nay. -->
+<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">
+  <GetRecord>
+    <record>
+      <metadata>
+        <arXivRaw xmlns="http://arxiv.org/OAI/arXivRaw/">
+          <id>2503.06914</id>
+          <version version="v1"><date>Sat, 1 Mar 2025 10:00:00 GMT</date><size>120kb</size></version>
+          <version version="v2"><date>Sun, 2 Mar 2025 09:30:00 GMT</date><size>121kb</size></version>
+          <title>Bai bao minh hoa
+  nhieu dong</title>
+          <authors>Tac Gia Mot, Tac Gia Hai and Tac Gia Ba</authors>
+          <journal-ref>Hoi nghi Mau 2025</journal-ref>
+        </arXivRaw>
+      </metadata>
+    </record>
+  </GetRecord>
+</OAI-PMH>
