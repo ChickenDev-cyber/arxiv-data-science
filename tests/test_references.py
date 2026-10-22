@@ -197,9 +197,9 @@ class MergeAndPagingTests(unittest.TestCase):
         items = [cited("hep-th/9901001"), cited("math.GT/0309136v2"), cited("arXiv:1706.03762v5")]
         result, _, dates = run([page(items)], FakeDates({"hep-th/9901001": D1}))
         check_contract(self, result)
-        self.assertEqual(list(result["data"]["references"]), ["hep-th/9901001", "math.GT/0309136", "1706.03762"])
-        self.assertIn("/data/references/math.GT~10309136/submission_date", result["missing_fields"])
-        self.assertEqual(dates.calls, [["hep-th/9901001", "math.GT/0309136", "1706.03762"]])
+        self.assertEqual(list(result["data"]["references"]), ["hep-th/9901001", "math/0309136", "1706.03762"])
+        self.assertIn("/data/references/math~10309136/submission_date", result["missing_fields"])
+        self.assertEqual(dates.calls, [["hep-th/9901001", "math/0309136", "1706.03762"]])
 
     def test_semantic_scholar_dates_are_never_used(self):
         item = cited("2001.00001")
@@ -222,6 +222,30 @@ class MergeAndPagingTests(unittest.TestCase):
         check_contract(self, result)
         self.assertEqual(result["metrics"], {"s2_reference_count": 4, "arxiv_reference_count": 1,
                                              "complete_reference_count": 1})
+
+    def test_invalid_external_ids_are_filtered_before_date_lookup(self):
+        ids = ["2513.00001", "2500.00001", "2501.00000", "2501.1264",
+               "1412.00001", "hep-th/0704001", "2001.00001"]
+        result, _, dates = run([page([cited(value) for value in ids])],
+                               FakeDates({"2001.00001": D1}))
+        check_contract(self, result)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(list(result["data"]["references"]), ["2001.00001"])
+        self.assertEqual(dates.calls, [["2001.00001"]])
+        self.assertEqual(result["metrics"], {"s2_reference_count": 7, "arxiv_reference_count": 1,
+                                             "complete_reference_count": 1})
+
+    def test_old_display_and_canonical_ids_merge_before_date_lookup(self):
+        items = [cited("math.GT/0309136v2", title="", paper_id="s2-first"),
+                 cited("math/0309136", title="Known title", paper_id="s2-second")]
+        result, _, dates = run([page(items)], FakeDates({"math/0309136": D1}))
+        check_contract(self, result)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(list(result["data"]["references"]), ["math/0309136"])
+        self.assertEqual(dates.calls, [["math/0309136"]])
+        ref = result["data"]["references"]["math/0309136"]
+        self.assertEqual((ref["title"], ref["semantic_scholar_id"]), ("Known title", "s2-first"))
+        self.assertIn("/data/references/math~10309136/title", result["provenance"])
 
     def test_malformed_pages_are_rejected_whole(self):
         for bad in (page([cited("2001.00001"), "oops"]), {"data": [], "next": 0}, {"data": [], "next": True},
@@ -265,6 +289,17 @@ class MergeAndPagingTests(unittest.TestCase):
 
 
 class InputValidationTests(unittest.TestCase):
+    def test_invalid_id_semantics_are_rejected_before_any_request(self):
+        reader, dates = FakeReader([]), FakeDates()
+        module = ReferencesModule(reader, dates)
+        for value in ("2513.00001", "2500.00001", "2501.00000", "2501.1264", "1412.00001",
+                      "0703.0001", "hep-th/9913001", "hep-th/9901000", "hep-th/0704001",
+                      "hep-th/9107001", "math.GT/0309136", "２５０１.１２６４２", None, 2501.12642):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                module.fetch_references({"owner": TASK["owner"], "arxiv_id": value}, ctx())
+        self.assertEqual(reader.calls, [])
+        self.assertEqual(dates.calls, [])
+
     def test_bad_task_or_context_raises_before_any_request(self):
         reader, dates = FakeReader([]), FakeDates()
         module = ReferencesModule(reader, dates)
@@ -301,7 +336,7 @@ class InputValidationTests(unittest.TestCase):
 class ParserTests(unittest.TestCase):
     def test_normalize_arxiv_id(self):
         good = {"2501.12642": "2501.12642", "2501.12642v3": "2501.12642", "arXiv:0704.0001": "0704.0001",
-                " hep-th/9901001v1 ": "hep-th/9901001", "math.GT/0309136": "math.GT/0309136"}
+                " hep-th/9901001v1 ": "hep-th/9901001", "math.GT/0309136": "math/0309136"}
         for raw, expected in good.items():
             self.assertEqual(normalize_arxiv_id(raw), expected, raw)
         for bad in ("", "12345", "2501.123", "https://arxiv.org/abs/2501.12642", "hep-th/99010", None, 2501.12642,
@@ -352,6 +387,19 @@ class Clock:
 
 
 class ClientTests(unittest.TestCase):
+    def test_clients_reject_invalid_ids_before_transport(self):
+        s2, s2_calls, _ = self.make(SemanticScholarClient, [], api_key="")
+        arxiv, arxiv_calls, _ = self.make(ArxivDateClient, [])
+        for value in ("2513.00001", "2501.00000", "2501.1264", "hep-th/0704001",
+                      "math.GT/0309136", "2501.12642v1"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    s2.references_page(value, 0, 10)
+                with self.assertRaises(ValueError):
+                    arxiv.submission_dates(["2501.12642", value])
+        self.assertEqual((s2_calls, arxiv_calls), ([], []))
+        self.assertEqual((s2.attempts, arxiv.attempts), (0, 0))
+
     def make(self, cls, replies, **kwargs):
         clock, calls, queue = Clock(), [], list(replies)
 
