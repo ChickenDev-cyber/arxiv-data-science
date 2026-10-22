@@ -1,0 +1,3 @@
+{"owner": "Hoang", "step": "metadata", "status": "success", "data": {"versions_complete": true}}
+{"owner": "Trong", "step": "sources", "status": "success", "metrics": {"download_bytes": 1000, "retained_source_bytes": 500}}
+{"owner": "Hoang", "step": "references", "status": "success", "data": {"s2_reference_count": 10}}

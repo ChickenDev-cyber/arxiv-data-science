@@ -1,13 +1,17 @@
 {
-  "run_id": "baseline-001",
-  "is_mock": true,
+  "schema_version": "1.1",
+  "scope": {
+    "run_id": "baseline-001",
+    "is_mock": true,
+    "total_papers": 2
+  },
   "summary": {
     "papers_discovered": 2,
-    "metadata_complete_papers": 1,
-    "papers_complete": 1,
-    "total_download_bytes": 102400,
-    "total_retained_source_bytes": 80000,
-    "avg_references_per_paper": 15.0
+    "metadata_complete_papers": 0,
+    "papers_complete": 0,
+    "total_download_bytes": 0,
+    "total_retained_source_bytes": 0,
+    "avg_references_per_paper": 0.0
   },
   "by_owner": {
     "Trong": {
