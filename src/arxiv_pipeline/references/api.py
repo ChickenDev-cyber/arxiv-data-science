@@ -16,6 +16,8 @@ import re
 import socket
 import threading
 import time
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 from urllib.error import URLError
 from urllib.parse import quote, urlencode, urlsplit
 from http.client import HTTPException
@@ -59,7 +61,7 @@ class _PacedClient:
     """
 
     def __init__(self, *, delay, timeout=30, max_attempts=3, headers=None, transport=None,
-                 monotonic=time.monotonic, sleep=time.sleep):
+                 monotonic=time.monotonic, sleep=time.sleep, wall_clock=time.time):
         _positive_number(timeout, "timeout", 0.001)
         _positive_number(delay, "delay", 0)
         if type(max_attempts) is not int or not 1 <= max_attempts <= 3:
@@ -67,19 +69,25 @@ class _PacedClient:
         self.timeout, self.delay, self.max_attempts = timeout, delay, max_attempts
         self.headers = dict(headers or {})
         self.transport = transport or _default_transport
-        self.monotonic, self.sleep = monotonic, sleep
+        self.monotonic, self.sleep, self.wall_clock = monotonic, sleep, wall_clock
         self.attempts = 0
         self._next_allowed = 0.0
         self._lock = threading.Lock()
 
-    @staticmethod
-    def _retry_after(headers):
+    def _retry_after(self, headers):
+        """Seconds to wait from ``Retry-After``: delay-seconds or HTTP-date, never negative, not capped."""
         value = next((v for k, v in headers.items() if k.lower() == "retry-after"), "")
         try:
             seconds = float(value)
-            return min(max(0.0, seconds), 60.0) if math.isfinite(seconds) else 0.0
+            return max(0.0, seconds) if math.isfinite(seconds) else 0.0
         except (TypeError, ValueError):
-            return 0.0  # HTTP-date form is ignored; the fixed backoff still applies.
+            try:
+                date = parsedate_to_datetime(value)
+                if date.tzinfo is None:
+                    date = date.replace(tzinfo=timezone.utc)
+                return max(0.0, date.timestamp() - self.wall_clock())
+            except (TypeError, ValueError, OverflowError):
+                return 0.0
 
     def _get(self, url, *, not_found_is_error=True):
         with self._lock:

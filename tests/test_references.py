@@ -390,6 +390,41 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(client.attempts, 2)
         self.assertGreaterEqual(sum(clock.sleeps), 7)
 
+    def test_retry_after_seconds_is_not_capped(self):
+        client, _, _ = self.make(SemanticScholarClient, [], api_key="")
+        self.assertEqual(client._retry_after({"Retry-After": "120"}), 120)
+        self.assertEqual(client._retry_after({"retry-after": "3600"}), 3600)
+        ok = ApiResponse(200, {}, json.dumps(page([])).encode())
+        client, _, clock = self.make(SemanticScholarClient, [ApiResponse(429, {"Retry-After": "120"}, b""), ok],
+                                     api_key="")
+        client.references_page("2501.12642", 0, 10)
+        self.assertGreaterEqual(sum(clock.sleeps), 120)
+
+    def test_retry_after_http_date_is_honoured_for_both_clients(self):
+        # 00:18:20 GMT on 1970-01-01 is 1100 s after the epoch; the injected wall clock says 1000 s.
+        header = {"Retry-After": "Thu, 01 Jan 1970 00:18:20 GMT"}
+        ok_s2 = ApiResponse(200, {}, json.dumps(page([])).encode())
+        client, _, clock = self.make(SemanticScholarClient, [ApiResponse(429, header, b""), ok_s2],
+                                     api_key="", wall_clock=lambda: 1000.0)
+        self.assertEqual(client._retry_after(header), 100)
+        client.references_page("2501.12642", 0, 10)
+        self.assertGreaterEqual(sum(clock.sleeps), 100)
+        ok_arxiv = ApiResponse(200, {}, b'<feed xmlns="http://www.w3.org/2005/Atom"></feed>')
+        client, _, clock = self.make(ArxivDateClient, [ApiResponse(503, header, b""), ok_arxiv],
+                                     wall_clock=lambda: 1000.0)
+        client.submission_dates(["2001.00001"])
+        self.assertEqual(client.attempts, 2)
+        self.assertGreaterEqual(sum(clock.sleeps), 100)
+
+    def test_retry_after_http_date_edge_cases(self):
+        client, _, _ = self.make(SemanticScholarClient, [], api_key="", wall_clock=lambda: 1000.0)
+        self.assertEqual(client._retry_after({"Retry-After": "Thu, 01 Jan 1970 00:00:09 GMT"}), 0)  # already past
+        self.assertEqual(client._retry_after({"Retry-After": "Thu, 01 Jan 1970 00:18:20 -0000"}), 100)  # naive = UTC
+        for bad in ("NaN", "inf", "invalid", "", "-5"):
+            with self.subTest(value=bad):
+                self.assertEqual(client._retry_after({"Retry-After": bad}), 0)
+        self.assertEqual(client._retry_after({}), 0)
+
     def test_s2_404_is_not_found_without_retry(self):
         client, _, _ = self.make(SemanticScholarClient, [ApiResponse(404, {}, b"")], api_key="")
         with self.assertRaises(RemoteError) as caught:
