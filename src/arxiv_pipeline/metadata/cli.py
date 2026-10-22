@@ -10,7 +10,7 @@ from pathlib import Path
 from ..config import OWNERS
 from ..contracts import paper_folder
 from ..discovery.service import validate_context
-from .api import FileClient, OaiClient
+from .api import OAI_URL, FileClient, OaiClient
 from .service import MetadataModule, validate_task
 
 
@@ -34,7 +34,7 @@ def _write_preview(path, result):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--owner", required=True, choices=sorted(OWNERS))
-    parser.add_argument("--arxiv-id", required=True)
+    parser.add_argument("--arxiv-id", required=True, help="canonical ID without vN, e.g. 2503.06914")
     parser.add_argument("--run-id", default="t2-preview")
     parser.add_argument("--output-root", type=Path, default=Path("/tmp/arxiv-t2"))
     parser.add_argument("--fixture", type=Path,
@@ -45,7 +45,13 @@ def main(argv=None):
     try:
         validate_task(task)
         validate_context(context)
-        client = FileClient({args.arxiv_id: args.fixture}) if args.fixture else OaiClient()
+        if args.fixture:
+            client = FileClient({args.arxiv_id: args.fixture})
+            print(f"{args.owner}: {args.arxiv_id} from saved file {args.fixture}; no request sent.", file=sys.stderr)
+        else:
+            client = OaiClient()
+            print(f"{args.owner}: {args.arxiv_id} via {OAI_URL}; 1 request, up to 3 with retries, "
+                  f"at least 3 s apart.", file=sys.stderr)
         result = MetadataModule(client).fetch_metadata(task, context)
         path = args.output_root / "preview" / args.run_id / "metadata" / f"{paper_folder(args.arxiv_id)}.json"
         _write_preview(path, result)
@@ -58,3 +64,4 @@ def main(argv=None):
                       "missing_fields": result["missing_fields"],
                       "attempts": result["attempts"], "preview": str(path)}, ensure_ascii=False))
     return {"success": 0, "partial": 2, "not_found": 3, "failed": 1}[result["status"]]
+

@@ -37,6 +37,7 @@ class OaiClient(ApiClient):
 
     def provenance(self, arxiv_id):
         return {"source": OAI_URL, "url": record_url(arxiv_id), "metadata_prefix": "arXivRaw",
+                "abstract_page": f"https://arxiv.org/abs/{arxiv_id}",
                 "method": "one OAI GetRecord per paper; versions and dates as listed by arXivRaw"}
 
     def record(self, arxiv_id):
@@ -54,9 +55,9 @@ class OaiClient(ApiClient):
                     if response.status_code == 200:
                         return response.body
                     retry_after = self._retry_after(response.headers)
-                    # OAI-PMH uses 503 + Retry-After for flow control.
+                    # Same codes as T1: only 429 is rate_limited; 503 (OAI flow control) is a retryable remote_error.
                     retryable = response.status_code == 429 or response.status_code in (500, 502, 503, 504)
-                    error = RemoteError("rate_limited" if response.status_code in (429, 503) else "remote_error",
+                    error = RemoteError("rate_limited" if response.status_code == 429 else "remote_error",
                                         f"arXiv OAI returned HTTP {response.status_code}",
                                         retryable, response.status_code)
                 except (URLError, TimeoutError, socket.timeout, ConnectionError, HTTPException) as exc:
@@ -118,6 +119,10 @@ def _timestamp(value):
 
 NAME_SUFFIX = re.compile(r"(?:Jr|Sr)\.?|I{2,3}|IV|V|VI{1,3}", re.IGNORECASE)
 ET_AL = re.compile(r"\bet\.? al\.?(?=\s|$)", re.IGNORECASE)
+# arXiv submission formats: "ABCD Collaboration: A, B", "A, B, for the ABCD Collaboration".
+GROUP = r"[^:]*\b(?:Collaboration|Consortium)"
+GROUP_PREFIX = re.compile(rf"({GROUP})\s*:\s*(.+)", re.IGNORECASE)
+GROUP_ONLY = re.compile(rf"(?:for\s+)?(?:the\s+)?({GROUP})", re.IGNORECASE)
 
 
 def _split_authors(value):
@@ -163,10 +168,18 @@ def _split_authors(value):
         return None
     names.append("".join(current))
     authors = []
+    split = []
     for name in (" ".join(n.split()) for n in names):
+        match = GROUP_PREFIX.fullmatch(name)
+        split += [match[1], match[2]] if match else [name]
+    if any(";" in name or ":" in name for name in split):
+        return None  # ';' or ':' never belong in a name; the list cannot be split safely
+    for name in split:
         if not name:
             continue
-        if NAME_SUFFIX.fullmatch(name) and authors:
+        if match := GROUP_ONLY.fullmatch(name):
+            authors.append(match[1])  # the collaboration is listed once, as its own entry
+        elif NAME_SUFFIX.fullmatch(name) and authors:
             authors[-1] += ", " + name
         elif ET_AL.search(name):
             return None  # the source itself says the list is incomplete
@@ -195,16 +208,29 @@ def parse_record(body, arxiv_id):
         raise RemoteError("invalid_payload", "arXiv OAI response is not valid XML") from None
     if root.tag != OAI + "OAI-PMH":
         raise RemoteError("invalid_payload", "Expected an OAI-PMH response")
+    # Every conclusion below is about the requested ID only, so the response must name it.
+    expected = f"oai:arXiv.org:{arxiv_id}"
+    request = root.findall(OAI + "request")
+    if len(request) != 1:
+        raise RemoteError("invalid_payload", "OAI response must contain exactly one <request>")
+    requested = request[0].get("identifier")
     error = root.find(OAI + "error")
     if error is not None:
         if error.get("code") == "idDoesNotExist":
+            if requested != expected:
+                raise RemoteError("invalid_payload", "OAI idDoesNotExist does not name the requested identifier")
             raise RemoteError("not_found", f"arXiv OAI has no record for {arxiv_id}")
         raise RemoteError("remote_error", f"arXiv OAI error: {error.get('code') or 'unknown'}")
+    if requested is not None and requested != expected:
+        raise RemoteError("invalid_payload", "OAI request identifier does not match the requested ID")
     records = root.findall(f"{OAI}GetRecord/{OAI}record")
     if len(records) != 1:
         raise RemoteError("invalid_payload", "OAI GetRecord must contain exactly one record")
-    header = records[0].find(OAI + "header")
-    if header is not None and header.get("status") == "deleted":
+    headers = records[0].findall(OAI + "header")
+    identifiers = headers[0].findall(OAI + "identifier") if len(headers) == 1 else []
+    if len(identifiers) != 1 or (identifiers[0].text or "").strip() != expected:
+        raise RemoteError("invalid_payload", "OAI record header is missing or names another identifier")
+    if headers[0].get("status") == "deleted":
         raise RemoteError("not_found", f"arXiv OAI marks {arxiv_id} as deleted")
     raws = records[0].findall(f"{OAI}metadata/{RAW}arXivRaw")
     if len(raws) != 1:

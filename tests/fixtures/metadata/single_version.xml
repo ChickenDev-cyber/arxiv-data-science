@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- DU LIEU GIA LAP: mot phien ban, khong co venue. -->
 <OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">
+  <request verb="GetRecord" identifier="oai:arXiv.org:2503.07000" metadataPrefix="arXivRaw">https://oaipmh.arxiv.org/oai</request>
   <GetRecord>
     <record>
+      <header><identifier>oai:arXiv.org:2503.07000</identifier></header>
       <metadata>
         <arXivRaw xmlns="http://arxiv.org/OAI/arXivRaw/">
           <id>2503.07000</id>

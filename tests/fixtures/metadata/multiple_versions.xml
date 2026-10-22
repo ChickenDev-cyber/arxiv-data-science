@@ -1,8 +1,10 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!-- DU LIEU GIA LAP: mo phong dinh dang arXivRaw cua OAI-PMH arXiv. Khong phai lich su that cua ID nay. -->
 <OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">
+  <request verb="GetRecord" identifier="oai:arXiv.org:2503.06914" metadataPrefix="arXivRaw">https://oaipmh.arxiv.org/oai</request>
   <GetRecord>
     <record>
+      <header><identifier>oai:arXiv.org:2503.06914</identifier></header>
       <metadata>
         <arXivRaw xmlns="http://arxiv.org/OAI/arXivRaw/">
           <id>2503.06914</id>

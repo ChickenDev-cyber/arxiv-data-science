@@ -12,9 +12,10 @@ from ..discovery.service import validate_context
 from .api import parse_record
 
 # Modern IDs: YYMM.NNNN from 0704 to 1412, YYMM.NNNNN from 1501 (2503.06914).
-# Old IDs keep "/": archive[.SC]/YYMMNNN from 9108 to 0703 (hep-th/9901001, math.GT/0309136).
+# Old IDs keep "/": archive/YYMMNNN from 9108 to 0703 (hep-th/9901001, math/0309136).
+# A subject class such as math.GT/0309136 is a display form, not the canonical ID OAI knows.
 MODERN_ID = re.compile(r"(\d{2})(\d{2})\.(\d{4,5})")
-OLD_ID = re.compile(r"[a-z]+(?:-[a-z]+)*(?:\.[A-Z]{2})?/(\d{2})(\d{2})(\d{3})")
+OLD_ID = re.compile(r"[a-z]+(?:-[a-z]+)*/(\d{2})(\d{2})(\d{3})")
 
 
 def is_valid_arxiv_id(value):
@@ -102,4 +103,3 @@ class MetadataModule:
             "duration_seconds": max(0.0, time.monotonic() - start),
             "attempts": self.client.attempts - initial_attempts,
         }
-
