@@ -1,0 +1,7 @@
+{
+  "run_id": "baseline-001",
+  "wall_seconds": 12.5,
+  "peak_ram_bytes": 150000000,
+  "exit_code": 0,
+  "is_mock": true
+}

@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.1",
+  "scope": {
+    "run_id": "baseline-001",
+    "is_mock": true,
+    "total_papers": 2
+  },
+  "summary": {
+    "papers_discovered": 2,
+    "metadata_complete_papers": 0,
+    "papers_complete": 0,
+    "total_download_bytes": 0,
+    "total_retained_source_bytes": 0,
+    "avg_references_per_paper": 0.0
+  },
+  "by_owner": {
+    "Trong": {
+      "success_count": 1
+    },
+    "HuynhNhi": {
+      "success_count": 1
+    },
+    "Khang": {
+      "success_count": 1
+    },
+    "ManhNhi": {
+      "success_count": 1
+    }
+  }
+}
