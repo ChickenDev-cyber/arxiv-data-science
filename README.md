@@ -10,6 +10,7 @@ src/
 │   ├── __init__.py
 │   ├── contracts.py       # Schema chung: Input, Output và Result
 │   ├── config.py          # Dải ID được giao cho năm thành viên
+│   ├── identifiers.py     # Kiểm tra và chuẩn hóa arXiv ID dùng chung cho T2, T4
 │   ├── examples.py        # Tạo dữ liệu mẫu offline theo schema
 │   ├── references/        # T4 của Mẫn Nhi
 │   │   ├── __init__.py    # Xuất ReferencesModule
@@ -36,6 +37,7 @@ tests/
 ├── test_discovery.py
 ├── test_references.py
 ├── test_metadata.py
+├── test_identifiers.py
 └── test_contract_examples.py
 ```
 
@@ -168,7 +170,9 @@ result = module.fetch_references({"owner": "man-nhi", "arxiv_id": "2501.12642"},
 
 Metrics bắt buộc (khi có `data`): `s2_reference_count` (mọi mục nhận được, trước lọc/trùng), `arxiv_reference_count` (ID arXiv duy nhất giữ lại, bằng số key của `references`), `complete_reference_count` (đủ bốn trường); luôn có `complete <= arxiv <= s2`. Hoàng tính `reference_metadata_success_rate` và `mean_arxiv_references_per_paper` từ các số này và cờ `complete`.
 
-Quy tắc dữ liệu: ID giữ dạng gốc (`hep-th/9901001` giữ dấu `/`), bỏ tiền tố `arXiv:` và hậu tố `vN`; khử trùng theo ID, mỗi trường lấy giá trị không thiếu đầu tiên, không trộn danh sách tác giả; trùng/xung đột ghi trong `provenance` theo JSON Pointer của trường (`/data/references/<id>/<field>`, `~` → `~0`, `/` → `~1`). Tên tác giả/tiêu đề rỗng được coi là thiếu (`null`). Ngày do adapter trả về luôn được kiểm tra lại: chỉ nhận ID thuộc batch đã hỏi và chuỗi ISO hợp lệ (ngày, hoặc timestamp có múi giờ); giá trị khác (`"2020"`, `"N/A"`) coi là thiếu và vào `missing_fields`. Task hoặc context sai kiểu ném `ValueError` trước khi gửi request; lỗi lập trình không bị đổi thành references rỗng.
+T2 và T4 dùng chung `identifiers.py` để kiểm tra ID: tháng 01–12, số thứ tự từ 1, đúng số chữ số theo giai đoạn. PaperTask chỉ nhận ID chuẩn, không nhận URL, tiền tố, khoảng trắng hoặc hậu tố phiên bản; ID sai bị từ chối trước khi gửi request.
+
+Quy tắc dữ liệu: ID reference từ nguồn ngoài được bỏ khoảng trắng hai đầu, tiền tố `arXiv:` và hậu tố `vN`; dạng cũ có phân lớp như `math.GT/0309136v2` được chuẩn hóa thành `math/0309136`. ID không hợp lệ bị bỏ trước khi tra ngày, vẫn được tính trong `s2_reference_count`. ID cũ giữ dấu `/` (`hep-th/9901001`); khử trùng theo ID chuẩn, mỗi trường lấy giá trị không thiếu đầu tiên, không trộn danh sách tác giả; trùng/xung đột ghi trong `provenance` theo JSON Pointer của trường (`/data/references/<id>/<field>`, `~` → `~0`, `/` → `~1`). Tên tác giả/tiêu đề rỗng được coi là thiếu (`null`). Ngày do adapter trả về luôn được kiểm tra lại: chỉ nhận ID thuộc batch đã hỏi và chuỗi ISO hợp lệ (ngày, hoặc timestamp có múi giờ); giá trị khác (`"2020"`, `"N/A"`) coi là thiếu và vào `missing_fields`. Task hoặc context sai kiểu ném `ValueError` trước khi gửi request; lỗi lập trình không bị đổi thành references rỗng.
 
 Mẫu offline (đủ metadata, thiếu ngày, rỗng, lỗi phân trang), do chính module sinh từ reader giả lập, `is_mock=true`:
 

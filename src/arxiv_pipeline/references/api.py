@@ -24,32 +24,13 @@ from http.client import HTTPException
 from xml.etree import ElementTree as ET
 
 from ..discovery.api import ApiResponse, RemoteError, _default_transport, _positive_number
+from ..identifiers import is_valid_arxiv_id as is_canonical_id, normalize_arxiv_id
 
 S2_BASE = "https://api.semanticscholar.org/graph/v1/paper/"
 ARXIV_API = "https://export.arxiv.org/api/query"
 ATOM = "{http://www.w3.org/2005/Atom}"
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 S2_FIELDS = "title,authors,externalIds"
-
-_MODERN_ID = r"\d{4}\.\d{4,5}"
-_OLD_ID = r"[a-z]+(?:-[a-z]+)*(?:\.[A-Za-z]{2})?/\d{7}"
-_ID_RE = re.compile(rf"(?:{_MODERN_ID}|{_OLD_ID})")
-_VERSION_RE = re.compile(r"v[1-9]\d*$")
-
-
-def normalize_arxiv_id(value):
-    """Canonical arXiv ID (no URL, no ``arXiv:`` prefix, no ``vN``) or None."""
-    if not isinstance(value, str):
-        return None
-    text = value.strip()
-    if text[:6].lower() == "arxiv:":
-        text = text[6:]
-    text = _VERSION_RE.sub("", text)
-    return text if _ID_RE.fullmatch(text) else None
-
-
-def is_canonical_id(value):
-    return isinstance(value, str) and normalize_arxiv_id(value) == value
 
 
 class _PacedClient:

@@ -12,7 +12,8 @@ from ..config import OWNERS
 from ..contracts import SCHEMA_VERSION, Context, PaperTask, Result
 from ..discovery.api import RemoteError
 from ..discovery.service import validate_context
-from .api import ARXIV_API, S2_BASE, is_canonical_id, normalize_arxiv_id, valid_iso_date
+from ..identifiers import is_valid_arxiv_id, normalize_arxiv_id
+from .api import ARXIV_API, S2_BASE, valid_iso_date
 
 REQUIRED_FIELDS = ("title", "authors", "submission_date", "semantic_scholar_id")
 
@@ -40,7 +41,7 @@ def _pointer(*tokens):
 def validate_task(task):
     if not isinstance(task, dict) or task.get("owner") not in OWNERS:
         raise ValueError("task.owner must match an assigned owner")
-    if not is_canonical_id(task.get("arxiv_id")):
+    if not is_valid_arxiv_id(task.get("arxiv_id")):
         raise ValueError("task.arxiv_id must be a canonical arXiv ID (no URL, no version suffix)")
 
 
