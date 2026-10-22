@@ -1,6 +1,6 @@
 # arXiv Data Science — Milestone 1
 
-Repo mã nguồn cho đồ án Nhập môn Khoa học Dữ liệu: thu thập bài báo arXiv, phân tích nội dung và đối sánh tài liệu tham khảo. Hiện đã triển khai **T1: lập danh sách bài trong dải ID qua API arXiv**. Các task metadata, nguồn, references và runner toàn pipeline chưa triển khai.
+Repo mã nguồn cho đồ án Nhập môn Khoa học Dữ liệu: thu thập bài báo arXiv, phân tích nội dung và đối sánh tài liệu tham khảo. Hiện đã triển khai **T1: lập danh sách bài trong dải ID qua API arXiv** và **T2: metadata và lịch sử phiên bản qua OAI-PMH arXivRaw**. Các task nguồn, references và runner toàn pipeline chưa triển khai.
 
 ## Cấu trúc code
 
@@ -11,15 +11,23 @@ src/
 │   ├── contracts.py       # Schema chung: Input, Output và Result
 │   ├── config.py          # Dải ID được giao cho năm thành viên
 │   ├── examples.py        # Tạo dữ liệu mẫu offline theo schema
-│   └── discovery/         # T1 của Trọng
-│       ├── __init__.py    # Các hàm dùng khi tích hợp T1
-│       ├── __main__.py    # Điểm chạy python -m arxiv_pipeline.discovery
-│       ├── cli.py         # Đọc tham số, gọi T1 và ghi preview JSON
-│       ├── service.py     # Sinh ID ứng viên, xác minh và tổng hợp Result
-│       └── api.py         # Gửi request, retry và đọc Atom XML
+│   ├── discovery/         # T1 của Trọng
+│   │   ├── __init__.py    # Các hàm dùng khi tích hợp T1
+│   │   ├── __main__.py    # Điểm chạy python -m arxiv_pipeline.discovery
+│   │   ├── cli.py         # Đọc tham số, gọi T1 và ghi preview JSON
+│   │   ├── service.py     # Sinh ID ứng viên, xác minh và tổng hợp Result
+│   │   └── api.py         # Gửi request, retry và đọc Atom XML
+│   └── metadata/          # T2 của Huỳnh Nhi
+│       ├── __init__.py    # MetadataModule dùng khi tích hợp T2
+│       ├── __main__.py    # Điểm chạy python -m arxiv_pipeline.metadata
+│       ├── cli.py         # Đọc tham số, gọi T2 và ghi preview JSON
+│       ├── service.py     # Kiểm tra input, chọn status, tính missing_fields
+│       └── api.py         # Client OAI-PMH và đọc arXivRaw XML
 └── requirements.txt
 tests/
+├── fixtures/metadata/     # Phản hồi arXivRaw giả lập cho T2
 ├── test_discovery.py
+├── test_metadata.py
 └── test_contract_examples.py
 ```
 
@@ -122,13 +130,87 @@ Hàm không tự ghi file; CLI là wrapper xuất preview. Khi tích hợp, thay
 - `attempts` đếm request thực tế kể cả retry. Error đầu tiên còn chưa giải quyết được ghi trong Result; tất cả ID chưa xác minh nằm trong data khi partial.
 - HTTP 200 không tự được xem là thành công: HTML, XML lỗi, entry lỗi và ID ngoài yêu cầu đều phải kiểm tra. Client không cache phản hồi.
 
+## Chạy T2
+
+T2 nhận một PaperTask (`owner`, `arxiv_id`) và trả Result `step=metadata`: tiêu đề, tác giả, ngày nộp v1, ngày từng phiên bản, venue. Chỉ dùng thư viện chuẩn. Chạy từ thư mục gốc repo.
+
+```bash
+PYTHONPATH=src python -m arxiv_pipeline.metadata \
+  --owner huynh-nhi \
+  --arxiv-id 2503.06914 \
+  --run-id t2-demo \
+  --output-root /tmp/arxiv-t2
+```
+
+Mặc định `--run-id t2-preview`, `--output-root /tmp/arxiv-t2`. Chạy thử không cần mạng bằng một phản hồi đã lưu (`is_mock=true`, không gửi request):
+
+```bash
+PYTHONPATH=src python -m arxiv_pipeline.metadata \
+  --owner huynh-nhi --arxiv-id 2503.06914 \
+  --fixture tests/fixtures/metadata/multiple_versions.xml
+```
+
+Kết quả preview:
+
+```text
+/tmp/arxiv-t2/preview/t2-demo/metadata/2503-06914.json
+```
+
+Đây là toàn bộ Result metadata. Tên file theo quy ước thư mục bài (`.` → `-`, `/` → `__`). Không ghi vào corpus chính thức, SQLite hoặc log của T5.
+
+| Exit code | Kết quả |
+|---|---|
+| 0 | `success`: đủ title, authors, ngày v1 và lịch sử phiên bản liên tục có ngày |
+| 2 | `partial`: có dữ liệu nhưng thiếu trường bắt buộc; xem `missing_fields` |
+| 3 | `not_found`: arXiv OAI xác nhận không có bản ghi (hoặc đã xóa) |
+| 1 | `failed`, ID/owner sai, hoặc ghi file lỗi |
+
+Lỗi cú pháp tham số do argparse báo exit 2 kèm hướng dẫn; nó không tạo Result.
+
+### Vì sao dùng OAI-PMH arXivRaw
+
+API Atom mà T1 dùng chỉ có ngày v1 (`published`), ngày của bản mới nhất (`updated`) và số phiên bản mới nhất, nên không chứng minh được ngày của các bản ở giữa. Bản ghi arXivRaw liệt kê từng phiên bản kèm ngày, cùng tiêu đề, tác giả và `journal-ref`, trong một request mỗi bài:
+
+```text
+https://oaipmh.arxiv.org/oai?verb=GetRecord&metadataPrefix=arXivRaw&identifier=oai:arXiv.org:<id>
+```
+
+Kiểm tra lại địa chỉ này trước lượt chạy thật (arXiv đã chuyển OAI từ `export.arxiv.org/oai2`); nếu đổi thì sửa hằng `OAI_URL` trong `metadata/api.py`.
+
+### Quy tắc dữ liệu và xử lý lỗi
+
+- ID được kiểm tra trước khi gửi request: tháng 01–12, số thứ tự từ 1, 4 chữ số cho 0704–1412 và 5 chữ số từ 1501; ID kiểu cũ `archive/YYMMNNN` từ 9108 đến 0703 (không kèm phân lớp như `math.GT`). Không nhận URL hay hậu tố `vN`.
+- `OaiClient` kế thừa `ApiClient` của T1: một kết nối, chờ ít nhất 3 giây sau mỗi request, timeout 30 giây, tối đa 3 lần gửi, retry lỗi mạng, 429 và 500/502/503/504, tôn trọng `Retry-After`. Mã lỗi giống T1: chỉ 429 là `rate_limited`; 503 (OAI báo chờ) là `remote_error` có retry. Không cache.
+- `not_found` chỉ khi OAI trả `idDoesNotExist` hoặc bản ghi `deleted`. Lỗi mạng, HTTP 404 hoặc lỗi OAI khác là `failed`. Bài vừa nộp trong ngày có thể chưa có trên OAI; chạy lại sau.
+- HTTP 200 không tự được xem là thành công: XML rỗng/hỏng, có DTD, trang HTML, ID không khớp, trường bị lặp (`title`, `authors`, `id`, ngày của một phiên bản, nhiều record) đều là `invalid_payload`.
+- Phiên bản: giữ mọi phiên bản arXivRaw liệt kê, sắp theo số; không chèn phiên bản không có. Thiếu ngày, thiếu v1 hoặc có khoảng trống → `partial` và ghi JSON Pointer tương ứng vào `missing_fields`. `submission_date` là ngày v1; `revised_dates` là ngày đã biết của v2 trở đi theo thứ tự phiên bản. Ngày không có múi giờ không được đoán (để `null`).
+- Tác giả: theo [quy ước nộp bài của arXiv](https://info.arxiv.org/help/prep.html), tách theo dấu phẩy và ` and ` ở ngoài ngoặc, bỏ đơn vị trong ngoặc ở mọi độ sâu, giữ `Jr.`/`Sr.`/`II`/`III` với tên trước. Nhóm cộng tác (`ABCD Collaboration: ...`, `..., for the ABCD Collaboration`) thành một mục riêng `ABCD Collaboration`. Dấu TeX (`M\"uller`) giữ nguyên như nguồn. Ngoặc lệch, danh sách có `et al.`, hoặc có `;`/`:` không thuộc mẫu nhóm cộng tác → `authors=null`, `partial`.
+- `provenance` ghi nguồn thật: URL OAI và trang abstract `https://arxiv.org/abs/<id>` khi gọi arXiv, tên file khi dùng `--fixture`.
+- Theo [điều khoản truy cập](https://info.arxiv.org/help/api/tou.html): tối đa 1 request mỗi 3 giây và một kết nối cho **mọi máy của nhóm cộng lại**; không chạy song song T1 và T2 trên nhiều máy cùng lúc. Được lưu và chia sẻ metadata mô tả; không ghi dự án là được arXiv bảo trợ.
+- `attempts` đếm request thực tế kể cả retry; dùng file đã lưu thì bằng 0. `metrics` luôn `{}`.
+
+### Dùng từ Python
+
+```python
+from pathlib import Path
+from arxiv_pipeline.metadata import MetadataModule
+from arxiv_pipeline.metadata.api import OaiClient
+
+context = {"run_id": "t2-demo", "is_mock": False, "output_root": Path("/tmp/arxiv-t2")}
+module = MetadataModule(OaiClient())
+result = module.fetch_metadata({"owner": "huynh-nhi", "arxiv_id": "2503.06914"}, context)
+# Runner tải các phiên bản trong result["data"]["versions"] khi data khác None, kể cả partial.
+```
+
+Hàm không tự ghi file. Client dùng chung cần `record(arxiv_id) -> bytes`, `provenance(arxiv_id) -> dict[str, str]` và bộ đếm `attempts`. Mỗi bài một request nên 1.000 bài mất khoảng 50 phút; chưa có checkpoint/resume.
+
 ## Kiểm thử offline
 
 ```bash
 PYTHONPATH=src python -m unittest discover -s tests -v
 ```
 
-Test không gửi request thật và dùng thư mục tạm. Các tình huống gồm dải qua tháng, đầu mút, giới hạn thử, ID trống, phiên bản/trùng thứ tự, Atom lỗi, phân trang thiếu, HTTP retry và CLI.
+Test không gửi request thật và dùng thư mục tạm. T1 gồm dải qua tháng, đầu mút, giới hạn thử, ID trống, phiên bản/trùng thứ tự, Atom lỗi, phân trang thiếu, HTTP retry và CLI. T2 gồm một/nhiều phiên bản, thiếu ngày, thiếu v1, khoảng trống, not_found, bản ghi bị xóa, lỗi mạng/HTTP, payload lặp hoặc hỏng, ID không hợp lệ, tác giả có đơn vị lồng nhau và CLI với các file trong `tests/fixtures/metadata/`.
 
 ## Schema và tài liệu
 

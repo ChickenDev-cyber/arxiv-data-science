@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- DU LIEU GIA LAP: v2 da biet nhung khong co ngay -> partial. -->
+<OAI-PMH xmlns="http://www.openarchives.org/OAI/2.0/">
+  <request verb="GetRecord" identifier="oai:arXiv.org:2503.07001" metadataPrefix="arXivRaw">https://oaipmh.arxiv.org/oai</request>
+  <GetRecord>
+    <record>
+      <header><identifier>oai:arXiv.org:2503.07001</identifier></header>
+      <metadata>
+        <arXivRaw xmlns="http://arxiv.org/OAI/arXivRaw/">
+          <id>2503.07001</id>
+          <version version="v1"><date>Tue, 4 Mar 2025 12:00:00 GMT</date><size>50kb</size></version>
+          <version version="v2"><size>51kb</size></version>
+          <title>Bai bao thieu ngay v2</title>
+          <authors>Tac Gia Mau</authors>
+        </arXivRaw>
+      </metadata>
+    </record>
+  </GetRecord>
+</OAI-PMH>
