@@ -104,6 +104,74 @@ class StatusAndVersionTests(MetadataTestCase):
         self.assertEqual(d["revised_dates"], ["2025-03-05T09:00:00Z", "2025-03-07T10:00:00Z"])
         self.assertEqual(d["venue"], "Synthetic Conf 2025")
 
+    def test_reversed_version_dates_are_partial_and_preserved(self):
+        r = self.fetch(record("2503.06914", [(2, DATE), (1, "Wed, 5 Mar 2025 18:00:00 GMT")]))
+        self.assertEqual(r["status"], "partial")
+        self.assertIs(r["data"]["versions_complete"], False)
+        self.assertEqual(r["data"]["versions"], [
+            {"version": 1, "submitted_at": "2025-03-05T18:00:00Z"},
+            {"version": 2, "submitted_at": "2025-03-03T18:00:00Z"},
+        ])
+        self.assertEqual(r["data"]["submission_date"], "2025-03-05T18:00:00Z")
+        self.assertEqual(r["data"]["revised_dates"], ["2025-03-03T18:00:00Z"])
+        self.assertEqual(r["missing_fields"], [])
+        self.assertIsNone(r["error"])
+        warning = r["provenance"]["version_date_order"]
+        for detail in ("v2", "v1", "2025-03-03T18:00:00Z", "2025-03-05T18:00:00Z"):
+            self.assertIn(detail, warning)
+
+    def test_date_order_is_checked_between_later_versions(self):
+        r = self.fetch(record("2503.06914", [(1, DATE), (2, "Fri, 7 Mar 2025 18:00:00 GMT"),
+                                             (3, "Wed, 5 Mar 2025 18:00:00 GMT")]))
+        self.assertEqual(r["status"], "partial")
+        self.assertIs(r["data"]["versions_complete"], False)
+        self.assertEqual(r["data"]["revised_dates"], ["2025-03-07T18:00:00Z", "2025-03-05T18:00:00Z"])
+        self.assertEqual(r["missing_fields"], [])
+        for version in ("v3", "v2"):
+            self.assertIn(version, r["provenance"]["version_date_order"])
+
+    def test_date_order_checks_known_dates_across_missing_dates(self):
+        r = self.fetch(record("2503.06914", [(1, "Wed, 5 Mar 2025 18:00:00 GMT"), (2, None), (3, DATE)]))
+        self.assertEqual(r["status"], "partial")
+        self.assertIs(r["data"]["versions_complete"], False)
+        self.assertEqual(r["data"]["versions"][1], {"version": 2, "submitted_at": None})
+        self.assertEqual(r["missing_fields"], ["/data/versions/1/submitted_at"])
+        for version in ("v3", "v1"):
+            self.assertIn(version, r["provenance"]["version_date_order"])
+
+    def test_equal_version_dates_are_success(self):
+        r = self.fetch(record("2503.06914", [(1, DATE), (2, DATE)]))
+        self.assertEqual(r["status"], "success")
+        self.assertIs(r["data"]["versions_complete"], True)
+        self.assertEqual(r["missing_fields"], [])
+        self.assertNotIn("version_date_order", r["provenance"])
+
+    def test_version_dates_compare_utc_instants(self):
+        cases = [
+            ("Mon, 3 Mar 2025 18:00:00 +0700", "Mon, 3 Mar 2025 12:00:00 +0000", "success"),
+            ("Mon, 3 Mar 2025 12:00:00 +0000", "Mon, 3 Mar 2025 18:00:00 +0700", "partial"),
+            ("Mon, 3 Mar 2025 11:00:00 +0000", "Mon, 3 Mar 2025 18:00:00 +0700", "success"),
+        ]
+        for first, second, status in cases:
+            with self.subTest(first=first, second=second):
+                r = self.fetch(record("2503.06914", [(1, first), (2, second)]))
+                self.assertEqual(r["status"], status)
+                self.assertEqual(r["data"]["versions_complete"], status == "success")
+                self.assertEqual(r["missing_fields"], [])
+                self.assertEqual("version_date_order" in r["provenance"], status == "partial")
+
+    def test_date_warning_does_not_leak_through_shared_client_provenance(self):
+        api = client(
+            ApiResponse(200, {}, record("2503.06914", [(1, "Wed, 5 Mar 2025 18:00:00 GMT"), (2, DATE)])),
+            ApiResponse(200, {}, record("2503.06914", [(1, DATE)])),
+        )
+        shared_provenance = {"source": "shared-client"}
+        api.provenance = lambda arxiv_id: shared_provenance
+        first, second = self.fetch(api), self.fetch(api)
+        self.assertIn("version_date_order", first["provenance"])
+        self.assertEqual(shared_provenance, {"source": "shared-client"})
+        self.assertNotIn("version_date_order", second["provenance"])
+
     def test_missing_date_keeps_version_and_is_partial(self):
         r = self.fetch(record("2503.06914", [(1, DATE), (2, None)]))
         self.assertEqual((r["status"], r["error"]), ("partial", None))
