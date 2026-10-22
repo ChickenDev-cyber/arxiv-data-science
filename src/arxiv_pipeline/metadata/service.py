@@ -9,7 +9,7 @@ from ..config import OWNERS
 from ..contracts import SCHEMA_VERSION, Context, PaperTask, Result
 from ..discovery.api import RemoteError
 from ..discovery.service import validate_context
-from .api import parse_record
+from .api import parse_record, version_date_order_issues
 
 # Modern IDs: YYMM.NNNN from 0704 to 1412, YYMM.NNNNN from 1501 (2503.06914).
 # Old IDs keep "/": archive/YYMMNNN from 9108 to 0703 (hep-th/9901001, math/0309136).
@@ -92,13 +92,18 @@ class MetadataModule:
         else:
             missing = missing_fields(data)
             status = "success" if not missing and data["versions_complete"] else "partial"
+        provenance = dict(self.client.provenance(task["arxiv_id"]))
+        if data is not None:
+            date_issues = version_date_order_issues(data["versions"])
+            if date_issues:
+                provenance["version_date_order"] = "; ".join(date_issues)
         return {
             "schema_version": SCHEMA_VERSION,
             "run_id": context["run_id"], "owner": task["owner"], "is_mock": context["is_mock"],
             "step": "metadata", "arxiv_id": task["arxiv_id"], "version": None,
             "status": status, "data": data, "missing_fields": missing,
             "error": error,
-            "provenance": self.client.provenance(task["arxiv_id"]),
+            "provenance": provenance,
             "metrics": {}, "started_at": started_at, "finished_at": _utc_now(),
             "duration_seconds": max(0.0, time.monotonic() - start),
             "attempts": self.client.attempts - initial_attempts,

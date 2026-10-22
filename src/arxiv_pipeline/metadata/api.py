@@ -7,7 +7,7 @@ date of every version. arXivRaw lists each version with its own date.
 
 import re
 import socket
-from datetime import timezone
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from http.client import HTTPException
 from pathlib import Path
@@ -15,6 +15,7 @@ from urllib.error import URLError
 from urllib.parse import urlencode
 from xml.etree import ElementTree as ET
 
+from ..contracts import VersionInfo
 from ..discovery.api import MAX_RESPONSE_BYTES, ApiClient, RemoteError
 
 # Check this endpoint in a browser before a real run: arXiv moved OAI-PMH from
@@ -115,6 +116,30 @@ def _timestamp(value):
     if date.tzinfo is None:
         return None  # do not invent a timezone
     return date.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def version_date_order_issues(versions: list[VersionInfo]) -> list[str]:
+    """Find decreases between known timestamps produced by this parser, in version order.
+
+    Missing dates do not reset the comparison. Equal instants are allowed, and
+    the input history is never changed or reordered by date.
+    """
+    issues = []
+    previous = None
+    for version in sorted(versions, key=lambda item: item["version"]):
+        submitted_at = version["submitted_at"]
+        if submitted_at is None:
+            continue
+        instant = datetime.fromisoformat(submitted_at.replace("Z", "+00:00"))
+        if previous is not None:
+            earlier_version, earlier_instant = previous
+            if instant < earlier_instant:
+                issues.append(
+                    f"v{version['version']} submitted_at={submitted_at} precedes "
+                    f"v{earlier_version['version']} submitted_at={earlier_version['submitted_at']}"
+                )
+        previous = version, instant
+    return issues
 
 
 NAME_SUFFIX = re.compile(r"(?:Jr|Sr)\.?|I{2,3}|IV|V|VI{1,3}", re.IGNORECASE)
@@ -262,5 +287,6 @@ def parse_record(body, arxiv_id):
         "revised_dates": [v["submitted_at"] for v in versions if v["version"] >= 2 and v["submitted_at"]],
         "venue": _single(raw, "journal-ref"),
         "versions": versions,
-        "versions_complete": contiguous and all(v["submitted_at"] for v in versions),
+        "versions_complete": (contiguous and all(v["submitted_at"] for v in versions)
+                              and not version_date_order_issues(versions)),
     }
