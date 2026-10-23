@@ -767,5 +767,24 @@ class FormatSniffingAndSingleFileStrategyTests(unittest.TestCase):
             path.unlink(missing_ok=True)
 
 
+class HandlersPackageModularStructureTests(unittest.TestCase):
+    def test_import_handlers_directly_from_submodules(self):
+        from arxiv_pipeline.sources.handlers.base import SourceHandler, ExtractionLimits, ExtractionResult
+        from arxiv_pipeline.sources.handlers.tar import TarHandler
+        from arxiv_pipeline.sources.handlers.gzip import GzipTexHandler
+        from arxiv_pipeline.sources.handlers.tex import TexHandler
+
+        self.assertTrue(issubclass(TarHandler, object))
+        self.assertTrue(issubclass(GzipTexHandler, object))
+        self.assertTrue(issubclass(TexHandler, object))
+
+    def test_import_from_sources_handler_alias(self):
+        from arxiv_pipeline.sources import handler, handlers
+        self.assertIs(handler, handlers)
+        self.assertTrue(hasattr(handler, "TarHandler"))
+        self.assertTrue(hasattr(handler, "GzipTexHandler"))
+        self.assertTrue(hasattr(handler, "TexHandler"))
+
+
 if __name__ == "__main__":
     unittest.main()
