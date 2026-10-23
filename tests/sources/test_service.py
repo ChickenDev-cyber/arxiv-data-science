@@ -258,6 +258,83 @@ class SourcesModuleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.fetch_sources(valid_task, 1, bad_context)
 
+    def test_end_to_end_tex_commands_and_relative_paths_unchanged(self):
+        r"""Commands like \input{...} and \includegraphics{...} must remain bit-exact."""
+        raw_main = (
+            b"\\documentclass{article}\n"
+            b"\\usepackage{graphicx}\n"
+            b"\\begin{document}\n"
+            b"\\input{sections/methods}\n"
+            b"\\includegraphics{figures/loss.png}\n"
+            b"\\bibliography{refs}\n"
+            b"\\end{document}\n"
+        )
+        raw_methods = b"\\section{Methods}\nDetailed text here.\n"
+        raw_bib = b"@article{good2026, title={Great Paper}}\n"
+        raw_fig = b"\x89PNG\r\n\x1a\n" + b"\x00" * 80
+
+        payload = make_tar_gz([
+            ("main.tex", raw_main),
+            ("sections/methods.tex", raw_methods),
+            ("refs.bib", raw_bib),
+            ("figures/loss.png", raw_fig),
+        ])
+        client = FakeClient(payload)
+        module = SourcesModule(client, self.extractor, limits=self.limits)
+        task: PaperTask = {"owner": "khang", "arxiv_id": "2501.12642"}
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            result = module.fetch_sources(task, 1, self._context(root))
+
+            self.assertEqual(result["status"], "success")
+            data = result["data"]
+            self.assertEqual(len(data["files"]), 3)
+
+            folder = paper_folder("2501.12642")
+            staging = root / "staging" / "run_2026" / "khang" / folder / "v1"
+
+            # 1. Exact bytes preserved
+            self.assertEqual((staging / "main.tex").read_bytes(), raw_main)
+            self.assertEqual((staging / "sections" / "methods.tex").read_bytes(), raw_methods)
+            self.assertEqual((staging / "refs.bib").read_bytes(), raw_bib)
+
+            # 2. Manifest matches physical files
+            for file_entry in data["files"]:
+                staged_file = staging / file_entry["path"]
+                self.assertTrue(staged_file.exists())
+                self.assertEqual(staged_file.stat().st_size, file_entry["size_bytes"])
+
+            # 3. No manifest file or figure was staged
+            self.assertFalse((staging / "figures" / "loss.png").exists())
+            self.assertFalse((staging / "manifest.json").exists())
+
+    def test_repeated_failure_does_not_mutate_existing_raw(self):
+        """Repeated failure must not overwrite an existing accepted raw/ or contaminate staging."""
+        client = FakeClient(RemoteError("remote_error", "HTTP 500 error", retryable=False, http_status=500))
+        module = SourcesModule(client, self.extractor, limits=self.limits)
+        task: PaperTask = {"owner": "khang", "arxiv_id": "2501.12642"}
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            folder = paper_folder("2501.12642")
+            raw_target = root / "raw" / "khang" / folder / "v1"
+            raw_target.mkdir(parents=True, exist_ok=True)
+            marker_file = raw_target / "accepted_content.tex"
+            marker_file.write_text("pre-existing accepted version")
+
+            # Run failing fetch
+            result = module.fetch_sources(task, 1, self._context(root))
+            self.assertEqual(result["status"], "failed")
+
+            # Verify raw marker is intact
+            self.assertTrue(marker_file.exists())
+            self.assertEqual(marker_file.read_text(), "pre-existing accepted version")
+
+            # Verify staging is not left over
+            staging_dir = root / "staging" / "run_2026" / "khang" / folder / "v1"
+            self.assertFalse(staging_dir.exists())
+
 
 if __name__ == "__main__":
     unittest.main()
