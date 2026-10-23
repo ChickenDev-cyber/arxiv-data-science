@@ -1,3 +1,4 @@
+import gzip
 import io
 import tarfile
 import tempfile
@@ -6,10 +7,14 @@ from pathlib import Path, PurePosixPath
 
 from arxiv_pipeline.sources.extractor import (
     ExtractionLimits,
+    GzipTexHandler,
+    SourceExtractor,
     SourceProcessingError,
     TarHandler,
+    TexHandler,
     classify_file,
-    safe_relative_path,
+    detect_source_kind,
+    to_relative_path,
 )
 
 
@@ -24,7 +29,7 @@ class SafePathAndClassifierTests(unittest.TestCase):
         }
         for raw, expected in cases.items():
             with self.subTest(raw=raw):
-                self.assertEqual(safe_relative_path(raw), expected)
+                self.assertEqual(to_relative_path(raw), expected)
 
     def test_safe_relative_path_rejects_parent_absolute_windows_backslash_nul(self):
         invalid = [
@@ -40,14 +45,14 @@ class SafePathAndClassifierTests(unittest.TestCase):
         for path in invalid:
             with self.subTest(path=path):
                 with self.assertRaises(ValueError):
-                    safe_relative_path(path)
+                    to_relative_path(path)
 
     def test_safe_relative_path_rejects_empty_and_dot_only(self):
         invalid = ["", ".", "./", "./.", "./..", "..", "   ", "a/./b.tex"]
         for path in invalid:
             with self.subTest(path=path):
                 with self.assertRaises(ValueError):
-                    safe_relative_path(path)
+                    to_relative_path(path)
 
     def test_classify_file_keeps_only_tex_bib_case_insensitive(self):
         retained = [
@@ -478,6 +483,202 @@ class TarSafetyAndLimitsTests(unittest.TestCase):
         self.assertEqual(err.info["message"], "Exceeded size limit")
         self.assertFalse(err.info["retryable"])
         self.assertIsNone(err.info["http_status"])
+
+
+class FormatSniffingAndSingleFileStrategyTests(unittest.TestCase):
+    def setUp(self):
+        self.extractor = SourceExtractor()
+        self.limits = ExtractionLimits()
+
+    def _write_temp_file(self, content: bytes, suffix: str = ".bin") -> Path:
+        tf = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)
+        tf.write(content)
+        tf.close()
+        return Path(tf.name)
+
+    def test_detect_genuine_tar_gzip_even_with_misleading_suffix(self):
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            ti = tarfile.TarInfo(name="main.tex")
+            data = b"\\documentclass{article}"
+            ti.size = len(data)
+            tar.addfile(ti, io.BytesIO(data))
+
+        path = self._write_temp_file(buf.getvalue(), suffix=".pdf")  # Misleading suffix
+        try:
+            self.assertEqual(detect_source_kind(path), "tar_gzip")
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_detect_plain_tar_even_with_misleading_suffix(self):
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:") as tar:
+            ti = tarfile.TarInfo(name="main.tex")
+            data = b"\\documentclass{article}"
+            ti.size = len(data)
+            tar.addfile(ti, io.BytesIO(data))
+
+        path = self._write_temp_file(buf.getvalue(), suffix=".txt")  # Misleading suffix
+        try:
+            self.assertEqual(detect_source_kind(path), "tar")
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_detect_gzip_single_tex_even_with_misleading_suffix(self):
+        buf = io.BytesIO()
+        with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+            gz.write(b"\\documentclass{article}\n\\begin{document}\nHello World\n\\end{document}")
+
+        path = self._write_temp_file(buf.getvalue(), suffix=".tar.gz")  # Misleading suffix
+        try:
+            self.assertEqual(detect_source_kind(path), "gzip_tex")
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_detect_direct_tex_even_with_misleading_suffix(self):
+        content = b"\\documentclass{article}\n\\title{Sample Paper}\n\\begin{document}\nText\n\\end{document}"
+        path = self._write_temp_file(content, suffix=".dat")  # Misleading suffix
+        try:
+            self.assertEqual(detect_source_kind(path), "tex")
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_detect_pdf_only_payload(self):
+        content = b"%PDF-1.5\n1 0 obj\n<<>>\nendobj"
+        path = self._write_temp_file(content, suffix=".tar")  # Misleading suffix
+        try:
+            self.assertEqual(detect_source_kind(path), "pdf_only")
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_detect_gzip_arbitrary_binary_returns_other(self):
+        buf = io.BytesIO()
+        with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+            gz.write(b"\x00\x01\x02\x03\x04\xff\xfe\xfd" * 10)
+
+        path = self._write_temp_file(buf.getvalue())
+        try:
+            self.assertEqual(detect_source_kind(path), "other")
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_detect_corrupted_gzip_returns_other(self):
+        # Starts with gzip magic bytes \x1f\x8b but corrupted payload
+        corrupt_data = b"\x1f\x8b\x08\x00truncatedgarbage"
+        path = self._write_temp_file(corrupt_data)
+        try:
+            self.assertEqual(detect_source_kind(path), "other")
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_gzip_tex_handler_preserves_non_ascii_and_produces_main_tex(self):
+        raw_tex = "\\documentclass{article}\n\\section{Hà Nội & ĐHQG: α, β, γ}\n\\begin{document}\nText\n\\end{document}\n".encode("utf-8")
+        buf = io.BytesIO()
+        with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+            gz.write(raw_tex)
+
+        path = self._write_temp_file(buf.getvalue(), suffix=".gz")
+        handler = GzipTexHandler()
+        try:
+            with tempfile.TemporaryDirectory() as dest_dir:
+                dest = Path(dest_dir)
+                files, metrics = handler.extract(path, dest, limits=self.limits)
+
+                self.assertEqual(len(files), 1)
+                self.assertEqual(files[0]["path"], "main.tex")
+                self.assertEqual(files[0]["size_bytes"], len(raw_tex))
+
+                extracted_path = dest / "main.tex"
+                self.assertTrue(extracted_path.exists())
+                self.assertEqual(extracted_path.read_bytes(), raw_tex)
+
+                self.assertEqual(metrics["extracted_bytes_before_filter"], len(raw_tex))
+                self.assertEqual(metrics["retained_source_bytes"], len(raw_tex))
+                self.assertEqual(metrics["removed_figure_bytes"], 0)
+                self.assertEqual(metrics["removed_other_bytes"], 0)
+                self.assertIsNone(metrics["download_bytes"])
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_tex_handler_preserves_non_ascii_and_produces_main_tex(self):
+        raw_tex = "\\documentclass{article}\n\\title{Tiếng Việt: Thử nghiệm}\n\\begin{document}\nContent\n\\end{document}\n".encode("utf-8")
+        path = self._write_temp_file(raw_tex, suffix=".tex")
+        handler = TexHandler()
+        try:
+            with tempfile.TemporaryDirectory() as dest_dir:
+                dest = Path(dest_dir)
+                files, metrics = handler.extract(path, dest, limits=self.limits)
+
+                self.assertEqual(len(files), 1)
+                self.assertEqual(files[0]["path"], "main.tex")
+                self.assertEqual(files[0]["size_bytes"], len(raw_tex))
+
+                extracted_path = dest / "main.tex"
+                self.assertTrue(extracted_path.exists())
+                self.assertEqual(extracted_path.read_bytes(), raw_tex)
+
+                self.assertEqual(metrics["extracted_bytes_before_filter"], len(raw_tex))
+                self.assertEqual(metrics["retained_source_bytes"], len(raw_tex))
+                self.assertEqual(metrics["removed_figure_bytes"], 0)
+                self.assertEqual(metrics["removed_other_bytes"], 0)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_gzip_tex_handler_rejects_expansion_over_limit(self):
+        raw_tex = b"\\documentclass{article}\n" + (b"% comment\n" * 100)
+        buf = io.BytesIO()
+        with gzip.GzipFile(fileobj=buf, mode="wb") as gz:
+            gz.write(raw_tex)
+
+        path = self._write_temp_file(buf.getvalue(), suffix=".gz")
+        handler = GzipTexHandler()
+        custom_limits = ExtractionLimits(max_file_bytes=50)
+        try:
+            with tempfile.TemporaryDirectory() as dest_dir:
+                dest = Path(dest_dir)
+                with self.assertRaises(SourceProcessingError) as ctx:
+                    handler.extract(path, dest, limits=custom_limits)
+                self.assertEqual(ctx.exception.code, "extract_limit")
+                # Destination must have no leftover files
+                self.assertFalse((dest / "main.tex").exists())
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_source_extractor_dispatches_correctly_and_handles_pdf_only(self):
+        # 1. PDF-only
+        pdf_path = self._write_temp_file(b"%PDF-1.4\n1 0 obj\n")
+        try:
+            with tempfile.TemporaryDirectory() as dest_dir:
+                kind, files, metrics = self.extractor.extract(pdf_path, Path(dest_dir), limits=self.limits)
+                self.assertEqual(kind, "pdf_only")
+                self.assertEqual(files, [])
+                self.assertEqual(metrics["retained_source_bytes"], 0)
+                self.assertIsNone(metrics["extracted_bytes_before_filter"])
+                self.assertIsNone(metrics["removed_figure_bytes"])
+                self.assertIsNone(metrics["removed_other_bytes"])
+        finally:
+            pdf_path.unlink(missing_ok=True)
+
+        # 2. Direct TeX
+        tex_path = self._write_temp_file(b"\\documentclass{article}\n\\begin{document}\nOk\n\\end{document}")
+        try:
+            with tempfile.TemporaryDirectory() as dest_dir:
+                kind, files, metrics = self.extractor.extract(tex_path, Path(dest_dir), limits=self.limits)
+                self.assertEqual(kind, "tex")
+                self.assertEqual(len(files), 1)
+                self.assertEqual(files[0]["path"], "main.tex")
+        finally:
+            tex_path.unlink(missing_ok=True)
+
+        # 3. Unknown binary raises invalid_source
+        bin_path = self._write_temp_file(b"\x00\x00\x00\x00NOT_VALID")
+        try:
+            with tempfile.TemporaryDirectory() as dest_dir:
+                with self.assertRaises(SourceProcessingError) as ctx:
+                    self.extractor.extract(bin_path, Path(dest_dir), limits=self.limits)
+                self.assertEqual(ctx.exception.code, "invalid_source")
+        finally:
+            bin_path.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

@@ -1,8 +1,10 @@
 from dataclasses import dataclass
+import gzip
 from pathlib import Path, PurePosixPath
 import shutil
 import tarfile
 from typing import Literal
+import zlib
 
 from arxiv_pipeline.contracts import ErrorInfo, SourceFile, SourceMetrics
 
@@ -119,7 +121,7 @@ class TarHandler:
                         )
 
                     try:
-                        rel_path = safe_relative_path(member.name)
+                        rel_path = to_relative_path(member.name)
                     except ValueError as e:
                         raise SourceProcessingError(
                             "unsafe_archive", f"Unsafe member path {member.name}: {e}"
@@ -219,7 +221,7 @@ def classify_file(path: PurePosixPath) -> Literal["retain", "figure", "other"]:
         return "figure"
     return "other"
 
-def safe_relative_path(name: str) -> PurePosixPath:
+def to_relative_path(name: str) -> PurePosixPath:
     """Validate and normalize a POSIX relative path for an archive member.
 
     Rejects absolute paths, parent directory traversals ('..'), backslashes,
@@ -261,3 +263,257 @@ def safe_relative_path(name: str) -> PurePosixPath:
         raise ValueError("Path must not be absolute")
 
     return path
+
+
+safe_relative_path = to_relative_path
+
+TEX_SIGNATURES = (
+    b"\\documentclass",
+    b"\\documentstyle",
+    b"\\begin{",
+    b"\\end{",
+    b"\\section",
+    b"\\chapter",
+    b"\\input",
+    b"\\def\\",
+    b"\\def ",
+    b"\\let\\",
+    b"\\newcommand",
+    b"\\title",
+    b"\\author",
+    b"\\usepackage",
+    b"\\bye",
+    b"$$",
+)
+
+
+def is_tex_content(data: bytes) -> bool:
+    """Check if byte snippet contains typical TeX/LaTeX command signatures without NUL bytes."""
+    if not data or b"\x00" in data:
+        return False
+    return any(sig in data for sig in TEX_SIGNATURES)
+
+
+def detect_source_kind(source_path: Path) -> str:
+    """Detect arXiv source package format by inspecting magic bytes and structure."""
+    if not source_path.is_file():
+        raise SourceProcessingError(
+            "invalid_source", f"Source file does not exist: {source_path}"
+        )
+
+    try:
+        with open(source_path, "rb") as f:
+            header = f.read(1024)
+    except OSError as e:
+        raise SourceProcessingError(
+            "invalid_source", f"Cannot read source file: {e}"
+        ) from e
+
+    if not header:
+        raise SourceProcessingError("invalid_source", "Source file is empty")
+
+    if header.startswith(b"%PDF-"):
+        return "pdf_only"
+
+    if header.startswith(b"\x1f\x8b"):
+        # gzip compressed: could be tar_gzip, gzip_tex, or invalid/other
+        try:
+            if tarfile.is_tarfile(source_path):
+                return "tar_gzip"
+        except (tarfile.TarError, EOFError, OSError):
+            pass
+
+        try:
+            with gzip.open(source_path, "rb") as gz:
+                sample = gz.read(4096)
+                if is_tex_content(sample):
+                    return "gzip_tex"
+                return "other"
+        except (gzip.BadGzipFile, zlib.error, EOFError, OSError):
+            return "other"
+
+    # Uncompressed TAR check
+    try:
+        if tarfile.is_tarfile(source_path):
+            return "tar"
+    except (tarfile.TarError, EOFError, OSError):
+        pass
+
+    # Direct uncompressed TeX check
+    if is_tex_content(header):
+        return "tex"
+
+    return "other"
+
+
+class GzipTexHandler:
+    """Extracts a single TeX source wrapped in a GZIP container as main.tex."""
+
+    def extract(
+        self,
+        source_path: Path,
+        destination: Path,
+        *,
+        limits: ExtractionLimits,
+    ) -> tuple[list[SourceFile], SourceMetrics]:
+        if not source_path.is_file():
+            raise SourceProcessingError(
+                "invalid_source", f"Source file does not exist: {source_path}"
+            )
+
+        destination.mkdir(parents=True, exist_ok=True)
+        dest_file = destination / "main.tex"
+
+        try:
+            with gzip.open(source_path, "rb") as gz, open(dest_file, "wb") as f_out:
+                written = 0
+                sample = b""
+                while chunk := gz.read(65536):
+                    if len(sample) < 4096:
+                        sample += chunk[: 4096 - len(sample)]
+                    written += len(chunk)
+                    if written > limits.max_file_bytes:
+                        raise SourceProcessingError(
+                            "extract_limit",
+                            f"Decompressed TeX size {written} exceeds limit {limits.max_file_bytes}",
+                        )
+                    if written > limits.max_extracted_bytes:
+                        raise SourceProcessingError(
+                            "extract_limit",
+                            f"Cumulative extracted bytes {written} exceeds limit {limits.max_extracted_bytes}",
+                        )
+                    f_out.write(chunk)
+
+            if not is_tex_content(sample):
+                raise SourceProcessingError(
+                    "invalid_source", "Decompressed gzip content is not valid TeX"
+                )
+
+        except SourceProcessingError:
+            dest_file.unlink(missing_ok=True)
+            if destination.exists():
+                for item in destination.iterdir():
+                    if item.is_file():
+                        item.unlink(missing_ok=True)
+                    elif item.is_dir():
+                        shutil.rmtree(item, ignore_errors=True)
+            raise
+        except (gzip.BadGzipFile, zlib.error, EOFError, OSError) as e:
+            dest_file.unlink(missing_ok=True)
+            if destination.exists():
+                for item in destination.iterdir():
+                    if item.is_file():
+                        item.unlink(missing_ok=True)
+                    elif item.is_dir():
+                        shutil.rmtree(item, ignore_errors=True)
+            raise SourceProcessingError("invalid_source", f"Corrupt gzip source: {e}") from e
+
+        retained_files: list[SourceFile] = [
+            {"path": "main.tex", "size_bytes": written}
+        ]
+        metrics: SourceMetrics = {
+            "download_bytes": None,
+            "extracted_bytes_before_filter": written,
+            "retained_source_bytes": written,
+            "removed_figure_bytes": 0,
+            "removed_other_bytes": 0,
+        }
+        return retained_files, metrics
+
+
+class TexHandler:
+    """Extracts a direct uncompressed TeX source file as main.tex."""
+
+    def extract(
+        self,
+        source_path: Path,
+        destination: Path,
+        *,
+        limits: ExtractionLimits,
+    ) -> tuple[list[SourceFile], SourceMetrics]:
+        if not source_path.is_file():
+            raise SourceProcessingError(
+                "invalid_source", f"Source file does not exist: {source_path}"
+            )
+
+        file_size = source_path.stat().st_size
+        if file_size > limits.max_file_bytes:
+            raise SourceProcessingError(
+                "extract_limit",
+                f"TeX file size {file_size} exceeds limit {limits.max_file_bytes}",
+            )
+        if file_size > limits.max_extracted_bytes:
+            raise SourceProcessingError(
+                "extract_limit",
+                f"TeX file size {file_size} exceeds limit {limits.max_extracted_bytes}",
+            )
+
+        with open(source_path, "rb") as f_in:
+            sample = f_in.read(4096)
+        if not is_tex_content(sample):
+            raise SourceProcessingError(
+                "invalid_source", "Source file content is not valid TeX"
+            )
+
+        destination.mkdir(parents=True, exist_ok=True)
+        dest_file = destination / "main.tex"
+
+        try:
+            with open(source_path, "rb") as f_in, open(dest_file, "wb") as f_out:
+                shutil.copyfileobj(f_in, f_out)
+        except Exception:
+            dest_file.unlink(missing_ok=True)
+            raise
+
+        retained_files: list[SourceFile] = [
+            {"path": "main.tex", "size_bytes": file_size}
+        ]
+        metrics: SourceMetrics = {
+            "download_bytes": None,
+            "extracted_bytes_before_filter": file_size,
+            "retained_source_bytes": file_size,
+            "removed_figure_bytes": 0,
+            "removed_other_bytes": 0,
+        }
+        return retained_files, metrics
+
+
+class SourceExtractor:
+    """Dispatches extraction based on detected arXiv source kind."""
+
+    def __init__(self) -> None:
+        tar_handler = TarHandler()
+        self._handlers = {
+            "tar_gzip": tar_handler,
+            "tar": tar_handler,
+            "gzip_tex": GzipTexHandler(),
+            "tex": TexHandler(),
+        }
+
+    def extract(
+        self,
+        source_path: Path,
+        destination: Path,
+        *,
+        limits: ExtractionLimits,
+    ) -> tuple[str, list[SourceFile], SourceMetrics]:
+        kind = detect_source_kind(source_path)
+
+        if kind == "pdf_only":
+            metrics: SourceMetrics = {
+                "download_bytes": None,
+                "extracted_bytes_before_filter": None,
+                "retained_source_bytes": 0,
+                "removed_figure_bytes": None,
+                "removed_other_bytes": None,
+            }
+            return "pdf_only", [], metrics
+
+        handler = self._handlers.get(kind)
+        if handler is None:
+            raise SourceProcessingError(
+                "invalid_source", f"Unsupported or unknown source kind: {kind}"
+            )
+
+        files, metrics = handler.extract(source_path, destination, limits=limits)
+        return kind, files, metrics
