@@ -102,16 +102,16 @@ class SourcesModule:
                 download_bytes = self.client.download(arxiv_id, version, scratch_file)
 
                 # 2. Extract and classify payload
-                kind, files, extract_metrics = self.extractor.extract(
+                extraction = self.extractor.extract(
                     scratch_file, scratch_extract, limits=self.limits
                 )
-                metrics = dict(extract_metrics)
+                metrics = dict(extraction.metrics)
                 metrics["download_bytes"] = download_bytes
 
-                if kind == "pdf_only" or len(files) == 0:
+                if extraction.status == "unsupported":
                     status = "unsupported"
                     data = {
-                        "source_kind": kind,
+                        "source_kind": extraction.source_kind,
                         "source_dir": source_dir,
                         "files": [],
                     }
@@ -121,9 +121,9 @@ class SourcesModule:
                     shutil.move(str(scratch_extract), str(staging_path))
                     status = "success"
                     data = {
-                        "source_kind": kind,
+                        "source_kind": extraction.source_kind,
                         "source_dir": source_dir,
-                        "files": files,
+                        "files": extraction.files,
                     }
 
             except RemoteError as exc:

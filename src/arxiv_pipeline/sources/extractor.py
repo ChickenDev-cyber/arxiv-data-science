@@ -3,7 +3,7 @@ import gzip
 from pathlib import Path, PurePosixPath
 import shutil
 import tarfile
-from typing import Literal
+from typing import Literal, NamedTuple
 import zlib
 
 from arxiv_pipeline.contracts import ErrorInfo, SourceFile, SourceMetrics
@@ -49,6 +49,20 @@ class ExtractionLimits:
     max_extracted_bytes: int = 1024 * 1024 * 1024  # Max 1Gb extracted bytes
 
 
+class ExtractionResult(NamedTuple):
+    """Result of payload extraction and classification by SourceExtractor."""
+    status: Literal["success", "unsupported"]
+    source_kind: str
+    files: list[SourceFile]
+    metrics: SourceMetrics
+    reason: str | None = None
+
+    @property
+    def kind(self) -> str:
+        """Backwards compatibility alias for source_kind."""
+        return self.source_kind
+
+
 class TarHandler:
     """Extracts only .tex and .bib members from TAR archives with exact byte accounting."""
 
@@ -71,7 +85,6 @@ class TarHandler:
                 "invalid_source", f"Cannot open TAR archive: {e}"
             ) from e
 
-        created_paths: list[Path] = []
         try:
             with tar:
                 try:
@@ -165,7 +178,6 @@ class TarHandler:
                                 "invalid_source",
                                 f"Size mismatch for {member.name}: read {written}, expected {member.size}",
                             )
-                        created_paths.append(dest_file)
                         retained_bytes += written
                         file_entry: SourceFile = {
                             "path": str(rel_path),
@@ -179,14 +191,20 @@ class TarHandler:
                     else:
                         removed_other_bytes += member.size
 
-                # If no .tex file is present in the archive, no files may be retained
-                # Any extracted .bib files are deleted and accounted under removed_other_bytes
+                # If no .tex file is present in the archive, no files may be retained.
+                # Any extracted .bib files are deleted, accounted under removed_other_bytes,
+                # and empty destination directories are purged. SourceExtractor will
+                # explicitly classify this result as status='unsupported'.
                 if not has_tex:
                     for dest_file, entry in bib_entries:
                         dest_file.unlink(missing_ok=True)
                         retained_bytes -= entry["size_bytes"]
                         removed_other_bytes += entry["size_bytes"]
                     retained_files.clear()
+                    if destination.exists():
+                        for item in list(destination.iterdir()):
+                            if item.is_dir():
+                                shutil.rmtree(item, ignore_errors=True)
 
             metrics: SourceMetrics = {
                 "download_bytes": None,
@@ -267,31 +285,35 @@ def to_relative_path(name: str) -> PurePosixPath:
 
 safe_relative_path = to_relative_path
 
-TEX_SIGNATURES = (
-    b"\\documentclass",
-    b"\\documentstyle",
-    b"\\begin{",
-    b"\\end{",
-    b"\\section",
-    b"\\chapter",
-    b"\\input",
-    b"\\def\\",
-    b"\\def ",
-    b"\\let\\",
-    b"\\newcommand",
-    b"\\title",
-    b"\\author",
-    b"\\usepackage",
-    b"\\bye",
-    b"$$",
-)
+def is_text_data(data: bytes) -> bool:
+    """Check if byte snippet represents plain text source rather than binary data.
+
+    T3 distinguishes package container formats and preserves source files.
+    Full TeX syntax parsing/validation belongs to Milestone 2.
+    A payload or sample is recognized as text source if it is non-empty, contains
+    no NUL bytes, and decodes cleanly as UTF-8 or standard 8-bit text.
+    """
+    if not data or b"\x00" in data:
+        return False
+
+    try:
+        data.decode("utf-8")
+        return True
+    except UnicodeDecodeError:
+        pass
+
+    try:
+        text = data.decode("latin-1")
+        # Ensure control characters (excluding \t, \n, \r, \f) are negligible (<2%)
+        control_chars = sum(1 for ch in text if ord(ch) < 32 and ch not in "\t\n\r\f")
+        return (control_chars / len(text)) < 0.02
+    except Exception:
+        return False
 
 
 def is_tex_content(data: bytes) -> bool:
-    """Check if byte snippet contains typical TeX/LaTeX command signatures without NUL bytes."""
-    if not data or b"\x00" in data:
-        return False
-    return any(sig in data for sig in TEX_SIGNATURES)
+    """Backwards-compatibility alias for is_text_data."""
+    return is_text_data(data)
 
 
 def detect_source_kind(source_path: Path) -> str:
@@ -326,7 +348,7 @@ def detect_source_kind(source_path: Path) -> str:
         try:
             with gzip.open(source_path, "rb") as gz:
                 sample = gz.read(4096)
-                if is_tex_content(sample):
+                if is_text_data(sample):
                     return "gzip_tex"
                 return "other"
         except (gzip.BadGzipFile, zlib.error, EOFError, OSError):
@@ -339,8 +361,8 @@ def detect_source_kind(source_path: Path) -> str:
     except (tarfile.TarError, EOFError, OSError):
         pass
 
-    # Direct uncompressed TeX check
-    if is_tex_content(header):
+    # Direct uncompressed text source check
+    if is_text_data(header):
         return "tex"
 
     return "other"
@@ -384,9 +406,9 @@ class GzipTexHandler:
                         )
                     f_out.write(chunk)
 
-            if not is_tex_content(sample):
+            if not is_text_data(sample):
                 raise SourceProcessingError(
-                    "invalid_source", "Decompressed gzip content is not valid TeX"
+                    "invalid_source", "Decompressed gzip content is not text source"
                 )
 
         except SourceProcessingError:
@@ -450,9 +472,9 @@ class TexHandler:
 
         with open(source_path, "rb") as f_in:
             sample = f_in.read(4096)
-        if not is_tex_content(sample):
+        if not is_text_data(sample):
             raise SourceProcessingError(
-                "invalid_source", "Source file content is not valid TeX"
+                "invalid_source", "Source file content is not text source"
             )
 
         destination.mkdir(parents=True, exist_ok=True)
@@ -496,7 +518,7 @@ class SourceExtractor:
         destination: Path,
         *,
         limits: ExtractionLimits,
-    ) -> tuple[str, list[SourceFile], SourceMetrics]:
+    ) -> ExtractionResult:
         kind = detect_source_kind(source_path)
 
         if kind == "pdf_only":
@@ -507,7 +529,13 @@ class SourceExtractor:
                 "removed_figure_bytes": None,
                 "removed_other_bytes": None,
             }
-            return "pdf_only", [], metrics
+            return ExtractionResult(
+                status="unsupported",
+                source_kind="pdf_only",
+                files=[],
+                metrics=metrics,
+                reason="PDF-only payload without TeX source",
+            )
 
         handler = self._handlers.get(kind)
         if handler is None:
@@ -516,4 +544,19 @@ class SourceExtractor:
             )
 
         files, metrics = handler.extract(source_path, destination, limits=limits)
-        return kind, files, metrics
+        if not files:
+            return ExtractionResult(
+                status="unsupported",
+                source_kind=kind,
+                files=[],
+                metrics=metrics,
+                reason="Archive contains no .tex source files",
+            )
+
+        return ExtractionResult(
+            status="success",
+            source_kind=kind,
+            files=files,
+            metrics=metrics,
+            reason=None,
+        )
