@@ -2,7 +2,7 @@
 
 import time
 from datetime import datetime, timezone
-from typing import Protocol
+from typing import Protocol, cast
 
 from ..config import OWNERS
 from ..contracts import SCHEMA_VERSION, Context, PaperTask, Result
@@ -68,7 +68,7 @@ class MetadataModule:
             error = exc.info
 
         if data is None:
-            status, missing = ("not_found" if error["code"] == "not_found" else "failed"), []
+            status, missing = ("not_found" if error is not None and error["code"] == "not_found" else "failed"), []
         else:
             missing = missing_fields(data)
             status = "success" if not missing and data["versions_complete"] else "partial"
@@ -77,7 +77,7 @@ class MetadataModule:
             date_issues = version_date_order_issues(data["versions"])
             if date_issues:
                 provenance["version_date_order"] = "; ".join(date_issues)
-        return {
+        return cast(Result, {
             "schema_version": SCHEMA_VERSION,
             "run_id": context["run_id"], "owner": task["owner"], "is_mock": context["is_mock"],
             "step": "metadata", "arxiv_id": task["arxiv_id"], "version": None,
@@ -87,4 +87,4 @@ class MetadataModule:
             "metrics": {}, "started_at": started_at, "finished_at": _utc_now(),
             "duration_seconds": max(0.0, time.monotonic() - start),
             "attempts": self.client.attempts - initial_attempts,
-        }
+        })
