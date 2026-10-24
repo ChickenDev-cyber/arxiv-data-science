@@ -7,7 +7,7 @@ from arxiv_pipeline.contracts import SourceFile, SourceMetrics
 from arxiv_pipeline.sources.handlers.base import (
     ExtractionLimits,
     SourceProcessingError,
-    is_text_data,
+    is_tex_content,
 )
 
 
@@ -40,7 +40,7 @@ class TexHandler:
 
         with open(source_path, "rb") as f_in:
             sample = f_in.read(4096)
-        if not is_text_data(sample):
+        if not is_tex_content(sample):
             raise SourceProcessingError(
                 "invalid_source", "Source file content is not text source"
             )

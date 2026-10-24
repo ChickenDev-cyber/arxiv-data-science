@@ -1,3 +1,6 @@
+from datetime import datetime, timezone
+from email.utils import format_datetime
+import io
 from pathlib import Path
 import tempfile
 import unittest
@@ -6,6 +9,7 @@ from urllib.error import HTTPError, URLError
 
 from arxiv_pipeline.discovery.api import RemoteError
 from arxiv_pipeline.sources.api import ArxivSourceClient
+from .helpers import truncated_chunked_response
 
 
 class FakeStreamResponse:
@@ -197,6 +201,64 @@ class ArxivSourceClientTests(unittest.TestCase):
             self.assertEqual(ctx.exception.info["code"], "remote_error")
             self.assertEqual(ctx.exception.info["http_status"], 503)
             self.assertEqual(client.attempts, 3)
+
+    def test_truncated_stream_retries_from_empty_file(self):
+        broken = truncated_chunked_response()
+        good = FakeStreamResponse([b"\\documentclass{article}\n"])
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dest = Path(tmp_dir) / "source.download"
+            calls = []
+
+            def opener(req, timeout):
+                calls.append(req.full_url)
+                if len(calls) == 1:
+                    return broken
+                self.assertFalse(dest.exists(), "Remove the partial file before retry")
+                return good
+
+            client = ArxivSourceClient(
+                opener=Mock(open=opener), max_attempts=2,
+                monotonic=self._clock, sleep=self._sleep,
+            )
+            try:
+                size = client.download("2506.20788", 1, dest)
+            except Exception as exc:
+                self.fail(f"Truncated stream must retry, got {type(exc).__name__}: {exc}")
+            self.assertEqual(dest.read_bytes(), b"\\documentclass{article}\n")
+            self.assertEqual(size, 24)
+            self.assertEqual(client.attempts, 2)
+            self.assertTrue(broken.isclosed())
+            self.assertTrue(good.closed)
+
+    def test_final_retry_after_applies_to_next_download(self):
+        for status in (429, 503):
+            for header_kind in ("seconds", "http-date"):
+                with self.subTest(status=status, header_kind=header_kind):
+                    self.fake_time = 1000.0
+                    request_times = []
+
+                    def opener(req, timeout):
+                        request_times.append(self.fake_time)
+                        if len(request_times) <= 3:
+                            header = "120"
+                            if header_kind == "http-date":
+                                header = format_datetime(datetime.fromtimestamp(
+                                    1700000000 + self.fake_time + 120, timezone.utc,
+                                ), usegmt=True)
+                            raise HTTPError(req.full_url, status, "Unavailable",
+                                            {"Retry-After": header}, io.BytesIO())
+                        return FakeStreamResponse([b"good"])
+
+                    client = ArxivSourceClient(
+                        opener=Mock(open=opener), max_attempts=3, delay=3,
+                        monotonic=self._clock, sleep=self._sleep,
+                        wall_clock=lambda: 1700000000 + self.fake_time,
+                    )
+                    with tempfile.TemporaryDirectory() as tmp_dir:
+                        with self.assertRaises(RemoteError):
+                            client.download("2506.20788", 1, Path(tmp_dir) / "first")
+                        client.download("2506.20788", 2, Path(tmp_dir) / "second")
+                    self.assertEqual(request_times, [1000.0, 1120.0, 1240.0, 1360.0])
 
     def test_provenance(self):
         client = ArxivSourceClient()

@@ -9,7 +9,7 @@ from arxiv_pipeline.contracts import SourceFile, SourceMetrics
 from arxiv_pipeline.sources.handlers.base import (
     ExtractionLimits,
     SourceProcessingError,
-    is_text_data,
+    is_tex_content,
 )
 
 
@@ -51,7 +51,7 @@ class GzipTexHandler:
                         )
                     f_out.write(chunk)
 
-            if not is_text_data(sample):
+            if not is_tex_content(sample):
                 raise SourceProcessingError(
                     "invalid_source", "Decompressed gzip content is not text source"
                 )

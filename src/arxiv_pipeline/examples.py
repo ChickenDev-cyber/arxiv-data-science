@@ -71,12 +71,23 @@ def generate(root):
         }
         if owner == "hoang":
             references = {}
+        raw_references = []
+        if references:
+            raw_references.append({"citedPaper": {
+                "paperId": "SYNTHETIC-S2-ID", "title": "SYNTHETIC reference",
+                "authors": [{"name": "Example Author"}], "externalIds": {"ArXiv": "2001.00001"},
+            }})
+        raw_references.append({"citedPaper": {
+            "paperId": "SYNTHETIC-NON-ARXIV-ID", "title": "SYNTHETIC non-arXiv reference",
+            "authors": [{"name": "Example Author"}], "externalIds": {"DOI": "10.0000/synthetic"},
+        }})
         write_json(root / base / "references.json", references)
+        write_json(root / base / "raw_references.json", raw_references)
         ref_event = result(owner, "references", arxiv_id, {
-            "references": references, "complete": True,
+            "references": references, "raw_references": raw_references, "complete": True,
         }, "empty" if not references else "success")
         ref_event["metrics"] = {
-            "s2_reference_count": len(references), "arxiv_reference_count": len(references),
+            "s2_reference_count": len(raw_references), "arxiv_reference_count": len(references),
             "complete_reference_count": len(references),
         }
         events.append(ref_event)

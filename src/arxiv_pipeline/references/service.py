@@ -1,10 +1,11 @@
-"""T4: references of one paper that carry an arXiv ID, with the metadata the team needs.
+"""T4: preserve crawled references and enrich the subset with valid arXiv IDs.
 
-Contract: schema 1.1, section 9 of the team spec ("T4 — References của một bài").
+Contract: schema 1.2, section 9 of the team spec ("T4 — References của một bài").
 The module only returns a Result; the runner owns every official file.
 """
 
 import time
+from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Protocol
 
@@ -113,7 +114,8 @@ class ReferencesModule:
                 page_error, first_page_failed = exc.info, pages == 0
                 break
             pages += 1
-            received.extend(items)  # a whole page is accepted or rejected, never half of it
+            # Snapshot accepted pages before a reader can reuse its nested objects.
+            received.extend(deepcopy(items))
             if following is None:
                 complete = True
                 break
@@ -154,7 +156,7 @@ class ReferencesModule:
         provenance = self._provenance(pages, failed_batches)
         provenance.update(notes)
         return self._finish(task, context, started_at, clock, initial_attempts, status=status,
-                            data={"references": references, "complete": complete},
+                            data={"references": references, "raw_references": received, "complete": complete},
                             error=error, provenance=provenance, metrics=metrics, missing=missing)
 
     @staticmethod

@@ -53,6 +53,7 @@ class TarHandler:
                 destination.mkdir(parents=True, exist_ok=True)
                 retained_files: list[SourceFile] = []
                 seen_paths: set[PurePosixPath] = set()
+                directory_paths: set[PurePosixPath] = set()
                 bib_entries: list[tuple[Path, SourceFile]] = []
                 has_tex = False
 
@@ -64,12 +65,21 @@ class TarHandler:
                 for member in members:
                     # Directory members are container entries (e.g. '.', './', 'chapters/')
                     if member.isdir():
-                        norm_name = member.name.replace("\\", "/")
-                        if norm_name.startswith("/") or ".." in norm_name.split("/"):
+                        if member.name in (".", "./"):
+                            continue
+                        try:
+                            directory = to_relative_path(member.name.rstrip("/"))
+                        except ValueError as e:
+                            raise SourceProcessingError(
+                                "unsafe_archive", f"Unsafe directory path {member.name}: {e}",
+                            ) from e
+                        if directory in seen_paths or any(parent in seen_paths for parent in directory.parents):
                             raise SourceProcessingError(
                                 "unsafe_archive",
-                                f"Unsafe directory traversal: {member.name}",
+                                f"File/directory path conflict: {member.name}",
                             )
+                        directory_paths.add(directory)
+                        directory_paths.update(directory.parents)
                         continue
 
                     if not member.isreg():
@@ -96,7 +106,12 @@ class TarHandler:
                             "unsafe_archive",
                             f"Duplicate member path detected: {rel_path}",
                         )
+                    if rel_path in directory_paths or any(parent in seen_paths for parent in rel_path.parents):
+                        raise SourceProcessingError(
+                            "unsafe_archive", f"File/directory path conflict: {rel_path}",
+                        )
                     seen_paths.add(rel_path)
+                    directory_paths.update(rel_path.parents)
 
                     before_bytes += member.size
                     if before_bytes > limits.max_extracted_bytes:

@@ -1,6 +1,7 @@
 """Offline behavioral tests for T4 (references). No request is sent to any server."""
 
 import json
+from copy import deepcopy
 import tempfile
 import unittest
 from pathlib import Path
@@ -38,7 +39,7 @@ def resolve(document, pointer):
 
 def check_contract(test, result):
     """Section 5 + 9 invariants that a JSON Schema alone cannot express."""
-    test.assertEqual(result["schema_version"], "1.1")
+    test.assertEqual(result["schema_version"], "1.2")
     test.assertEqual((result["step"], result["version"], result["arxiv_id"]), ("references", None, TASK["arxiv_id"]))
     test.assertEqual(result["owner"], TASK["owner"])
     status, data = result["status"], result["data"]
@@ -48,6 +49,9 @@ def check_contract(test, result):
         test.assertIsNotNone(result["error"])
         return
     refs = data["references"]
+    test.assertEqual(set(data), {"references", "raw_references", "complete"})
+    test.assertIsInstance(data["raw_references"], list)
+    test.assertTrue(all(isinstance(item, dict) for item in data["raw_references"]))
     test.assertIsInstance(data["complete"], bool)
     metrics = result["metrics"]
     test.assertEqual(set(metrics), {"s2_reference_count", "arxiv_reference_count", "complete_reference_count"})
@@ -55,6 +59,7 @@ def check_contract(test, result):
     test.assertLessEqual(metrics["complete_reference_count"], metrics["arxiv_reference_count"])
     test.assertLessEqual(metrics["arxiv_reference_count"], metrics["s2_reference_count"])
     test.assertEqual(metrics["arxiv_reference_count"], len(refs))
+    test.assertEqual(metrics["s2_reference_count"], len(data["raw_references"]))
     for key, ref in refs.items():
         test.assertEqual(key, ref["arxiv_id"])
         test.assertEqual(set(ref), {"arxiv_id", "title", "authors", "submission_date", "semantic_scholar_id"})
@@ -286,6 +291,99 @@ class MergeAndPagingTests(unittest.TestCase):
         reader.attempts = dates.attempts = 10  # earlier calls by the same shared clients
         result = ReferencesModule(reader, dates).fetch_references(TASK, ctx())
         self.assertEqual(result["attempts"], 2)
+
+
+class RawReferencesTests(unittest.TestCase):
+    def test_preserves_original_fields_duplicates_invalid_ids_and_nulls(self):
+        first = cited("arXiv:2001.00001v2", title="  Original title  ", authors=("  A  ",), paper_id="s2-first")
+        first["citedPaper"].update({"publicationDate": "2019-12-01", "year": 2019, "venue": "Journal X"})
+        first["citedPaper"]["externalIds"]["DOI"] = "10.0000/original"
+        first["contexts"] = ["Original citation context"]
+        items = [first, cited("2001.00001", title="Other title"), cited(None),
+                 cited("2513.00001"), {"citedPaper": None}]
+        original = deepcopy(items)
+        result, _, dates = run([page(items)], FakeDates({"2001.00001": D1}))
+        self.assertEqual(result["data"].get("raw_references"), original)
+        self.assertEqual(items, original)
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(list(result["data"]["references"]), ["2001.00001"])
+        ref = result["data"]["references"]["2001.00001"]
+        self.assertEqual((ref["title"], ref["authors"], ref["submission_date"]), ("Original title", ["A"], D1))
+        self.assertEqual(dates.calls, [["2001.00001"]])
+        self.assertEqual(result["metrics"], {"s2_reference_count": 5, "arxiv_reference_count": 1,
+                                             "complete_reference_count": 1})
+
+    def test_non_arxiv_items_are_retained_with_empty_arxiv_subset(self):
+        items = [cited(None), {"citedPaper": {"paperId": "s2-no-external-id", "externalIds": None}},
+                 {"citedPaper": None}]
+        result, _, dates = run([page(items)])
+        self.assertEqual(result["data"].get("raw_references"), items)
+        self.assertEqual((result["status"], result["data"]["references"], result["data"]["complete"]),
+                         ("empty", {}, True))
+        self.assertEqual(result["missing_fields"], [])
+        self.assertEqual(dates.calls, [])
+        self.assertEqual(result["metrics"], {"s2_reference_count": 3, "arxiv_reference_count": 0,
+                                             "complete_reference_count": 0})
+
+    def test_later_page_failure_retains_only_accepted_raw_items(self):
+        items = [cited(None), cited("2001.00001")]
+        errors = [RemoteError("network_error", "Synthetic interrupted page", True),
+                  page([cited("2001.00002"), "malformed item"])]
+        for error in errors:
+            with self.subTest(error=type(error).__name__):
+                result, _, _ = run([page(items, next_offset=2), error],
+                                    FakeDates({"2001.00001": D1}), page_size=2)
+                self.assertEqual(result["data"].get("raw_references"), items)
+                self.assertEqual((result["status"], result["data"]["complete"]), ("partial", False))
+                self.assertEqual(result["metrics"]["s2_reference_count"], 2)
+                self.assertEqual(list(result["data"]["references"]), ["2001.00001"])
+
+    def test_page_limit_preserves_raw_order_and_duplicates(self):
+        first, second = cited(None), cited("2001.00001")
+        result, _, _ = run([page([first], next_offset=1), page([second, first], next_offset=3)],
+                            FakeDates({"2001.00001": D1}), max_pages=2)
+        self.assertEqual(result["data"].get("raw_references"), [first, second, first])
+        self.assertEqual((result["status"], result["data"]["complete"]), ("partial", False))
+        self.assertEqual(result["metrics"]["s2_reference_count"], 3)
+
+    def test_snapshots_reused_reader_objects_before_next_page(self):
+        class ReusingReader:
+            attempts = 0
+
+            def __init__(self):
+                self.payload = page([cited("2001.00001", title="First")], next_offset=1)
+
+            def references_page(self, arxiv_id, offset, limit):
+                self.attempts += 1
+                if offset:
+                    self.payload["data"][0]["citedPaper"]["externalIds"]["ArXiv"] = "2001.00002"
+                    self.payload["data"][0]["citedPaper"]["title"] = "Second"
+                    self.payload.pop("next")
+                return self.payload
+
+        reader = ReusingReader()
+        result = ReferencesModule(reader, FakeDates({"2001.00001": D1, "2001.00002": D2})).fetch_references(TASK, ctx())
+        self.assertEqual(result["data"].get("raw_references"),
+                         [cited("2001.00001", title="First"),
+                          {"citedPaper": {**cited("2001.00001")["citedPaper"],
+                                          "title": "Second", "externalIds": {"ArXiv": "2001.00002"}}}])
+        self.assertEqual(list(result["data"]["references"]), ["2001.00001", "2001.00002"])
+        self.assertEqual(result["metrics"]["s2_reference_count"], 2)
+
+    def test_raw_result_is_independent_of_reader_after_return(self):
+        item = cited(None)
+        result, _, _ = run([page([item])])
+        raw = result["data"].get("raw_references")
+        self.assertIsInstance(raw, list)
+        item["citedPaper"]["authors"][0]["name"] = "Changed in reader"
+        self.assertEqual(raw[0]["citedPaper"]["authors"][0]["name"], "Example Author")
+        raw[0]["citedPaper"]["externalIds"]["DOI"] = "Changed in result"
+        self.assertEqual(item["citedPaper"]["externalIds"]["DOI"], "10.0000/synthetic")
+
+    def test_real_empty_page_has_empty_raw_list(self):
+        result, _, _ = run([page([])])
+        self.assertEqual(result["data"].get("raw_references"), [])
+        self.assertEqual((result["status"], result["metrics"]["s2_reference_count"]), ("empty", 0))
 
 
 class InputValidationTests(unittest.TestCase):
@@ -534,6 +632,7 @@ class CliTests(unittest.TestCase):
             written = json.loads(Path(tmp, "preview/t4-test/man-nhi-2501-12642.references.json").read_text())
             self.assertEqual(written["status"], "success")
             self.assertFalse(written["is_mock"])
+            self.assertEqual(written["data"].get("raw_references"), [cited("2001.00001")])
 
     def test_cli_rejects_bad_id_with_exit_1(self):
         with tempfile.TemporaryDirectory() as tmp:

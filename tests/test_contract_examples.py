@@ -25,7 +25,7 @@ class ContractExamplesTests(unittest.TestCase):
         self.events = generate(self.root)
 
     def test_version_and_offline_request_count(self):
-        self.assertEqual(SCHEMA_VERSION, "1.1")
+        self.assertEqual(SCHEMA_VERSION, "1.2")
         for event in self.events:
             self.assertEqual(event["schema_version"], SCHEMA_VERSION)
             self.assertTrue(event["is_mock"])
@@ -39,6 +39,29 @@ class ContractExamplesTests(unittest.TestCase):
                          {"/data/submission_date", "/data/versions/0/submitted_at"})
         for pointer in partial["missing_fields"]:
             self.assertIsNone(resolve_pointer(partial, pointer))
+
+    def test_reference_handoff_preserves_raw_items(self):
+        accepted = [json.loads(line) for line in
+                    (self.root / "runs/mock-demo/accepted_results.jsonl").read_text().splitlines()]
+        references = [event for event in accepted if event["step"] == "references"]
+        self.assertEqual(len(references), 5)
+        for event in references:
+            with self.subTest(owner=event["owner"]):
+                data = event["data"]
+                self.assertIsInstance(data.get("raw_references"), list)
+                expected_count = 1 if event["owner"] == "hoang" else 2
+                self.assertEqual(len(data["raw_references"]), expected_count)
+                self.assertEqual(event["metrics"]["s2_reference_count"], expected_count)
+                self.assertEqual(len(data["references"]), 0 if event["owner"] == "hoang" else 1)
+                self.assertEqual(data["raw_references"][-1]["citedPaper"]["externalIds"],
+                                 {"DOI": "10.0000/synthetic"})
+                sample = json.loads((self.root / "examples" / event["owner"] /
+                                     "references.result.json").read_text())
+                self.assertEqual(sample, event)
+                metadata = next(e for e in accepted if e["step"] == "metadata" and e["owner"] == event["owner"])
+                corpus = (self.root / "raw" / event["owner"] /
+                          metadata["arxiv_id"].replace(".", "-"))
+                self.assertEqual(json.loads((corpus / "raw_references.json").read_text()), data["raw_references"])
 
     def test_sources_have_staging_and_consistent_byte_metrics(self):
         required = {"download_bytes", "extracted_bytes_before_filter", "retained_source_bytes",
