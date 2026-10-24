@@ -1,6 +1,6 @@
 # arXiv Data Science — Milestone 1
 
-Repo mã nguồn cho đồ án Nhập môn Khoa học Dữ liệu: thu thập bài báo arXiv, phân tích nội dung và đối sánh tài liệu tham khảo. Hiện đã triển khai **T1: lập danh sách bài trong dải ID qua API arXiv**,  **T2: metadata và lịch sử phiên bản qua OAI-PMH arXivRaw** và **T4: lấy references có arXiv ID của một bài**. Các task nguồn, và runner toàn pipeline chưa triển khai.
+Repo mã nguồn cho đồ án Nhập môn Khoa học Dữ liệu: thu thập bài báo arXiv, phân tích nội dung và đối sánh tài liệu tham khảo. Hiện đã triển khai **T1: lập danh sách bài trong dải ID qua API arXiv**, **T2: metadata và lịch sử phiên bản qua OAI-PMH arXivRaw**, **T3: tải và trích xuất source TeX/BibTeX**, và **T4: lấy references có arXiv ID của một bài**. Runner toàn pipeline (T5) chưa triển khai.
 
 ## Cấu trúc code
 
@@ -12,6 +12,11 @@ src/
 │   ├── config.py          # Dải ID được giao cho năm thành viên
 │   ├── identifiers.py     # Kiểm tra và chuẩn hóa arXiv ID dùng chung cho T2, T4
 │   ├── examples.py        # Tạo dữ liệu mẫu offline theo schema
+│   ├── sources/           # T3 của Khang
+│   │   ├── __init__.py    # Xuất SourcesModule
+│   │   ├── service.py     # fetch_sources: kiểm tra, staging lifecycle, Result
+│   │   ├── extractor.py   # Format sniffing, to_relative_path, Strategy handlers, limits
+│   │   └── api.py         # SourceClient Protocol, ArxivSourceClient streaming
 │   ├── references/        # T4 của Mẫn Nhi
 │   │   ├── __init__.py    # Xuất ReferencesModule
 │   │   ├── __main__.py    # Điểm chạy python -m arxiv_pipeline.references
@@ -274,6 +279,35 @@ result = module.fetch_metadata({"owner": "huynh-nhi", "arxiv_id": "2503.06914"},
 ```
 
 Hàm không tự ghi file. Client dùng chung cần `record(arxiv_id) -> bytes`, `provenance(arxiv_id) -> dict[str, str]` và bộ đếm `attempts`. Mỗi bài một request nên 1.000 bài mất khoảng 50 phút; chưa có checkpoint/resume.
+
+## T3 — Tải và trích xuất nguồn TeX/BibTeX (SourcesModule)
+
+T3 chịu trách nhiệm tải gói source của một phiên bản arXiv, giải nén và chỉ giữ lại các file `.tex` và `.bib` nguyên bản, loại bỏ hoàn toàn các file hình ảnh/binary và các file phụ trợ (`.sty`, `.cls`, `.bbl`), phục vụ bàn giao sang T5.
+
+### Dùng từ Python
+
+```python
+from pathlib import Path
+from arxiv_pipeline.sources import SourcesModule
+from arxiv_pipeline.sources.api import ArxivSourceClient
+from arxiv_pipeline.sources.extractor import SourceExtractor
+
+client = ArxivSourceClient()
+extractor = SourceExtractor()
+module = SourcesModule(client, extractor)
+
+context = {"run_id": "t3-demo", "is_mock": False, "output_root": Path("/tmp/arxiv-t3")}
+task = {"owner": "khang", "arxiv_id": "2501.12642"}
+result = module.fetch_sources(task, version=1, context=context)
+```
+
+### Quy tắc dữ liệu và bàn giao T5
+
+- **Phạm vi file giữ lại:** Chỉ giữ lại `.tex` và `.bib`. Nếu archive không chứa bất kỳ file `.tex` nào (ví dụ chỉ có file `.bib` hoặc chỉ có hình ảnh), trạng thái trả về là `unsupported` và không có file nào được chấp nhận (`data.files=[]`, `retained_source_bytes=0`).
+- **Vị trí lưu trữ (Staging):** Khi trích xuất thành công, file nguồn được lưu cô lập tại `output_root/staging/<run_id>/<owner>/<paper_folder>/v<version>`. Đường dẫn `data.source_dir` luôn mang định dạng tương lai `raw/<owner>/<paper_folder>/v<version>`, T3 không ghi trực tiếp vào `raw/`. T5 sẽ sở hữu việc kiểm tra và chuyển tiếp vào `raw/`.
+- **Đo lường byte metrics:** Thống kê 5 chỉ số byte: `download_bytes`, `extracted_bytes_before_filter`, `retained_source_bytes`, `removed_figure_bytes`, `removed_other_bytes` với bất biến bảo toàn byte `before == retained + removed_figure + removed_other`.
+- **An toàn archive:** Chặn toàn bộ path traversal (`..`), đường dẫn tuyệt đối, symlink, hardlink, file đặc biệt và các member trùng lặp. Khi xảy ra lỗi giữa chừng, toàn bộ dữ liệu tạm thời được dọn dẹp sạch sẽ (rollback).
+- **Kiểm soát request:** Endpoint `https://export.arxiv.org/src/<id>v<version>`, tải dạng luồng (streaming), tuân thủ `Retry-After`, pacing tối thiểu 3 giây giữa các request và kiểm soát dung lượng tải tối đa.
 
 ## Kiểm thử offline
 
