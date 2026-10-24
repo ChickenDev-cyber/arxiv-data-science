@@ -1,16 +1,20 @@
 """Tests for T3 SourcesModule service and Result schema-1.1 contracts."""
 
 import io
+import gzip
 from pathlib import Path
 import tarfile
 import tempfile
 import unittest
+import zipfile
 from unittest.mock import Mock
 
 from arxiv_pipeline.contracts import Context, PaperTask, SCHEMA_VERSION, paper_folder
 from arxiv_pipeline.discovery.api import RemoteError
 from arxiv_pipeline.sources import SourcesModule
+from arxiv_pipeline.sources.api import ArxivSourceClient
 from arxiv_pipeline.sources.extractor import ExtractionLimits, SourceExtractor
+from .helpers import make_docx, make_zip, truncated_chunked_response
 
 
 class FakeClient:
@@ -166,6 +170,157 @@ class SourcesModuleTests(unittest.TestCase):
             self.assertEqual(result["metrics"]["retained_source_bytes"], 0)
             self.assertIsNone(result["error"])
 
+    def test_html_response_is_not_staged_as_tex(self):
+        documents = [
+            b"<!DOCTYPE html><html><body>Service unavailable</body></html>",
+            b"\xef\xbb\xbf \n\t<HTML><HEAD><TITLE>Error</TITLE></HEAD></HTML>",
+            b'<?xml version="1.0"?>\n<html xmlns="http://www.w3.org/1999/xhtml"/>',
+            b"<!-- proxy error -->\n<html><body>Error</body></html>",
+        ]
+        for html in documents:
+            for compressed in (False, True):
+                with self.subTest(html=html, compressed=compressed):
+                    payload = gzip.compress(html) if compressed else html
+                    module = SourcesModule(FakeClient(payload), self.extractor)
+                    with tempfile.TemporaryDirectory() as tmp_dir:
+                        root = Path(tmp_dir)
+                        result = module.fetch_sources(
+                            {"owner": "khang", "arxiv_id": "2506.20788"},
+                            1, self._context(root),
+                        )
+                        self.assertEqual(result["status"], "failed")
+                        self.assertEqual(result["error"]["code"], "invalid_source")
+                        self.assertIsNone(result["data"])
+                        self.assertFalse((root / "staging").exists())
+
+    def test_tex_long_preamble_and_embedded_html_preserve_original_bytes(self):
+        tex = b"% source comment\n" * 400 + (
+            b"\\documentclass{article}\n\\begin{document}\n"
+            b"\\begin{verbatim}\n<html>Example only</html>\n\\end{verbatim}\n"
+            b"\\includegraphics{figure}\n\\end{document}\n"
+        )
+        for compressed in (False, True):
+            with self.subTest(compressed=compressed):
+                module = SourcesModule(FakeClient(gzip.compress(tex) if compressed else tex),
+                                       self.extractor)
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    root = Path(tmp_dir)
+                    result = module.fetch_sources(
+                        {"owner": "khang", "arxiv_id": "2506.20788"}, 1, self._context(root),
+                    )
+                    self.assertEqual(result["status"], "success")
+                    self.assertEqual(result["data"]["source_kind"], "gzip_tex" if compressed else "tex")
+                    staged = root / "staging/run_2026/khang/2506-20788/v1/main.tex"
+                    self.assertEqual(staged.read_bytes(), tex)
+                    self.assertEqual(result["metrics"]["retained_source_bytes"], len(tex))
+
+    def test_docx_without_tex_returns_unsupported(self):
+        payload = make_docx()
+        module = SourcesModule(FakeClient(payload), self.extractor)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            result = module.fetch_sources(
+                {"owner": "khang", "arxiv_id": "2506.20788"}, 2, self._context(root),
+            )
+            self.assertEqual(result["status"], "unsupported")
+            self.assertIsNone(result["error"])
+            self.assertEqual(result["version"], 2)
+            self.assertEqual(result["data"], {
+                "source_kind": "other", "source_dir": "raw/khang/2506-20788/v2", "files": [],
+            })
+            self.assertEqual(result["metrics"]["download_bytes"], len(payload))
+            self.assertEqual(result["metrics"]["retained_source_bytes"], 0)
+            self.assertIsNone(result["metrics"]["extracted_bytes_before_filter"])
+            self.assertFalse((root / "staging").exists())
+
+    def test_unknown_or_broken_zip_is_not_declared_without_tex(self):
+        corrupt_crc = bytearray(make_docx(compression=zipfile.ZIP_STORED))
+        corrupt_crc[corrupt_crc.index(b"An example document")] ^= 1
+        payloads = {
+            "ordinary_zip": make_zip({"readme.txt": b"Unknown source"}),
+            "malformed_xml": make_docx(document=b"<w:document"),
+            "wrong_document_type": make_docx(document=b"<anything/>"),
+            "corrupt_crc": bytes(corrupt_crc),
+            "also_contains_tex": make_docx(extra_members={"source.tex": b"\\documentclass{article}"}),
+            "not_a_zip": b"PK\x03\x04\x00broken",
+        }
+        for label, payload in payloads.items():
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp_dir:
+                root = Path(tmp_dir)
+                result = SourcesModule(FakeClient(payload), self.extractor).fetch_sources(
+                    {"owner": "khang", "arxiv_id": "2506.20788"}, 1, self._context(root),
+                )
+                self.assertEqual(result["status"], "failed")
+                self.assertEqual(result["error"]["code"], "invalid_source")
+                self.assertIsNone(result["data"])
+                self.assertFalse((root / "staging").exists())
+
+    def test_docx_inspection_respects_size_limits(self):
+        for limits in (ExtractionLimits(max_file_bytes=10),
+                       ExtractionLimits(max_extracted_bytes=100)):
+            with self.subTest(limits=limits), tempfile.TemporaryDirectory() as tmp_dir:
+                root = Path(tmp_dir)
+                result = SourcesModule(FakeClient(make_docx()), self.extractor, limits=limits).fetch_sources(
+                    {"owner": "khang", "arxiv_id": "2506.20788"}, 1, self._context(root),
+                )
+                self.assertEqual(result["status"], "failed")
+                self.assertEqual(result["error"]["code"], "extract_limit")
+                self.assertIsNone(result["data"])
+
+    def test_docx_unknown_or_unsupported_xml_encoding_returns_failed(self):
+        for encoding in ("nonexistent", "utf-7", "utf-32"):
+            document = (
+                f'<?xml version="1.0" encoding="{encoding}"?>'
+                '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                '<w:body/></w:document>'
+            ).encode("ascii")
+            with self.subTest(encoding=encoding), tempfile.TemporaryDirectory() as tmp_dir:
+                root = Path(tmp_dir)
+                module = SourcesModule(FakeClient(make_docx(document=document)), self.extractor)
+                try:
+                    result = module.fetch_sources(
+                        {"owner": "khang", "arxiv_id": "2506.20788"}, 1, self._context(root),
+                    )
+                except Exception as exc:
+                    self.fail(f"Malformed XML must return Result, got {type(exc).__name__}: {exc}")
+                self.assertEqual(result["status"], "failed")
+                self.assertEqual(result["error"]["code"], "invalid_source")
+                self.assertIsNone(result["data"])
+                self.assertFalse((root / "staging").exists())
+
+    def test_docx_corrupt_auxiliary_member_returns_failed(self):
+        valid = make_docx(extra_members={"word/styles.xml": b"<styles>extra part</styles>"},
+                          compression=zipfile.ZIP_STORED)
+        corrupt = bytearray(valid)
+        corrupt[corrupt.index(b"extra part")] ^= 1
+        for label, payload, expected in (("valid", valid, "unsupported"),
+                                         ("corrupt", bytes(corrupt), "failed")):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp_dir:
+                root = Path(tmp_dir)
+                result = SourcesModule(FakeClient(payload), self.extractor).fetch_sources(
+                    {"owner": "khang", "arxiv_id": "2506.20788"}, 1, self._context(root),
+                )
+                self.assertEqual(result["status"], expected)
+                if expected == "failed":
+                    self.assertEqual(result["error"]["code"], "invalid_source")
+                    self.assertIsNone(result["data"])
+                else:
+                    self.assertIsNone(result["error"])
+                self.assertFalse((root / "staging").exists())
+
+    def test_docx_auxiliary_inspection_respects_size_limits(self):
+        payload = make_docx(extra_members={"word/large.bin": b"x" * 5000})
+        for limits in (ExtractionLimits(max_file_bytes=4096),
+                       ExtractionLimits(max_extracted_bytes=4096)):
+            with self.subTest(limits=limits), tempfile.TemporaryDirectory() as tmp_dir:
+                root = Path(tmp_dir)
+                result = SourcesModule(FakeClient(payload), self.extractor, limits=limits).fetch_sources(
+                    {"owner": "khang", "arxiv_id": "2506.20788"}, 1, self._context(root),
+                )
+                self.assertEqual(result["status"], "failed")
+                self.assertEqual(result["error"]["code"], "extract_limit")
+                self.assertIsNone(result["data"])
+
     def test_fetch_sources_404_returns_not_found(self):
         err = RemoteError("not_found", "HTTP 404", retryable=False, http_status=404)
         client = FakeClient(err)
@@ -195,6 +350,32 @@ class SourcesModuleTests(unittest.TestCase):
             self.assertIsNone(result["data"])
             self.assertEqual(result["error"]["code"], "network_error")
 
+    def test_truncated_stream_exhaustion_returns_failed_and_cleans_scratch(self):
+        responses = []
+
+        def opener(req, timeout):
+            response = truncated_chunked_response()
+            responses.append(response)
+            return response
+
+        client = ArxivSourceClient(opener=Mock(open=opener), max_attempts=2, delay=0)
+        module = SourcesModule(client, self.extractor)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            try:
+                result = module.fetch_sources(
+                    {"owner": "khang", "arxiv_id": "2506.20788"}, 1, self._context(root),
+                )
+            except Exception as exc:
+                self.fail(f"Stream failure must return Result, got {type(exc).__name__}: {exc}")
+            self.assertEqual(result["status"], "failed")
+            self.assertEqual(result["error"]["code"], "network_error")
+            self.assertIsNone(result["data"])
+            self.assertEqual(result["attempts"], 2)
+            self.assertFalse((root / "staging").exists())
+            self.assertFalse(any(p.is_file() for p in (root / "scratch").rglob("*")))
+            self.assertTrue(all(r.isclosed() for r in responses))
+
     def test_fetch_sources_unsafe_archive_returns_failed(self):
         payload = make_tar_gz([("../evil.tex", b"bad")])
         client = FakeClient(payload)
@@ -208,6 +389,30 @@ class SourcesModuleTests(unittest.TestCase):
             self.assertEqual(result["status"], "failed")
             self.assertIsNone(result["data"])
             self.assertEqual(result["error"]["code"], "unsafe_archive")
+
+    def test_archive_prefix_conflict_returns_failed_and_preserves_raw(self):
+        for members in (
+            [("main.tex", b"source"), ("main.tex/part.tex", b"part")],
+            [("main.tex/part.tex", b"part"), ("main.tex", b"source")],
+        ):
+            with self.subTest(members=members), tempfile.TemporaryDirectory() as tmp_dir:
+                root = Path(tmp_dir)
+                accepted = root / "raw/khang/2506-20788/v1/main.tex"
+                accepted.parent.mkdir(parents=True)
+                accepted.write_bytes(b"previously accepted source")
+                module = SourcesModule(FakeClient(make_tar_gz(members)), self.extractor)
+                try:
+                    result = module.fetch_sources(
+                        {"owner": "khang", "arxiv_id": "2506.20788"}, 1, self._context(root),
+                    )
+                except Exception as exc:
+                    self.fail(f"Invalid archive must return Result, got {type(exc).__name__}: {exc}")
+                self.assertEqual(result["status"], "failed")
+                self.assertEqual(result["error"]["code"], "unsafe_archive")
+                self.assertIsNone(result["data"])
+                self.assertFalse((root / "staging").exists())
+                self.assertEqual(accepted.read_bytes(), b"previously accepted source")
+                self.assertFalse(any(p.is_file() for p in (root / "scratch").rglob("*")))
 
     def test_occupied_staging_raises_file_exists_error(self):
         payload = make_tar_gz([("main.tex", b"\\documentclass{article}\n")])

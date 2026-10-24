@@ -1,6 +1,6 @@
 # arXiv Data Science — Milestone 1
 
-Repo mã nguồn cho đồ án Nhập môn Khoa học Dữ liệu: thu thập bài báo arXiv, phân tích nội dung và đối sánh tài liệu tham khảo. Hiện đã triển khai **T1: lập danh sách bài trong dải ID qua API arXiv**, **T2: metadata và lịch sử phiên bản qua OAI-PMH arXivRaw**, **T3: tải và trích xuất source TeX/BibTeX**, và **T4: lấy references có arXiv ID của một bài**. Runner toàn pipeline (T5) chưa triển khai.
+Repo mã nguồn cho đồ án Nhập môn Khoa học Dữ liệu: thu thập bài báo arXiv, phân tích nội dung và đối sánh tài liệu tham khảo. Hiện đã triển khai **T1: lập danh sách bài trong dải ID qua API arXiv**, **T2: metadata và lịch sử phiên bản qua OAI-PMH arXivRaw**, **T3: tải và trích xuất source TeX/BibTeX**, và **T4: giữ references gốc và bổ sung metadata cho tập có arXiv ID**. Runner toàn pipeline (T5) chưa triển khai.
 
 ## Cấu trúc code
 
@@ -21,7 +21,7 @@ src/
 │   │   ├── __init__.py    # Xuất ReferencesModule
 │   │   ├── __main__.py    # Điểm chạy python -m arxiv_pipeline.references
 │   │   ├── cli.py         # Chạy một bài, ghi preview JSON
-│   │   ├── service.py     # fetch_references: phân trang, gộp trùng, status, metrics
+│   │   ├── service.py     # fetch_references: giữ raw, phân trang, gộp trùng, status, metrics
 │   │   ├── api.py         # Client Semantic Scholar + client ngày nộp arXiv, parser
 │   │   └── examples.py    # Bốn Result mẫu giả lập sinh bằng chính module
 │   ├── discovery/         # T1 của Trọng
@@ -163,17 +163,29 @@ result = module.fetch_references({"owner": "man-nhi", "arxiv_id": "2501.12642"},
 
 `--owner` là bắt buộc (owner lấy từ task/cấu hình, không đặt mặc định). Client được truyền khi khởi tạo; thay bằng adapter/cache dùng chung của runner nếu đáp ứng `references_page(arxiv_id, offset, limit) -> dict` và `submission_dates(ids) -> dict[id, str]` (kèm bộ đếm `attempts`).
 
+Theo đề mới, schema **1.2** giữ cả hai phần trong `Result.data`:
+
+| Trường | Nội dung |
+|---|---|
+| `raw_references` | Danh sách các object trong `data` của những trang Semantic Scholar đã chấp nhận; giữ mọi trường, giá trị gốc, thứ tự và duplicate, kể cả mục không có arXiv ID hoặc `citedPaper=null` |
+| `references` | Dictionary có arXiv ID hợp lệ, đã chuẩn hóa/khử trùng và bổ sung metadata |
+| `complete` | Đã lấy hết trang Semantic Scholar hay chưa |
+
+Ví dụ nhận 15 mục, sau chuẩn hóa có 10 ID arXiv phân biệt: `len(raw_references)=15`, `len(references)=10`. Bản raw được sao chép ngay khi nhận từng trang, không bị thay đổi khi reader tái sử dụng dữ liệu hoặc khi chuẩn hóa tập arXiv. Trang lỗi cấu trúc bị từ chối nguyên trang; nếu trang sau lỗi, giữ các trang đã chấp nhận và trả `partial`, `complete=false`. Nếu ngay trang đầu lỗi, `data=null` như trước.
+
+T4 chỉ trả Result và preview. T5 cần lưu cả dictionary vào `references.json` và danh sách gốc vào `raw_references.json`, đồng thời giữ status/complete trong log và trạng thái. Bộ mẫu chung mô phỏng cả hai file; writer thật chưa triển khai. Chỉ tập arXiv được xuất thành các hàng của bảng `references` cuối đồ án.
+
 | Tình huống | status | `data.complete` | Ghi chú |
 |---|---|---|---|
-| Hết trang, có reference, mọi mục đủ title/authors/submission_date/semantic_scholar_id | success | true | `missing_fields=[]`, `error=null` |
-| Hết trang, thiếu ít nhất một trường của một mục (ví dụ không tra được ngày) | partial | **true** | `complete` chỉ nghĩa là đã lấy hết trang; trường thiếu nằm trong `missing_fields` |
-| Hết trang, không có reference arXiv nào (kể cả danh sách rỗng) | empty | true | `error=null` |
+| Hết trang, có reference arXiv, mọi mục arXiv đủ title/authors/submission_date/semantic_scholar_id | success | true | `missing_fields=[]`, `error=null` |
+| Hết trang, thiếu ít nhất một trường của một mục arXiv (ví dụ không tra được ngày) | partial | **true** | `complete` chỉ nghĩa là đã lấy hết trang; trường thiếu nằm trong `missing_fields` |
+| Hết trang, không có reference arXiv nào | empty | true | `raw_references` vẫn có thể không rỗng; `error=null` |
 | Trang sau trang đầu bị lỗi | partial | false | giữ phần đã nhận, `error` ghi nguyên nhân |
 | Chạm giới hạn số trang (`max_pages`, mặc định 50) khi danh sách chưa hết | partial | false | `error.code=remote_error`, `retryable=false`, thông điệp nêu giới hạn trang; spec chưa có mã riêng cho trường hợp này |
 | Lỗi ở trang đầu | failed | — | `data=null`, `metrics={}` |
 | Semantic Scholar trả 404 | not_found | — | `data=null`, `retryable=false` |
 
-Metrics bắt buộc (khi có `data`): `s2_reference_count` (mọi mục nhận được, trước lọc/trùng), `arxiv_reference_count` (ID arXiv duy nhất giữ lại, bằng số key của `references`), `complete_reference_count` (đủ bốn trường); luôn có `complete <= arxiv <= s2`. Hoàng tính `reference_metadata_success_rate` và `mean_arxiv_references_per_paper` từ các số này và cờ `complete`.
+Metrics bắt buộc (khi có `data`): `s2_reference_count` (mọi mục nhận được trước lọc/trùng, bằng `len(raw_references)`), `arxiv_reference_count` (ID arXiv duy nhất giữ lại, bằng số key của `references`), `complete_reference_count` (mục arXiv đủ bốn trường); luôn có `complete <= arxiv <= s2`. Status và missing_fields đánh giá tập arXiv; mục raw thiếu arXiv ID không tự trở thành lỗi thiếu trường. Hoàng tính `reference_metadata_success_rate` và `mean_arxiv_references_per_paper` từ các số này và cờ `complete`.
 
 T2 và T4 dùng chung `identifiers.py` để kiểm tra ID: tháng 01–12, số thứ tự từ 1, đúng số chữ số theo giai đoạn. PaperTask chỉ nhận ID chuẩn, không nhận URL, tiền tố, khoảng trắng hoặc hậu tố phiên bản; ID sai bị từ chối trước khi gửi request.
 
@@ -185,7 +197,7 @@ Mẫu offline (đủ metadata, thiếu ngày, rỗng, lỗi phân trang), do ch�
 PYTHONPATH=src python -m arxiv_pipeline.references.examples --owner man-nhi --output-dir /tmp/arxiv-t4-examples
 ```
 
-Test T4 (`tests/test_references.py`) không gửi request thật. Đã kiểm chứng thêm với Semantic Scholar/arXiv thật:
+Test T4 (`tests/test_references.py`) không gửi request thật. Kiểm thử schema 1.2 bao gồm giữ raw có/không có arXiv ID, duplicate, ID sai, citedPaper=null, phân trang lỗi, reader tái sử dụng object và JSON preview. Các lần kiểm chứng Semantic Scholar/arXiv thật dưới đây có trước cập nhật 1.2; lần cập nhật raw_references này chỉ được kiểm thử offline, không xác nhận lại số liệu trực tiếp:
 
 | Bài | Kết quả | Ghi chú |
 |---|---|---|
@@ -304,10 +316,11 @@ result = module.fetch_sources(task, version=1, context=context)
 ### Quy tắc dữ liệu và bàn giao T5
 
 - **Phạm vi file giữ lại:** Chỉ giữ lại `.tex` và `.bib`. Nếu archive không chứa bất kỳ file `.tex` nào (ví dụ chỉ có file `.bib` hoặc chỉ có hình ảnh), trạng thái trả về là `unsupported` và không có file nào được chấp nhận (`data.files=[]`, `retained_source_bytes=0`).
+- **Nhận diện nguồn:** Từ chối tài liệu HTML ở đầu nội dung trực tiếp hoặc gzip, không lưu trang lỗi thành `main.tex`. TeX có phần chú thích dài hoặc chứa ví dụ HTML trong nội dung vẫn được giữ nguyên. PDF và gói DOCX thông thường đã xác nhận cấu trúc OOXML, không có `.tex`, trả `unsupported`; DOCX dùng `source_kind=other`. ZIP chưa nhận diện, XML chính hỏng/encoding không hỗ trợ hoặc lỗi CRC của bất kỳ thành viên DOCX nào trả `failed/invalid_source`, không kết luận là không có TeX. Việc kiểm tra DOCX đọc theo từng khối, tuân thủ giới hạn số thành viên, byte mỗi tệp và tổng byte, không trích xuất ZIP vào corpus.
 - **Vị trí lưu trữ (Staging):** Khi trích xuất thành công, file nguồn được lưu cô lập tại `output_root/staging/<run_id>/<owner>/<paper_folder>/v<version>`. Đường dẫn `data.source_dir` luôn mang định dạng tương lai `raw/<owner>/<paper_folder>/v<version>`, T3 không ghi trực tiếp vào `raw/`. T5 sẽ sở hữu việc kiểm tra và chuyển tiếp vào `raw/`.
 - **Đo lường byte metrics:** Thống kê 5 chỉ số byte: `download_bytes`, `extracted_bytes_before_filter`, `retained_source_bytes`, `removed_figure_bytes`, `removed_other_bytes` với bất biến bảo toàn byte `before == retained + removed_figure + removed_other`.
-- **An toàn archive:** Chặn toàn bộ path traversal (`..`), đường dẫn tuyệt đối, symlink, hardlink, file đặc biệt và các member trùng lặp. Khi xảy ra lỗi giữa chừng, toàn bộ dữ liệu tạm thời được dọn dẹp sạch sẽ (rollback).
-- **Kiểm soát request:** Endpoint `https://export.arxiv.org/src/<id>v<version>`, tải dạng luồng (streaming), tuân thủ `Retry-After`, pacing tối thiểu 3 giây giữa các request và kiểm soát dung lượng tải tối đa.
+- **An toàn archive:** Chặn toàn bộ path traversal (`..`), đường dẫn tuyệt đối, symlink, hardlink, file đặc biệt, member trùng lặp và đường dẫn vừa là file vừa là thư mục (ví dụ `main.tex` và `main.tex/part.tex`). Khi xảy ra lỗi giữa chừng, toàn bộ dữ liệu tạm thời được dọn dẹp sạch sẽ (rollback).
+- **Kiểm soát request:** Endpoint `https://export.arxiv.org/src/<id>v<version>`, tải dạng luồng (streaming), tuân thủ `Retry-After`, pacing tối thiểu 3 giây giữa các request và kiểm soát dung lượng tải tối đa. Luồng HTTP bị đứt được retry từ đầu sau khi xóa file dở; hết lượt thì trả Result lỗi mạng. Hạn chờ `Retry-After`, gồm số giây và HTTP-date, vẫn áp dụng sang task tiếp theo trên cùng client khi task trước hết lượt retry. Lịch request arXiv dùng chung giữa các module sẽ do T5 điều phối.
 
 ## Kiểm thử offline
 
@@ -319,19 +332,19 @@ Test không gửi request thật và dùng thư mục tạm. T1 gồm dải qua 
 
 ## Schema và tài liệu
 
-Cả nhóm dùng **schema 1.1** theo tài liệu bên dưới. `SCHEMA_VERSION` trong `src/arxiv_pipeline/contracts.py` là hằng phiên bản dùng chung; T1 và generator cùng import hằng này. File contracts cũng mô tả kiểu dữ liệu của từng task, kiểm tra và thống kê; TypedDict không tự kiểm tra dữ liệu lúc chạy. Bộ validator tổng quát chưa triển khai.
+Cả nhóm dùng **schema 1.2** theo tài liệu bên dưới. `SCHEMA_VERSION` trong `src/arxiv_pipeline/contracts.py` là hằng phiên bản dùng chung cho T1–T4 và generator. Phiên bản mới bổ sung `data.raw_references` bắt buộc cho T4. File contracts cũng mô tả kiểu dữ liệu của từng task, kiểm tra và thống kê; TypedDict không tự kiểm tra dữ liệu lúc chạy. Bộ validator tổng quát chưa triển khai.
 
 Tạo dữ liệu mẫu offline bằng thư mục mới hoặc rỗng:
 
 ```bash
-PYTHONPATH=src python -m arxiv_pipeline.examples --output-dir /tmp/arxiv-m1-examples-v11
+PYTHONPATH=src python -m arxiv_pipeline.examples --output-dir /tmp/arxiv-m1-examples-v12
 ```
 
-Generator tạo Result mẫu cho năm thành viên, archive thử, cả thư mục staging và corpus mô phỏng, cùng scope/accepted_results cho phần thống kê. Nó mô phỏng đầu ra bàn giao, không phải runner thật hoặc crawler các task còn lại. Các mẫu đều `is_mock=true`, request thực tế bằng 0; lỗi 429/404 trong edge_cases là tình huống giả lập. Không đưa mẫu vào báo cáo dữ liệu thật. Mẫu tạo trước khi nâng cấp cần tạo lại, không đổi nhãn phiên bản trên file cũ.
+Generator tạo Result mẫu cho năm thành viên, archive thử, cả thư mục staging và corpus mô phỏng, cùng scope/accepted_results cho phần thống kê. Mẫu references có cả tập arXiv và dữ liệu gốc ngoài arXiv; một mẫu empty vẫn giữ raw không rỗng. Nó mô phỏng đầu ra bàn giao, không phải runner thật. Các mẫu đều `is_mock=true`, request thực tế bằng 0; lỗi 429/404 trong edge_cases là tình huống giả lập. Không đưa mẫu vào báo cáo dữ liệu thật. Mẫu 1.0/1.1 cần tạo lại; không đổi nhãn phiên bản hoặc tự thêm raw_references=[] vì không khôi phục được các mục đã bỏ.
 
-- [Schema 1.1 và phân công](docs/superpowers/specs/2026-10-16-milestone-1-schema-and-tasks.md)
+- [Schema 1.2 và phân công](docs/superpowers/specs/2026-10-16-milestone-1-schema-and-tasks.md)
 - [Kế hoạch theo tuần](docs/superpowers/plans/2026-10-14-milestone-1-team-plan.md)
-- [Đề bài milestone 1](context/crawling.md)
+- [Đề bài milestone 1 cập nhật](context/crawling_new.md)
 - [Hướng dẫn API arXiv](https://info.arxiv.org/help/api/user-manual.html)
 - [Điều khoản truy cập API](https://info.arxiv.org/help/api/tou.html)
 

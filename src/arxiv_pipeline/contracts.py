@@ -1,4 +1,4 @@
-"""Shared schema 1.1, defined by the team's milestone-1-schema-and-tasks spec.
+"""Shared schema 1.2, defined by the team's milestone-1-schema-and-tasks spec.
 
 TypedDict describes structure for consumers; it does not validate runtime data.
 """
@@ -6,7 +6,7 @@ TypedDict describes structure for consumers; it does not validate runtime data.
 from pathlib import Path
 from typing import Literal, Protocol, TypedDict
 
-SCHEMA_VERSION = "1.1"
+SCHEMA_VERSION = "1.2"
 Owner = Literal["trong", "huynh-nhi", "khang", "man-nhi", "hoang"]
 Step = Literal["discovery", "metadata", "sources", "references"]
 Status = Literal["success", "partial", "empty", "unsupported", "not_found", "failed"]
@@ -83,6 +83,7 @@ class SourceMetrics(TypedDict):
 
 class ReferencesData(TypedDict):
     references: dict[str, Reference]
+    raw_references: list[dict[str, object]]
     complete: bool
 
 

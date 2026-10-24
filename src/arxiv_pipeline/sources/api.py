@@ -2,6 +2,7 @@
 
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from http.client import HTTPException
 import math
 from pathlib import Path
 import threading
@@ -136,6 +137,13 @@ class ArxivSourceClient:
                     destination.unlink(missing_ok=True)
                     retry_after = self._retry_after(getattr(exc, "headers", None))
                     status = exc.code
+                    exc.close()
+
+                    if status in (429, 500, 502, 503, 504):
+                        # Server cooldown survives exhaustion of this task's retry budget.
+                        self._next_allowed = max(
+                            self._next_allowed, self.monotonic() + retry_after,
+                        )
 
                     if status == 404:
                         raise RemoteError(
@@ -181,7 +189,7 @@ class ArxivSourceClient:
                     )
                     self.sleep(max(retry_after, self.delay * attempt))
 
-                except (URLError, TimeoutError, OSError) as exc:
+                except (URLError, TimeoutError, OSError, HTTPException) as exc:
                     destination.unlink(missing_ok=True)
                     if attempt >= self.max_attempts:
                         raise RemoteError(

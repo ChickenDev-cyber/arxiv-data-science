@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+import re
 from typing import Literal, NamedTuple, Protocol
 
 from arxiv_pipeline.contracts import ErrorInfo, SourceFile, SourceMetrics
@@ -161,5 +162,26 @@ def is_text_data(data: bytes) -> bool:
 
 
 def is_tex_content(data: bytes) -> bool:
-    """Backwards-compatibility alias for is_text_data."""
-    return is_text_data(data)
+    """Accept text sources, excluding recognizable HTML document responses.
+
+    Do not require a TeX command in the prefix: submissions can start with
+    long comments, and parsing TeX syntax belongs to Milestone 2.
+    """
+    if not is_text_data(data):
+        return False
+    prefix = data.removeprefix(b"\xef\xbb\xbf").lstrip()
+    if re.match(rb"<\?xml\b", prefix, re.IGNORECASE):
+        end = prefix.find(b"?>")
+        if end >= 0:
+            prefix = prefix[end + 2:].lstrip()
+    # Consume comments once, without a repeated wildcard regex that can backtrack.
+    while prefix.startswith(b"<!--"):
+        end = prefix.find(b"-->")
+        if end < 0:
+            break
+        prefix = prefix[end + 3:].lstrip()
+    html = re.match(
+        rb"<(?:!doctype\s+html\b|html\b|head\b|body\b)",
+        prefix, re.IGNORECASE,
+    )
+    return html is None

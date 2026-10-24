@@ -1,5 +1,7 @@
 import gzip
 import io
+import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -201,6 +203,33 @@ class TarHandlerArchiveRealWorldTests(unittest.TestCase):
                 self.assertIn("Duplicate member path", str(ctx.exception))
         finally:
             tar_path.unlink(missing_ok=True)
+
+    def test_file_directory_prefix_conflicts_roll_back_all_output(self):
+        cases = [
+            [("main.tex", b"source", False), ("main.tex/part.tex", b"part", False)],
+            [("main.tex/part.tex", b"part", False), ("main.tex", b"source", False)],
+            [("main.tex", b"source", False), ("main.tex/", None, True)],
+            [("main.tex/", None, True), ("main.tex", b"source", False)],
+            [("main.tex/nested/", None, True), ("main.tex", b"source", False)],
+            [("main.tex", b"source", False), ("main.tex/nested/", None, True)],
+        ]
+        for members in cases:
+            with self.subTest(members=members):
+                source = self._create_tar([("safe.tex", b"already extracted", False), *members])
+                try:
+                    with tempfile.TemporaryDirectory() as tmp:
+                        destination = Path(tmp)
+                        try:
+                            self.handler.extract(source, destination, limits=self.limits)
+                        except SourceProcessingError as exc:
+                            self.assertEqual(exc.code, "unsafe_archive")
+                        except Exception as exc:
+                            self.fail(f"Expected SourceProcessingError, got {type(exc).__name__}: {exc}")
+                        else:
+                            self.fail("File/directory prefix conflict must be rejected")
+                        self.assertEqual(list(destination.iterdir()), [])
+                finally:
+                    source.unlink(missing_ok=True)
 
 
 class TarSafetyAndLimitsTests(unittest.TestCase):
@@ -486,6 +515,32 @@ class TarSafetyAndLimitsTests(unittest.TestCase):
 
 
 class FormatSniffingAndSingleFileStrategyTests(unittest.TestCase):
+    def test_repeated_html_comments_finish_within_bounded_time(self):
+        script = (
+            "from arxiv_pipeline.sources.extractor import is_tex_content\n"
+            "prefix = b'<!--x-->' * 300\n"
+            "assert is_tex_content(prefix + b'\\\\documentclass{article}')\n"
+            "assert not is_tex_content(prefix + b'<html><body>Error</body></html>')\n"
+        )
+        try:
+            result = subprocess.run([sys.executable, "-c", script], timeout=3,
+                                    capture_output=True, text=True)
+        except subprocess.TimeoutExpired:
+            self.fail("HTML prefix inspection must finish without exponential backtracking")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_single_file_handlers_reject_html_and_leave_no_output(self):
+        html = b"<!doctype html><html><body>Temporary failure</body></html>"
+        for handler, payload in ((TexHandler(), html), (GzipTexHandler(), gzip.compress(html))):
+            with self.subTest(handler=type(handler).__name__), tempfile.TemporaryDirectory() as tmp:
+                source = Path(tmp) / "source.download"
+                source.write_bytes(payload)
+                destination = Path(tmp) / "extracted"
+                with self.assertRaises(SourceProcessingError) as caught:
+                    handler.extract(source, destination, limits=ExtractionLimits())
+                self.assertEqual(caught.exception.code, "invalid_source")
+                self.assertFalse(any(p.is_file() for p in destination.rglob("*")))
+
     def setUp(self):
         self.extractor = SourceExtractor()
         self.limits = ExtractionLimits()
