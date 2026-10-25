@@ -25,6 +25,7 @@ from xml.etree import ElementTree as ET
 
 from ..discovery.api import ApiResponse, RemoteError, _default_transport, _positive_number
 from ..identifiers import is_valid_arxiv_id as is_canonical_id, normalize_arxiv_id
+from ..http import scheduled_transport
 
 S2_BASE = "https://api.semanticscholar.org/graph/v1/paper/"
 ARXIV_API = "https://export.arxiv.org/api/query"
@@ -42,7 +43,7 @@ class _PacedClient:
     """
 
     def __init__(self, *, delay, timeout=30, max_attempts=3, headers=None, transport=None,
-                 monotonic=time.monotonic, sleep=time.sleep, wall_clock=time.time):
+                 monotonic=time.monotonic, sleep=time.sleep, wall_clock=time.time, scheduler=None, group="arxiv"):
         _positive_number(timeout, "timeout", 0.001)
         _positive_number(delay, "delay", 0)
         if type(max_attempts) is not int or not 1 <= max_attempts <= 3:
@@ -54,6 +55,9 @@ class _PacedClient:
         self.attempts = 0
         self._next_allowed = 0.0
         self._lock = threading.Lock()
+        self.scheduler = scheduler
+        if scheduler is not None:
+            self.transport = scheduled_transport(self.transport, scheduler, group, self)
 
     def _retry_after(self, headers):
         """Seconds to wait from ``Retry-After``: delay-seconds or HTTP-date, never negative, not capped."""
@@ -76,7 +80,8 @@ class _PacedClient:
                 wait = self._next_allowed - self.monotonic()
                 if wait > 0:
                     self.sleep(wait)
-                self.attempts += 1
+                if self.scheduler is None:
+                    self.attempts += 1
                 retry_after = 0.0
                 try:
                     response = self.transport(url, self.timeout, self.headers)
@@ -116,7 +121,7 @@ class SemanticScholarClient(_PacedClient):
         headers = {"User-Agent": user_agent, "Accept": "application/json"}
         if key:
             headers["x-api-key"] = key
-        super().__init__(delay=delay, headers=headers, **kwargs)
+        super().__init__(delay=delay, headers=headers, group="semantic_scholar", **kwargs)
 
     def references_page(self, arxiv_id, offset, limit):
         if not is_canonical_id(arxiv_id):

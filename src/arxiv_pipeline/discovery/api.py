@@ -13,6 +13,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree import ElementTree as ET
+from ..http import scheduled_transport
 
 API_URL = "https://export.arxiv.org/api/query"
 ATOM = "{http://www.w3.org/2005/Atom}"
@@ -71,7 +72,7 @@ class ApiClient:
     def __init__(self, *, timeout=30, max_attempts=3, delay=3,
                  user_agent="arxiv-data-science/T1 (academic course project)",
                  transport=None, monotonic=time.monotonic, sleep=time.sleep,
-                 wall_clock=time.time):
+                 wall_clock=time.time, scheduler=None):
         _positive_number(timeout, "timeout", 0.001)
         _positive_number(delay, "delay", 3)
         if type(max_attempts) is not int or not 1 <= max_attempts <= 3:
@@ -85,6 +86,9 @@ class ApiClient:
         self.attempts = 0
         self._next_allowed = 0.0
         self._lock = threading.Lock()
+        self.scheduler = scheduler
+        if scheduler is not None:
+            self.transport = scheduled_transport(self.transport, scheduler, "arxiv", self)
 
     def _retry_after(self, headers):
         value = next((v for k, v in headers.items() if k.lower() == "retry-after"), "")
@@ -112,7 +116,8 @@ class ApiClient:
                 wait = self._next_allowed - self.monotonic()
                 if wait > 0:
                     self.sleep(wait)
-                self.attempts += 1
+                if self.scheduler is None:
+                    self.attempts += 1
                 retry_after = 0.0
                 try:
                     response = self.transport(url, self.timeout, {"User-Agent": self.user_agent,

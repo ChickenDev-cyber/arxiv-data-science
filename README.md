@@ -1,6 +1,6 @@
 # arXiv Data Science — Milestone 1
 
-Repo mã nguồn cho đồ án Nhập môn Khoa học Dữ liệu: thu thập bài báo arXiv, phân tích nội dung và đối sánh tài liệu tham khảo. Hiện đã triển khai **T1: lập danh sách bài trong dải ID qua API arXiv**, **T2: metadata và lịch sử phiên bản qua OAI-PMH arXivRaw**, **T3: tải và trích xuất source TeX/BibTeX**, và **T4: giữ references gốc và bổ sung metadata cho tập có arXiv ID**. Runner toàn pipeline (T5) chưa triển khai.
+Repo mã nguồn cho đồ án Nhập môn Khoa học Dữ liệu: thu thập bài báo arXiv, phân tích nội dung và đối sánh tài liệu tham khảo. Đã triển khai T1 discovery, T2 metadata/lịch sử phiên bản, T3 nguồn TeX/BibTeX, T4 references và **T5 runner baseline có kiểm tra, lưu trữ và SQLite để chạy tiếp**. T5 đã được kiểm thử offline; độ phủ và hiệu năng crawl thật phải được đo trên lượt chạy thực tế.
 
 ## Cấu trúc code
 
@@ -173,7 +173,7 @@ Theo đề mới, schema **1.2** giữ cả hai phần trong `Result.data`:
 
 Ví dụ nhận 15 mục, sau chuẩn hóa có 10 ID arXiv phân biệt: `len(raw_references)=15`, `len(references)=10`. Bản raw được sao chép ngay khi nhận từng trang, không bị thay đổi khi reader tái sử dụng dữ liệu hoặc khi chuẩn hóa tập arXiv. Trang lỗi cấu trúc bị từ chối nguyên trang; nếu trang sau lỗi, giữ các trang đã chấp nhận và trả `partial`, `complete=false`. Nếu ngay trang đầu lỗi, `data=null` như trước.
 
-T4 chỉ trả Result và preview. T5 cần lưu cả dictionary vào `references.json` và danh sách gốc vào `raw_references.json`, đồng thời giữ status/complete trong log và trạng thái. Bộ mẫu chung mô phỏng cả hai file; writer thật chưa triển khai. Chỉ tập arXiv được xuất thành các hàng của bảng `references` cuối đồ án.
+T4 chỉ trả Result và preview. T5 lưu dictionary vào `references.json` và danh sách gốc vào `raw_references.json`, đồng thời giữ status/complete trong log và SQLite. Bộ mẫu chung mô phỏng cả hai file; có thể thử writer thật bằng CLI runner ở phần T5. Chỉ tập arXiv được xuất thành các hàng của bảng `references` cuối đồ án.
 
 | Tình huống | status | `data.complete` | Ghi chú |
 |---|---|---|---|
@@ -317,10 +317,78 @@ result = module.fetch_sources(task, version=1, context=context)
 
 - **Phạm vi file giữ lại:** Chỉ giữ lại `.tex` và `.bib`. Nếu archive không chứa bất kỳ file `.tex` nào (ví dụ chỉ có file `.bib` hoặc chỉ có hình ảnh), trạng thái trả về là `unsupported` và không có file nào được chấp nhận (`data.files=[]`, `retained_source_bytes=0`).
 - **Nhận diện nguồn:** Từ chối tài liệu HTML ở đầu nội dung trực tiếp hoặc gzip, không lưu trang lỗi thành `main.tex`. TeX có phần chú thích dài hoặc chứa ví dụ HTML trong nội dung vẫn được giữ nguyên. PDF và gói DOCX thông thường đã xác nhận cấu trúc OOXML, không có `.tex`, trả `unsupported`; DOCX dùng `source_kind=other`. ZIP chưa nhận diện, XML chính hỏng/encoding không hỗ trợ hoặc lỗi CRC của bất kỳ thành viên DOCX nào trả `failed/invalid_source`, không kết luận là không có TeX. Việc kiểm tra DOCX đọc theo từng khối, tuân thủ giới hạn số thành viên, byte mỗi tệp và tổng byte, không trích xuất ZIP vào corpus.
-- **Vị trí lưu trữ (Staging):** Khi trích xuất thành công, file nguồn được lưu cô lập tại `output_root/staging/<run_id>/<owner>/<paper_folder>/v<version>`. Đường dẫn `data.source_dir` luôn mang định dạng tương lai `raw/<owner>/<paper_folder>/v<version>`, T3 không ghi trực tiếp vào `raw/`. T5 sẽ sở hữu việc kiểm tra và chuyển tiếp vào `raw/`.
+- **Vị trí lưu trữ (Staging):** Khi trích xuất thành công, file nguồn được lưu cô lập tại `output_root/staging/<run_id>/<owner>/<paper_folder>/v<version>`. Đường dẫn `data.source_dir` luôn mang định dạng tương lai `raw/<owner>/<paper_folder>/v<version>`, T3 không ghi trực tiếp vào `raw/`. T5 kiểm tra và chuyển tiếp vào `raw/` qua journal có thể phục hồi.
 - **Đo lường byte metrics:** Thống kê 5 chỉ số byte: `download_bytes`, `extracted_bytes_before_filter`, `retained_source_bytes`, `removed_figure_bytes`, `removed_other_bytes` với bất biến bảo toàn byte `before == retained + removed_figure + removed_other`.
 - **An toàn archive:** Chặn toàn bộ path traversal (`..`), đường dẫn tuyệt đối, symlink, hardlink, file đặc biệt, member trùng lặp và đường dẫn vừa là file vừa là thư mục (ví dụ `main.tex` và `main.tex/part.tex`). Khi xảy ra lỗi giữa chừng, toàn bộ dữ liệu tạm thời được dọn dẹp sạch sẽ (rollback).
 - **Kiểm soát request:** Endpoint `https://export.arxiv.org/src/<id>v<version>`, tải dạng luồng (streaming), tuân thủ `Retry-After`, pacing tối thiểu 3 giây giữa các request và kiểm soát dung lượng tải tối đa. Luồng HTTP bị đứt được retry từ đầu sau khi xóa file dở; hết lượt thì trả Result lỗi mạng. Hạn chờ `Retry-After`, gồm số giây và HTTP-date, vẫn áp dụng sang task tiếp theo trên cùng client khi task trước hết lượt retry. Lịch request arXiv dùng chung giữa các module sẽ do T5 điều phối.
+
+## T5 — Chạy toàn pipeline và chạy tiếp
+
+T5 dùng Python >=3.10 và thư viện chuẩn trên Linux/Colab. Chỉ một runner được ghi vào một output root. Các client arXiv dùng chung lịch request, gồm retry và tra ngày trong T4; Semantic Scholar có lịch riêng. API key tùy chọn lấy từ biến môi trường `S2_API_KEY`.
+
+### Chạy thử offline
+
+Chọn một thư mục output mới. Lệnh này gọi các service T1–T4 thật bằng adapter dữ liệu giả, tạo corpus qua writer T5 và không gửi request mạng:
+
+```bash
+PYTHONPATH=src python -m arxiv_pipeline.runner \
+  --mock --all-owners --run-id t5-demo --output-root data/t5-demo
+```
+
+Mẫu mặc định có 5 bài giả lập tại ID đầu dải của mỗi owner, mỗi bài 2 phiên bản nguồn. Có 25 Result được công nhận, 9 mục reference gốc và 4 mục có arXiv ID. Mọi Result có `is_mock=true`; đây là dữ liệu kiểm thử, không dùng để báo cáo corpus thật.
+
+### Chạy mẫu thật
+
+```bash
+PYTHONPATH=src python -m arxiv_pipeline.runner \
+  --owner trong --run-id baseline-trong-01 \
+  --max-candidates 10 --max-papers 5 --output-root data/m1-trong-01
+```
+
+`--max-candidates` là số ID ứng viên T1 kiểm tra; `--max-papers` là số bài đã xác minh tối đa được chọn cho mỗi owner. Hai giới hạn mặc định là 10 và 5; không bảo đảm 10 ứng viên tìm được 5 bài. Có thể lặp `--owner` hoặc dùng `--all-owners`. Chỉ dùng `--full-range` khi chủ động chạy toàn dải; cờ này không đi cùng hai giới hạn mẫu. Lượt mẫu có `discovery_complete=false` cho dải được giao.
+
+### Ngắt và chạy tiếp
+
+```bash
+# Có thể dừng có chủ đích ở ranh giới task để thử resume.
+PYTHONPATH=src python -m arxiv_pipeline.runner \
+  --mock --owner trong --run-id t5-resume --output-root data/t5-resume \
+  --stop-after-tasks 3
+
+PYTHONPATH=src python -m arxiv_pipeline.runner \
+  --resume --run-id t5-resume --output-root data/t5-resume
+```
+
+Resume đọc mode, owner và giới hạn đã lưu; không truyền lại các cờ cấu hình đó. Giữ cùng run_id/output root. Run mới dùng output root mới; runner từ chối nhận thư mục dữ liệu có sẵn không có state tương ứng.
+
+Trước khi bỏ qua task đã công nhận, runner đối chiếu file, kích thước và SHA-256 với SQLite. File mất/hỏng được đưa về diện cần xử lý. Task đang dở có thể phải chạy lại từ đầu; baseline chưa tiếp tục theo byte hoặc trang API. Nguồn tốt còn hợp lệ được dùng lại. Retry lỗi không thay bộ dữ liệu tốt bằng kết quả lỗi; partial giữ phần đã có và được thử bổ sung ở lần resume tiếp theo.
+
+### Đọc kết quả
+
+```text
+<output-root>/
+├── state.sqlite
+├── discovery/<owner>.json
+├── raw/<owner>/<paper-folder>/
+│   ├── metadata.json
+│   ├── references.json
+│   ├── raw_references.json
+│   └── vN/                 # .tex/.bib và source_manifest.json
+├── logs/<run-id>/events.jsonl
+└── runs/<run-id>/
+    ├── scope.json
+    ├── accepted_results.jsonl
+    ├── validation.json
+    └── quality.json
+```
+
+`validation.json` đánh giá đúng cấu trúc, identity và artifacts; `quality.json` đánh giá dữ liệu trong mẫu đã đầy đủ chưa. Partial có thể đúng schema nhưng chưa đủ dữ liệu. Sources unsupported giữ record phiên bản, không được tính là đã lấy đủ TeX. References rỗng ở tập arXiv vẫn có thể có dữ liệu trong raw_references.json.
+
+`events.jsonl` giữ lịch sử các lần gọi có Result hợp lệ; `accepted_results.jsonl` chỉ có một kết quả đang được công nhận cho mỗi task. T6 đọc **scope.json + accepted_results.jsonl khi runner đã dừng và validation hợp lệ**, không lấy dòng log cuối làm kết quả chính thức. Nếu resume thì đợi runner xuất lại bộ file; hai file handoff không được cập nhật trong lúc T6 đọc.
+
+Runner đặt `validation.valid=false` trước khi bắt đầu/resume hoặc cập nhật handoff, rồi chỉ ghi `valid=true` sau khi cả scope và accepted results đã được xuất thành công. Khi Ctrl+C giữa một publication, runner phục hồi journal trước khi kiểm tra và xuất lại; một bộ file dở không làm mất liên kết tới kết quả tốt trước đó.
+
+Mã thoát: `0` khi mẫu được xử lý không còn issue chất lượng; `2` khi còn task thiếu hoặc dừng theo giới hạn số task; `1` khi lỗi cấu trúc/cấu hình/lưu trữ; `130` khi Ctrl+C. Argparse dùng mã 2 cho lỗi cú pháp lệnh. Chạy hết chương trình không có nghĩa đã thu thập đủ toàn dải.
 
 ## Kiểm thử offline
 
@@ -332,7 +400,7 @@ Test không gửi request thật và dùng thư mục tạm. T1 gồm dải qua 
 
 ## Schema và tài liệu
 
-Cả nhóm dùng **schema 1.2** theo tài liệu bên dưới. `SCHEMA_VERSION` trong `src/arxiv_pipeline/contracts.py` là hằng phiên bản dùng chung cho T1–T4 và generator. Phiên bản mới bổ sung `data.raw_references` bắt buộc cho T4. File contracts cũng mô tả kiểu dữ liệu của từng task, kiểm tra và thống kê; TypedDict không tự kiểm tra dữ liệu lúc chạy. Bộ validator tổng quát chưa triển khai.
+Cả nhóm dùng **schema 1.2** theo tài liệu bên dưới. `SCHEMA_VERSION` trong `src/arxiv_pipeline/contracts.py` là hằng phiên bản dùng chung cho T1–T4 và generator. Phiên bản mới bổ sung `data.raw_references` bắt buộc cho T4. File contracts cũng mô tả kiểu dữ liệu của từng task, kiểm tra và thống kê; TypedDict không tự kiểm tra dữ liệu lúc chạy. Validator runtime nằm trong `src/arxiv_pipeline/validation/`; runner T5 kiểm tra trước khi công nhận dữ liệu.
 
 Tạo dữ liệu mẫu offline bằng thư mục mới hoặc rỗng:
 

@@ -1,6 +1,7 @@
 """T3 arXiv source transport: streaming downloader and SourceClient protocol."""
 
 from datetime import datetime, timezone
+from contextlib import contextmanager, nullcontext
 from email.utils import parsedate_to_datetime
 from http.client import HTTPException
 import math
@@ -44,6 +45,7 @@ class ArxivSourceClient:
         monotonic=None,
         wall_clock=None,
         sleep=None,
+        scheduler=None,
     ) -> None:
         self.timeout = timeout
         self.max_attempts = max_attempts
@@ -57,6 +59,24 @@ class ArxivSourceClient:
         self.attempts = 0
         self._next_allowed = 0.0
         self._lock = threading.Lock()
+        self.scheduler = scheduler
+
+    @contextmanager
+    def _response(self, req):
+        gate = self.scheduler.request("arxiv") if self.scheduler is not None else nullcontext()
+        with gate:
+            response = None
+            try:
+                self.attempts += 1
+                response = self.opener(req, timeout=self.timeout)
+                yield response
+            except HTTPError as exc:
+                if self.scheduler is not None and exc.code in (429, 500, 502, 503, 504):
+                    self.scheduler.defer("arxiv", self._retry_after(exc.headers))
+                raise
+            finally:
+                if response is not None and hasattr(response, "close"):
+                    response.close()
 
     def provenance(self, arxiv_id: str, version: int) -> dict[str, str]:
         return {
@@ -107,24 +127,23 @@ class ArxivSourceClient:
                 if wait > 0:
                     self.sleep(wait)
 
-                self.attempts += 1
                 self._next_allowed = self.monotonic() + self.delay
 
                 resp = None
                 try:
-                    resp = self.opener(req, timeout=self.timeout)
-                    written = 0
-                    with open(destination, "wb") as f_out:
-                        while chunk := resp.read(65536):
-                            written += len(chunk)
-                            if written > self.max_download_bytes:
-                                raise RemoteError(
-                                    "remote_error",
-                                    f"Download size {written} exceeds limit {self.max_download_bytes}",
-                                    retryable=False,
-                                )
-                            f_out.write(chunk)
-                    return written
+                    with self._response(req) as resp:
+                        written = 0
+                        with open(destination, "wb") as f_out:
+                            while chunk := resp.read(65536):
+                                written += len(chunk)
+                                if written > self.max_download_bytes:
+                                    raise RemoteError(
+                                        "remote_error",
+                                        f"Download size {written} exceeds limit {self.max_download_bytes}",
+                                        retryable=False,
+                                    )
+                                f_out.write(chunk)
+                        return written
 
                 except RemoteError as exc:
                     destination.unlink(missing_ok=True)
@@ -203,10 +222,6 @@ class ArxivSourceClient:
                         retryable=True,
                     )
                     self.sleep(self.delay * attempt)
-
-                finally:
-                    if resp is not None and hasattr(resp, "close"):
-                        resp.close()
 
             if last_error is not None:
                 raise last_error
