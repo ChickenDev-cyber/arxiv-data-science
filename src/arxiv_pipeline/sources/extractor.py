@@ -60,7 +60,11 @@ def detect_source_kind(source_path: Path) -> str:
                 if is_tex_content(sample):
                     return "gzip_tex"
                 return "other"
-        except (gzip.BadGzipFile, zlib.error, EOFError, OSError):
+        except EOFError as exc:
+            raise SourceProcessingError(
+                "invalid_source", f"Truncated gzip source: {exc}", retryable=True,
+            ) from exc
+        except (gzip.BadGzipFile, zlib.error, OSError):
             return "other"
 
     # Uncompressed TAR check

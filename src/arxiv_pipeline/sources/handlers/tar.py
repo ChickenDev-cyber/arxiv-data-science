@@ -1,8 +1,10 @@
 """TAR and TAR-GZIP source archive extraction handler."""
 
+import gzip
 from pathlib import Path, PurePosixPath
 import shutil
 import tarfile
+import zlib
 
 from arxiv_pipeline.contracts import SourceFile, SourceMetrics
 from arxiv_pipeline.sources.handlers.base import (
@@ -11,6 +13,29 @@ from arxiv_pipeline.sources.handlers.base import (
     classify_file,
     to_relative_path,
 )
+
+
+def _verify_gzip_end(source_path, members, limits):
+    """tarfile can stop at TAR padding before GZIP verifies its trailer."""
+    with source_path.open("rb") as source:
+        if source.read(2) != b"\x1f\x8b":
+            return
+    # Account for actual metadata/block overhead and reserve 64 KiB for record padding.
+    # The configured payload budget still bounds the full decompression pass.
+    end = max((m.offset_data + ((m.size + 511) // 512) * 512 for m in members), default=0)
+    overhead = max(0, end - sum(m.size for m in members))
+    limit = limits.max_extracted_bytes + overhead + 65536
+    try:
+        with gzip.open(source_path, "rb") as source:
+            total = 0
+            while chunk := source.read(65536):
+                total += len(chunk)
+                if total > limit:
+                    raise SourceProcessingError("extract_limit", "GZIP data exceeds TAR extent and padding")
+    except (EOFError, gzip.BadGzipFile, zlib.error, OSError) as exc:
+        raise SourceProcessingError(
+            "invalid_source", f"Corrupt gzip TAR stream: {exc}", retryable=isinstance(exc, EOFError),
+        ) from exc
 
 
 class TarHandler:
@@ -30,18 +55,18 @@ class TarHandler:
 
         try:
             tar = tarfile.open(source_path, mode="r:*")
-        except (tarfile.TarError, EOFError, OSError) as e:
+        except (tarfile.TarError, EOFError, OSError, zlib.error) as e:
             raise SourceProcessingError(
-                "invalid_source", f"Cannot open TAR archive: {e}"
+                "invalid_source", f"Cannot open TAR archive: {e}", retryable=isinstance(e, EOFError),
             ) from e
 
         try:
             with tar:
                 try:
                     members = tar.getmembers()
-                except (tarfile.TarError, EOFError, OSError) as e:
+                except (tarfile.TarError, EOFError, OSError, zlib.error) as e:
                     raise SourceProcessingError(
-                        "invalid_source", f"Failed to read TAR members: {e}"
+                        "invalid_source", f"Failed to read TAR members: {e}", retryable=isinstance(e, EOFError),
                     ) from e
 
                 if len(members) > limits.max_members:
@@ -172,6 +197,7 @@ class TarHandler:
                             if item.is_dir():
                                 shutil.rmtree(item, ignore_errors=True)
 
+            _verify_gzip_end(source_path, members, limits)
             metrics: SourceMetrics = {
                 "download_bytes": None,
                 "extracted_bytes_before_filter": before_bytes,
@@ -181,7 +207,7 @@ class TarHandler:
             }
             return retained_files, metrics
 
-        except Exception:
+        except Exception as exc:
             # Rollback: Clean up any files/directories created during this extraction
             if destination.exists():
                 for item in destination.iterdir():
@@ -189,4 +215,8 @@ class TarHandler:
                         item.unlink(missing_ok=True)
                     elif item.is_dir():
                         shutil.rmtree(item, ignore_errors=True)
+            if isinstance(exc, (tarfile.TarError, EOFError, gzip.BadGzipFile, zlib.error)):
+                raise SourceProcessingError(
+                    "invalid_source", f"Corrupt TAR content: {exc}", retryable=isinstance(exc, EOFError),
+                ) from exc
             raise

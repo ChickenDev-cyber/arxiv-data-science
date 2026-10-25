@@ -30,13 +30,15 @@ class SourceProcessingError(Exception):
         self,
         code: Literal["invalid_source", "unsafe_archive", "extract_limit"],
         message: str,
+        *,
+        retryable: bool = False,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.info: ErrorInfo = {
             "code": code,
             "message": message,
-            "retryable": False,
+            "retryable": retryable,
             "http_status": None,
         }
 

@@ -10,6 +10,7 @@ from .models import RunOptions,ModuleSet
 from .state import load_options
 from .mock import make_mock_modules
 from .service import run_pipeline
+from .progress import TerminalProgress
 
 
 def make_live_modules(options,scheduler):
@@ -41,6 +42,7 @@ def main(argv=None):
     parser.add_argument('--max-papers',type=int,help='Verified papers selected per owner (default 5)')
     parser.add_argument('--full-range',action='store_true',help='Explicitly remove both sample limits')
     parser.add_argument('--stop-after-tasks',type=int,help='Pause at a task boundary for a resume check')
+    parser.add_argument('--quiet',action='store_true',help='Hide terminal progress; keep JSON summary and file logs')
     args=parser.parse_args(argv)
     if args.resume and (args.owner or args.all_owners or args.mock or args.full_range or args.max_candidates is not None or args.max_papers is not None):
         parser.error('--resume reads owners/mode/limits from state; do not supply them again')
@@ -56,7 +58,10 @@ def main(argv=None):
                 None if args.full_range else 10 if args.max_candidates is None else args.max_candidates,
                 None if args.full_range else 5 if args.max_papers is None else args.max_papers)
         modules=make_mock_modules(options) if options.is_mock else make_live_modules(options,RequestScheduler())
-        result=run_pipeline(options,modules,stop_after_tasks=args.stop_after_tasks)
+        with TerminalProgress(enabled=not args.quiet) as progress:
+            progress(f"Bắt đầu run {options.run_id} | {'mock' if options.is_mock else 'dữ liệu thật'} | {len(options.owners)} dải")
+            result=run_pipeline(options,modules,stop_after_tasks=args.stop_after_tasks,progress=progress)
+            progress(f'Kết thúc | {result.executed_tasks} task mới | {result.reused_tasks} task dùng lại | mã thoát {result.exit_code}')
     except (ValueError,OSError,sqlite3.Error) as exc:
         print(f'T5: {exc}',file=sys.stderr);return 1
     print(json.dumps({'run_id':options.run_id,'is_mock':options.is_mock,'papers':result.scope['scope']['paper_count'],

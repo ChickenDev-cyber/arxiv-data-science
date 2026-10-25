@@ -73,7 +73,9 @@ class GzipTexHandler:
                         item.unlink(missing_ok=True)
                     elif item.is_dir():
                         shutil.rmtree(item, ignore_errors=True)
-            raise SourceProcessingError("invalid_source", f"Corrupt gzip source: {e}") from e
+            raise SourceProcessingError(
+                "invalid_source", f"Corrupt gzip source: {e}", retryable=isinstance(e, EOFError),
+            ) from e
 
         retained_files: list[SourceFile] = [
             {"path": "main.tex", "size_bytes": written}
