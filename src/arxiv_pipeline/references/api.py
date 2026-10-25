@@ -25,7 +25,7 @@ from xml.etree import ElementTree as ET
 
 from ..discovery.api import ApiResponse, RemoteError, _default_transport, _positive_number
 from ..identifiers import is_valid_arxiv_id as is_canonical_id, normalize_arxiv_id
-from ..http import scheduled_transport
+from ..http import scheduled_transport, rate_limit_delay
 
 S2_BASE = "https://api.semanticscholar.org/graph/v1/paper/"
 ARXIV_API = "https://export.arxiv.org/api/query"
@@ -56,6 +56,8 @@ class _PacedClient:
         self._next_allowed = 0.0
         self._lock = threading.Lock()
         self.scheduler = scheduler
+        self.group = group
+        self._s2_429 = 0
         if scheduler is not None:
             self.transport = scheduled_transport(self.transport, scheduler, group, self)
 
@@ -86,9 +88,13 @@ class _PacedClient:
                 try:
                     response = self.transport(url, self.timeout, self.headers)
                     if response.status_code == 200:
+                        self._s2_429 = 0
                         return response.body
                     retry_after = self._retry_after(response.headers)
                     code = response.status_code
+                    if code == 429 and self.group == "semantic_scholar" and self.scheduler is None:
+                        self._s2_429 += 1
+                        retry_after = rate_limit_delay(self._s2_429, retry_after)
                     if code == 404 and not_found_is_error:
                         error = RemoteError("not_found", "Resource not found (HTTP 404)", False, 404)
                     else:

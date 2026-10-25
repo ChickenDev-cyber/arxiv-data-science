@@ -56,3 +56,64 @@ class SchedulerTests(unittest.TestCase):
         client=ApiClient(scheduler=s,transport=lambda *args:ApiResponse(200,{},b"ok"))
         with self.assertRaises(KeyboardInterrupt):client.query(["2504.17523"])
         self.assertEqual(client.attempts,0)
+
+    def test_s2_cooldown_survives_exhaustion_and_new_clients(self):
+        c=Clock();s=RequestScheduler(monotonic=c.monotonic,sleep=c.sleep);starts=[]
+        def busy(*args):starts.append(c.now);return ApiResponse(429,{},b'')
+        kw=dict(scheduler=s,monotonic=c.monotonic,sleep=c.sleep,api_key='')
+        with self.assertRaises(RemoteError):
+            SemanticScholarClient(transport=busy,**kw)._get('https://api.semanticscholar.org/first')
+        self.assertEqual(starts,[0.,30.,90.])
+        with self.assertRaises(RemoteError):
+            SemanticScholarClient(transport=busy,max_attempts=1,**kw)._get('https://api.semanticscholar.org/next')
+        self.assertEqual(starts[-1],210.)
+        def ok(*args):starts.append(c.now);return ApiResponse(200,{},b'ok')
+        SemanticScholarClient(transport=ok,**kw)._get('https://api.semanticscholar.org/good')
+        self.assertEqual(starts[-1],330.)
+
+    def test_s2_success_resets_fallback(self):
+        for shared in (False,True):
+            with self.subTest(shared=shared):
+                c=Clock();starts=[];replies=iter([429,429,200,429,200])
+                def transport(*args):starts.append(c.now);return ApiResponse(next(replies),{},b'ok')
+                client=SemanticScholarClient(transport=transport,monotonic=c.monotonic,sleep=c.sleep,
+                    scheduler=RequestScheduler(monotonic=c.monotonic,sleep=c.sleep) if shared else None,api_key='')
+                client._get('https://api.semanticscholar.org/a')
+                client._get('https://api.semanticscholar.org/b')
+                self.assertEqual(starts,[0.,30.,90.,91.,121.])
+
+    def test_s2_standalone_keeps_final_cooldown(self):
+        c=Clock();starts=[];replies=iter([429,429,429,200])
+        def transport(*args):starts.append(c.now);return ApiResponse(next(replies),{},b'ok')
+        client=SemanticScholarClient(transport=transport,monotonic=c.monotonic,sleep=c.sleep,api_key='')
+        with self.assertRaises(RemoteError):client._get('https://api.semanticscholar.org/a')
+        client._get('https://api.semanticscholar.org/b')
+        self.assertEqual(starts,[0.,30.,90.,210.])
+
+    def test_s2_long_retry_after_does_not_block_arxiv(self):
+        for date in (False,True):
+            with self.subTest(date=date):
+                c=Clock();s=RequestScheduler(monotonic=c.monotonic,sleep=c.sleep);starts=[]
+                header=format_datetime(datetime.fromtimestamp(3600,timezone.utc),usegmt=True) if date else '3600'
+                def busy(*args):return ApiResponse(429,{'Retry-After':header},b'')
+                with self.assertRaises(RemoteError):
+                    SemanticScholarClient(transport=busy,scheduler=s,max_attempts=1,monotonic=c.monotonic,
+                        sleep=c.sleep,wall_clock=lambda:c.now,api_key='')._get('https://api.semanticscholar.org/a')
+                def ok(*args):starts.append(c.now);return ApiResponse(200,{},b'ok')
+                OaiClient(transport=ok,scheduler=s,monotonic=c.monotonic,sleep=c.sleep).record('2504.17523')
+                self.assertEqual(starts,[0.])
+                SemanticScholarClient(transport=ok,scheduler=s,monotonic=c.monotonic,
+                    sleep=c.sleep,api_key='')._get('https://api.semanticscholar.org/b')
+                self.assertEqual(starts,[0.,3600.])
+
+    def test_interrupt_during_s2_cooldown_counts_no_send(self):
+        c=Clock();s=RequestScheduler(monotonic=c.monotonic,sleep=c.sleep)
+        with self.assertRaises(RemoteError):
+            SemanticScholarClient(transport=lambda *a:ApiResponse(429,{},b''),scheduler=s,max_attempts=1,
+                monotonic=c.monotonic,sleep=c.sleep,api_key='')._get('https://api.semanticscholar.org/a')
+        def interrupt(_):raise KeyboardInterrupt()
+        s.sleep=interrupt
+        client=SemanticScholarClient(transport=lambda *a:ApiResponse(200,{},b'ok'),scheduler=s,
+            monotonic=c.monotonic,sleep=c.sleep,api_key='')
+        with self.assertRaises(KeyboardInterrupt):client._get('https://api.semanticscholar.org/b')
+        self.assertEqual(client.attempts,0)

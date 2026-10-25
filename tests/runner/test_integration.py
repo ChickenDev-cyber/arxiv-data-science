@@ -12,6 +12,76 @@ from arxiv_pipeline.runner.state import StateStore
 
 
 class IntegrationTests(unittest.TestCase):
+    def test_live_clients_recover_sources_and_s2_with_task_resume(self):
+        import io
+        import re
+        from collections import Counter
+        from types import SimpleNamespace
+        from arxiv_pipeline.discovery.api import ApiResponse
+        from arxiv_pipeline.http import RequestScheduler
+        from arxiv_pipeline.references.api import SemanticScholarClient
+        from arxiv_pipeline.references.service import ReferencesModule
+        from arxiv_pipeline.runner.models import ModuleSet
+        from arxiv_pipeline.sources.api import ArxivSourceClient
+        from arxiv_pipeline.sources.extractor import SourceExtractor
+        from arxiv_pipeline.sources.service import SourcesModule
+
+        class Clock:
+            now=0.
+            def monotonic(self):return self.now
+            def sleep(self,seconds):self.now+=seconds
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);o=RunOptions('stability',root/'corpus',('trong','hoang'),True)
+            mock=make_mock_modules(o);clock=Clock()
+            scheduler=RequestScheduler(monotonic=clock.monotonic,sleep=clock.sleep)
+            phase=[0];source_calls=Counter();s2_calls=[]
+
+            def opener(request,timeout):
+                aid,version=re.search(r'/src/(.+)v(\d+)$',request.full_url).groups()
+                version=int(version);source_calls[aid,version]+=1
+                if aid=='2504.17523' and version==2 and phase[0]==0:raise TimeoutError('synthetic timeout')
+                if aid=='2503.06914' and version==1:return io.BytesIO(b'%PDF-1.7\nsynthetic PDF')
+                payload=root/'payload'
+                mock.sources.client.download(aid,version,payload)
+                body=payload.read_bytes()
+                if aid=='2504.17523' and version==1 and source_calls[aid,version]==1:body=body[:-4]
+                return io.BytesIO(body)
+
+            def transport(url,timeout,headers):
+                aid=re.search(r'ARXIV:([^/]+)/references',url).group(1)
+                s2_calls.append((aid,clock.now))
+                if aid=='2503.06914' and phase[0]==0:return ApiResponse(429,{},b'')
+                return ApiResponse(200,{},json.dumps(mock.references.reader.references_page(aid,0,100)).encode())
+
+            client=ArxivSourceClient(opener=SimpleNamespace(open=opener),scheduler=scheduler,
+                monotonic=clock.monotonic,sleep=clock.sleep,delay=0)
+            reader=SemanticScholarClient(transport=transport,scheduler=scheduler,
+                monotonic=clock.monotonic,sleep=clock.sleep,api_key='')
+            modules=ModuleSet(mock.discovery,mock.metadata,SourcesModule(client,SourceExtractor()),
+                ReferencesModule(reader,mock.references.dates))
+            first=run_pipeline(o,modules)
+            self.assertEqual(first.exit_code,2);self.assertTrue(first.validation['valid'])
+            self.assertEqual(source_calls['2504.17523',1],2)
+            self.assertEqual(source_calls['2504.17523',2],3)
+            self.assertEqual([s2_calls[i+1][1]-s2_calls[i][1] for i in range(2)],[30.,60.])
+            self.assertGreaterEqual(s2_calls[3][1]-s2_calls[2][1],120.)
+            source=o.output_root/'raw/trong/2504-17523/v1/main.tex';before=source.read_bytes()
+            phase[0]=1;second=run_pipeline(o,modules)
+            self.assertEqual(second.executed_tasks,2)
+            self.assertEqual(second.exit_code,2)  # The PDF-only record remains incomplete for TeX.
+            self.assertTrue(second.validation['valid'])
+            self.assertEqual(len(second.quality['issues']),1)
+            self.assertEqual(second.quality['issues'][0]['arxiv_id'],'2503.06914')
+            self.assertEqual(source.read_bytes(),before)
+            self.assertEqual(source_calls['2504.17523',1],2)
+            self.assertEqual(source_calls['2503.06914',1],1)
+            self.assertEqual(source_calls['2504.17523',2],4)
+            accepted=[json.loads(line) for line in (o.output_root/'runs/stability/accepted_results.jsonl').read_text().splitlines()]
+            self.assertEqual(len(accepted),10)
+            self.assertEqual(len({(r['owner'],r['step'],r['arxiv_id'],r['version']) for r in accepted}),10)
+            self.assertEqual(run_pipeline(o,modules).executed_tasks,0)
+
     def test_first_page_reference_failure_is_recorded_and_later_papers_continue(self):
         with tempfile.TemporaryDirectory() as tmp:
             o=RunOptions('first-page',Path(tmp),tuple(c['owner'] for c in ASSIGNED_RANGES),True)

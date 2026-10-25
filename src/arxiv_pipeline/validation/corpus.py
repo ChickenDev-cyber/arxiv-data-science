@@ -42,6 +42,20 @@ def validate_handoff(scope,accepted):
     return errors
 
 
+def paper_issues(task,bykey):
+    """Completeness rules shared by quality reports and terminal summaries."""
+    errors=[];owner,aid=task['owner'],task['arxiv_id']
+    def at(step,version=None):return {**task,'step':step,'version':version}
+    m=bykey.get((owner,'metadata',aid,None))
+    if m is None or m['status']!='success':errors.append(issue(at('metadata'),None,'Metadata/history is incomplete'))
+    for v in m['data']['versions'] if m else []:
+        s=bykey.get((owner,'sources',aid,v['version']))
+        if s is None or s['status']!='success':errors.append(issue(at('sources',v['version']),None,'TeX source unavailable or incomplete'))
+    r=bykey.get((owner,'references',aid,None))
+    if r is None or r['status'] not in ('success','empty'):errors.append(issue(at('references'),None,'References/pages or reference metadata incomplete'))
+    return errors
+
+
 def validate_corpus(scope,accepted):
     errors=validate_handoff(scope,accepted)
     if errors:return errors
@@ -50,13 +64,5 @@ def validate_corpus(scope,accepted):
         d=bykey.get((c["owner"],"discovery",None,None))
         if d is None or d["error"] or d["data"]["unresolved_ids"]:
             errors.append(issue(subject(scope,{"owner":c["owner"],"arxiv_id":None},"discovery"),None,"Discovery has unresolved work"))
-    for task in scope["scope"]["paper_tasks"]:
-        owner,aid=task["owner"],task["arxiv_id"]
-        m=bykey.get((owner,"metadata",aid,None))
-        if m is None or m["status"]!="success":errors.append(issue(subject(scope,task),None,"Metadata/history is incomplete"))
-        for v in m["data"]["versions"] if m else []:
-            s=bykey.get((owner,"sources",aid,v["version"]))
-            if s is None or s["status"]!="success":errors.append(issue(subject(scope,task,"sources",v["version"]),None,"TeX source unavailable or incomplete"))
-        r=bykey.get((owner,"references",aid,None))
-        if r is None or r["status"] not in ("success","empty"):errors.append(issue(subject(scope,task,"references"),None,"References/pages or reference metadata incomplete"))
+    for task in scope["scope"]["paper_tasks"]:errors.extend(paper_issues(task,bykey))
     return errors

@@ -6,12 +6,18 @@ import threading
 import time
 
 
+def rate_limit_delay(streak,retry_after):
+    """Only the fallback is capped; a server cooldown can be arbitrarily longer."""
+    return max(30. * (2 ** min(max(streak-1,0),2)),retry_after)
+
+
 class RequestScheduler:
     def __init__(self,*,monotonic=time.monotonic,sleep=time.sleep):
         self.monotonic,self.sleep=monotonic,sleep
         self._locks={g:threading.RLock() for g in ("arxiv","semantic_scholar")}
         self._next={g:0. for g in self._locks}
         self._s2=deque()
+        self._s2_429=0
 
     @contextmanager
     def request(self,group):
@@ -32,6 +38,18 @@ class RequestScheduler:
             raise ValueError("Cooldown must be finite and nonnegative")
         with self._locks[group]:self._next[group]=max(self._next[group],self.monotonic()+seconds)
 
+    def rate_limited(self,group,retry_after):
+        with self._locks[group]:
+            if group=='semantic_scholar':
+                self._s2_429+=1
+                retry_after=rate_limit_delay(self._s2_429,retry_after)
+            self.defer(group,retry_after)
+            return retry_after
+
+    def request_succeeded(self,group):
+        with self._locks[group]:
+            if group=='semantic_scholar':self._s2_429=0
+
 
 def scheduled_transport(transport,scheduler,group,client):
     """Buffered transports consume and close their response before returning."""
@@ -39,7 +57,11 @@ def scheduled_transport(transport,scheduler,group,client):
         with scheduler.request(group):
             client.attempts+=1
             response=transport(url,timeout,headers)
-            if response.status_code in (429,500,502,503,504):
+            if response.status_code==429:
+                scheduler.rate_limited(group,client._retry_after(response.headers))
+            elif response.status_code==200:
+                scheduler.request_succeeded(group)
+            elif response.status_code in (500,502,503,504):
                 scheduler.defer(group,client._retry_after(response.headers))
             return response
     return send

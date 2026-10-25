@@ -1,6 +1,7 @@
 """T3: arXiv source download and extraction service."""
 
 from datetime import datetime, timezone
+from contextlib import nullcontext
 from pathlib import Path
 import re
 import shutil
@@ -93,47 +94,55 @@ class SourcesModule:
         scratch_base = output_root / "scratch" / context["run_id"] / "sources"
         scratch_base.mkdir(parents=True, exist_ok=True)
 
-        with tempfile.TemporaryDirectory(dir=scratch_base) as tmp_scratch:
+        budget_context = getattr(self.client, "fetch_budget", nullcontext)
+        with tempfile.TemporaryDirectory(dir=scratch_base) as tmp_scratch, budget_context() as budget:
             scratch_file = Path(tmp_scratch) / f"{arxiv_id}v{version}.download"
             scratch_extract = Path(tmp_scratch) / "extracted"
 
-            try:
-                # 1. Stream download
-                download_bytes = self.client.download(arxiv_id, version, scratch_file)
+            for processing_attempt in range(3):
+                error = None
+                download_bytes = None
+                metrics["download_bytes"] = None
+                try:
+                    download_bytes = self.client.download(arxiv_id, version, scratch_file)
+                    extraction = self.extractor.extract(
+                        scratch_file, scratch_extract, limits=self.limits
+                    )
+                    metrics = dict(extraction.metrics)
+                    metrics["download_bytes"] = download_bytes
 
-                # 2. Extract and classify payload
-                extraction = self.extractor.extract(
-                    scratch_file, scratch_extract, limits=self.limits
-                )
-                metrics = dict(extraction.metrics)
-                metrics["download_bytes"] = download_bytes
-
-                if extraction.status == "unsupported":
-                    status = "unsupported"
-                    data = {
-                        "source_kind": extraction.source_kind,
-                        "source_dir": source_dir,
-                        "files": [],
-                    }
-                else:
-                    # Promote complete output into staging
-                    staging_path.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.move(str(scratch_extract), str(staging_path))
-                    status = "success"
-                    data = {
-                        "source_kind": extraction.source_kind,
-                        "source_dir": source_dir,
-                        "files": extraction.files,
-                    }
-
-            except RemoteError as exc:
-                error = exc.info
-                status = "not_found" if error["code"] == "not_found" else "failed"
-
-            except SourceProcessingError as exc:
-                error = exc.info
-                status = "failed"
-                metrics["download_bytes"] = download_bytes
+                    if extraction.status == "unsupported":
+                        status = "unsupported"
+                        data = {
+                            "source_kind": extraction.source_kind,
+                            "source_dir": source_dir,
+                            "files": [],
+                        }
+                    else:
+                        staging_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(scratch_extract), str(staging_path))
+                        status = "success"
+                        data = {
+                            "source_kind": extraction.source_kind,
+                            "source_dir": source_dir,
+                            "files": extraction.files,
+                        }
+                    break
+                except RemoteError as exc:
+                    error = exc.info
+                    status = "not_found" if error["code"] == "not_found" else "failed"
+                    break
+                except SourceProcessingError as exc:
+                    error = exc.info
+                    status = "failed"
+                    metrics["download_bytes"] = download_bytes
+                    if not error["retryable"] or processing_attempt == 2 or (
+                        budget is not None and budget.remaining <= 0
+                    ):
+                        break
+                    scratch_file.unlink(missing_ok=True)
+                    if scratch_extract.exists():
+                        shutil.rmtree(scratch_extract)
 
         provenance = dict(self.client.provenance(arxiv_id, version))
 

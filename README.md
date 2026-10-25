@@ -337,6 +337,10 @@ PYTHONPATH=src python -m arxiv_pipeline.runner \
 
 Mẫu mặc định có 5 bài giả lập tại ID đầu dải của mỗi owner, mỗi bài 2 phiên bản nguồn. Có 25 Result được công nhận, 9 mục reference gốc và 4 mục có arXiv ID. Mọi Result có `is_mock=true`; đây là dữ liệu kiểm thử, không dùng để báo cáo corpus thật.
 
+CLI hiện tiến độ trực tiếp trên terminal: bài đang xử lý, bước bắt đầu/kết thúc và task được dùng lại. Khi một bước chạy lâu, khoảng mỗi 15 giây sẽ có dòng “Vẫn đang xử lý” kèm thời gian đã chờ. Các dòng này ghi vào stderr và flush ngay; stdout vẫn chỉ chứa JSON tổng kết. Thêm `--quiet` để tắt tiến độ, các file log và báo cáo vẫn được ghi bình thường. Tính năng hiển thị áp dụng khi khởi động CLI mới; lượt đã chạy từ trước tiếp tục dùng code đã nạp.
+
+Sau khi xử lý hết các bài của một thành viên, terminal in số bài thành công, còn thiếu và thất bại; cuối lượt có tổng kết toàn bộ mẫu. Ba nhóm không trùng: thành công nghĩa là metadata đầy đủ, nguồn của mọi phiên bản thành công và references success/empty; thiếu nghĩa là đã có kết quả được công nhận nhưng chưa đủ; thất bại nghĩa là đã xử lý mà chưa có kết quả nào được công nhận cho bài. PDF-only tính vào thiếu. Số đếm gồm cả dữ liệu tốt được dùng lại khi resume, không phải số request hoặc task. Các dòng này dùng cùng quy tắc đầy đủ với quality report và không thay thế thống kê T6.
+
 ### Chạy mẫu thật
 
 ```bash
@@ -362,6 +366,19 @@ PYTHONPATH=src python -m arxiv_pipeline.runner \
 Resume đọc mode, owner và giới hạn đã lưu; không truyền lại các cờ cấu hình đó. Giữ cùng run_id/output root. Run mới dùng output root mới; runner từ chối nhận thư mục dữ liệu có sẵn không có state tương ứng.
 
 Trước khi bỏ qua task đã công nhận, runner đối chiếu file, kích thước và SHA-256 với SQLite. File mất/hỏng được đưa về diện cần xử lý. Task đang dở có thể phải chạy lại từ đầu; baseline chưa tiếp tục theo byte hoặc trang API. Nguồn tốt còn hợp lệ được dùng lại. Retry lỗi không thay bộ dữ liệu tốt bằng kết quả lỗi; partial giữ phần đã có và được thử bổ sung ở lần resume tiếp theo.
+
+Downloader kiểm tra HTTP status, Content-Length nếu có và từ chối phản hồi từng phần cho một GET toàn bộ. T3 thử lại tải thiếu hoặc dữ liệu nén kết thúc sớm, với tổng tối đa 3 request trong một lần fetch nguồn bằng client thật; retry tải và giải nén dùng chung ngân sách. GZIP/TAR phải vượt kiểm tra kết thúc stream trước khi bàn giao. Provenance nguồn ghi trạng thái HTTP, số byte kỳ vọng/thực nhận và Content-Range khi có. PDF-only vẫn là unsupported; archive không an toàn hoặc vượt giới hạn không được tải lại vô ích.
+
+Khi Semantic Scholar trả 429, khoảng chờ dự phòng tăng 30 → 60 → 120 giây và giữ 120 giây nếu tiếp tục bị giới hạn; HTTP 200 đặt lại mức chờ. Luôn đợi ít nhất Retry-After hợp lệ của máy chủ, kể cả khi dài hơn mức dự phòng hoặc ở dạng HTTP-date. Khoảng chờ dùng chung áp dụng cả sang bài tiếp theo sau khi hết 3 attempts. Cooldown này nằm trong tiến trình, chưa được lưu qua lần khởi động lại. References chưa lấy đủ vẫn được ghi failed/partial để bổ sung bằng resume.
+
+Chạy bổ sung lượt mẫu thật đã có, giữ nguyên cấu hình đã lưu:
+
+```bash
+PYTHONPATH=src python -m arxiv_pipeline.runner \
+  --resume --run-id baseline-trong-05 --output-root data/baseline-trong-05
+```
+
+Sau khi runner dừng, đọc validation.json, quality.json và scope.json trong thư mục runs của lượt chạy. Validation hợp lệ xác nhận cấu trúc và artifacts; quality còn issue cần được đối chiếu theo bài/phiên bản. Không coi PDF-only là đã thu thập TeX thành công hoặc coi một đợt mẫu là đã xử lý toàn dải.
 
 ### Đọc kết quả
 
