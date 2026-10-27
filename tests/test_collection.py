@@ -60,16 +60,14 @@ class FakeRunReader:
 
 
 def summary(discovered, complete, expected=0, success=0, samples=0, mean=None):
-    return {"papers_discovered": discovered, "metadata_complete_papers": complete, "papers_complete": complete,
-            "paper_success_rate": complete / discovered if discovered else None,
-            "source_versions_expected": expected, "source_versions_success": success,
-            "source_versions_unsupported": 0, "source_versions_unresolved": 0,
-            "references_fully_fetched_papers": complete, "references_query_success_rate": None,
-            "references_metadata_complete_papers": 0, "metadata_success_rate": None,
-            "source_success_rate": None, "references_arxiv_total": 0, "references_complete_total": 0,
-            "reference_metadata_success_rate": None, "mean_arxiv_references_per_paper": None,
-            "source_size_sample_count": samples, "mean_extracted_bytes_before_filter": mean,
-            "mean_retained_source_bytes": mean}
+    """Counts for one owner; rates are derived from them as schema spec section 11 defines."""
+    counts = {"papers_discovered": discovered, "metadata_complete_papers": complete, "papers_complete": complete,
+              "source_versions_expected": expected, "source_versions_success": success,
+              "source_versions_unsupported": 0, "source_versions_unresolved": expected - success,
+              "references_fully_fetched_papers": complete, "references_metadata_complete_papers": 0,
+              "references_arxiv_total": 0, "references_complete_total": 0, "source_size_sample_count": samples,
+              "mean_extracted_bytes_before_filter": mean, "mean_retained_source_bytes": mean}
+    return combine_summaries([counts])
 
 
 class FakeSummarizer:
@@ -186,15 +184,17 @@ class StatisticsTests(unittest.TestCase):
             write_snapshot(root, "s/trong", "trong", ["khang", "trong"])
             CollectionAssembler.save(root, CollectionAssembler().assemble(root, "g", ["s/nhi", "s/trong"]).manifest)
             runs = FakeRunReader({"nhi-run": ["huynh-nhi"], "trong-run": ["khang", "trong"]},
-                                 {"nhi-run": [("huynh-nhi", "2409.03594")], "trong-run": [("trong", "2504.17523")]})
-            values = {"huynh-nhi": summary(4, 2), "trong": summary(6, 6), "khang": summary(0, 0)}
+                                 {"nhi-run": [("huynh-nhi", f"2409.{n:05d}") for n in range(3594, 3598)],
+                                  "trong-run": [("trong", f"2504.{n:05d}") for n in range(17523, 17529)]})
+            # Khang is in the trong snapshot but has no selected paper, so gets no summary.
+            values = {"huynh-nhi": summary(4, 2), "trong": summary(6, 6)}
             with CollectionDirectoryReader(runs).open(root) as collection:
                 stats = CollectionStatisticsBuilder(FakeSummarizer(values)).build(collection)
         self.assertEqual(stats["missing_owners"], ["hoang", "man-nhi"])
-        self.assertEqual(sorted(stats["by_owner"]), ["huynh-nhi", "khang", "trong"])
+        self.assertEqual(sorted(stats["by_owner"]), ["huynh-nhi", "trong"])
         self.assertEqual(stats["summary"]["papers_complete"], 8)
         self.assertEqual(stats["summary"]["paper_success_rate"], 8 / 10)
-        self.assertEqual(stats["scope"]["paper_count"], 2)
+        self.assertEqual(stats["scope"]["paper_count"], 10)
 
     def test_matches_worked_example_of_schema_spec(self):
         # Section 15 of the schema spec: rates recomputed from these counts must match.
