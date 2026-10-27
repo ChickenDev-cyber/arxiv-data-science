@@ -1,6 +1,6 @@
 # arXiv Data Science — Milestone 1
 
-Repo mã nguồn cho đồ án Nhập môn Khoa học Dữ liệu: thu thập bài báo arXiv, phân tích nội dung và đối sánh tài liệu tham khảo. Đã triển khai T1 discovery, T2 metadata/lịch sử phiên bản, T3 nguồn TeX/BibTeX, T4 references và **T5 runner baseline có kiểm tra, lưu trữ và SQLite để chạy tiếp**. T5 đã được kiểm thử offline; độ phủ và hiệu năng crawl thật phải được đo trên lượt chạy thực tế.
+Repo mã nguồn cho đồ án Nhập môn Khoa học Dữ liệu: thu thập bài báo arXiv, phân tích nội dung và đối sánh tài liệu tham khảo. Đã có T1 discovery, T2 metadata/lịch sử phiên bản, T3 nguồn TeX/BibTeX, T4 references và **T5 runner theo công đoạn, có SQLite và checkpoint discovery theo lô**. Độ phủ và hiệu năng toàn dải phải được đo bằng lượt chạy thật; các phần tích hợp còn chờ được nêu ở mục T5.
 
 ## Cấu trúc code
 
@@ -9,9 +9,13 @@ src/
 ├── arxiv_pipeline/
 │   ├── __init__.py
 │   ├── contracts.py       # Schema chung: Input, Output và Result
+│   ├── pipeline_contracts.py # Kiểu checkpoint/snapshot/collection và Protocol
+│   ├── json_utils.py      # JSON canonical dùng chung
 │   ├── config.py          # Dải ID được giao cho năm thành viên
 │   ├── identifiers.py     # Kiểm tra và chuẩn hóa arXiv ID dùng chung cho T2, T4
 │   ├── examples.py        # Tạo dữ liệu mẫu offline theo schema
+│   ├── runner/            # PipelineRunner, factory, stage, SQLite, checkpoint, relocate
+│   ├── validation/        # Kiểm tra Result, scope và corpus
 │   ├── sources/           # T3 của Khang
 │   │   ├── __init__.py    # Xuất SourcesModule
 │   │   ├── service.py     # fetch_sources: kiểm tra, staging lifecycle, Result
@@ -58,7 +62,7 @@ __main__.py → cli.py → service.py → api.py → API arXiv
                  └→ preview/<run_id>/<owner>.json
 ```
 
-Schema và cấu hình nằm ngoài `discovery` vì các task khác cũng cần dùng. Khi triển khai T2–T4, mỗi task sẽ có module riêng trong `arxiv_pipeline`.
+Schema và cấu hình nằm ngoài `discovery` để các module dùng chung. Các service nhận client/port qua constructor; runner điều phối, công nhận dữ liệu và ghi trạng thái.
 
 ## Chạy T1
 
@@ -111,7 +115,7 @@ PYTHONPATH=src python -m arxiv_pipeline.discovery \
 
 Với dải qua tháng, chương trình duyệt đến **99.999** ở tháng đầu rồi bắt đầu từ 1 ở tháng kế tiếp. Đây là giới hạn không gian số của ID hiện đại, không phải số bài thực tế trong tháng. Cách này không cần đoán điểm cuối tháng; đổi lại có nhiều ứng viên không tồn tại cần xác nhận. Dải Trọng có **83.142 ứng viên**, tương đương ít nhất **832 request theo lô**, chưa gồm retry hoặc kiểm tra riêng. CLI in chi phí theo lô trước khi gửi. Không dừng ở ID trống đầu tiên vì như vậy có thể bỏ sót bài.
 
-T1 hỗ trợ cấu hình ID năm 2015–2099, phù hợp năm dải hiện tại. Chưa có checkpoint/resume hoặc cache bền vững; mỗi lần gọi sẽ kiểm tra lại phạm vi. Preview chỉ được xuất khi hàm trả về, nên không dùng nó thay cơ chế phục hồi T5. Cùng run_id/owner sẽ ghi đè preview sau khi có Result mới; dùng run_id mới nếu cần giữ lịch sử thử.
+T1 hỗ trợ cấu hình ID năm 2015–2099, phù hợp năm dải hiện tại. CLI T1 độc lập chỉ ghi preview sau khi hàm trả về và không tự lưu checkpoint. Muốn tiếp tục discovery theo lô, dùng runner T5 bên dưới: các lô đã xác minh được lưu trong SQLite, lô dở chỉ truy vấn lại ID unresolved. Python API nhận port tùy chọn `DiscoveryModule(client, checkpoints=store)`; store cần được ràng buộc vào run tương ứng. Cùng run_id/owner ở CLI preview sẽ ghi đè preview sau Result mới.
 
 ## Dùng từ Python
 
@@ -326,6 +330,44 @@ result = module.fetch_sources(task, version=1, context=context)
 
 T5 dùng Python >=3.10 và thư viện chuẩn trên Linux/Colab. Chỉ một runner được ghi vào một output root. Các client arXiv dùng chung lịch request, gồm retry và tra ngày trong T4; Semantic Scholar có lịch riêng. API key tùy chọn lấy từ biến môi trường `S2_API_KEY`.
 
+### Chọn công đoạn
+
+`--stage` có bốn giá trị; mặc định `all`:
+
+| Giá trị | Công việc |
+|---|---|
+| `discovery` | Xác minh danh sách bài |
+| `sources` | Discovery, metadata và nguồn của các phiên bản đã biết |
+| `references` | Discovery và references; không cần metadata/nguồn thành công trước |
+| `all` | Discovery → metadata/nguồn của mọi bài → references của mọi bài |
+
+Có thể đổi stage khi resume, giữ nguyên run_id/output root và cấu hình đã lưu. Công đoạn nguồn hoàn tất có thể trả mã 2 vì references chưa chạy; xem `validation.json` và `quality.json` để phân biệt tính hợp lệ với độ đầy đủ. Khi dùng lại kết quả references đã có, stage sources không xóa chúng.
+
+Ví dụ chạy hai lượt bằng dữ liệu giả (chọn output root mới):
+
+```bash
+PYTHONPATH=src python -m arxiv_pipeline.runner \
+  --mock --all-owners --run-id stages-demo \
+  --output-root data/stages-demo --stage sources
+
+PYTHONPATH=src python -m arxiv_pipeline.runner \
+  --resume --run-id stages-demo --output-root data/stages-demo --stage references
+```
+
+### Kiến trúc và API bàn giao
+
+- `pipeline_contracts.py`: giữ Result 1.2, thêm TypedDict checkpoint/snapshot/collection, frozen DTO và các Protocol dùng chung. `format_version=1` là định dạng vận hành, không phải schema crawl.
+- `PipelineRunner`: điều phối và phục hồi; `LiveModuleFactory`/`MockModuleFactory` tạo service sau khi store mở. Hàm `run_pipeline(options, modules, ...)` vẫn dùng được với adapter cũ.
+- `SQLiteCheckpointStore`: lưu envelope/JSON theo run; có callback `validate_record` cho validator payload dùng chung. `InMemoryCheckpointStore` phục vụ test hoặc chương trình tự quản lý vòng đời cache.
+- `StateStore.readonly(path, run_id)`: đọc DB v1/v2 không tạo file hoặc migration; có `read_run_record()` và `artifact_inventory()`. Huỳnh Nhi dùng API này cho inspector. API đọc/restore hiện nhận journal mặc định của runner (rollback/DELETE); DB chế độ WAL bị từ chối trước khi mở để tránh tạo `-wal`/`-shm` hoặc bỏ qua dữ liệu chưa checkpoint.
+- `RunStateRelocator.relocate(new_root, run_id, old_root, snapshot_id=...)`: kiểm tra bản sao đã dừng, scope, file/hash và journal, rồi chỉ cập nhật đường dẫn trong config. Khang dùng nó sau khi kiểm tra/unpack snapshot. Đây không phải công cụ đóng gói snapshot; không đổi root bằng cách sửa tay SQLite hoặc Result.
+
+Khi mở DB để ghi, T5 tự migration cấu trúc v1→v2 để thêm bảng run_checkpoints. Accepted data, run_id, fingerprint và schema crawl 1.2 được giữ. DB v2 cần runner mới; code baseline cũ chỉ đọc DB v1. Giữ nguyên đường dẫn cho resume thông thường; khôi phục sang nơi khác đi qua cơ chế snapshot/relocator. Relocator đối chiếu scope với cấu hình đã fingerprint và các giới hạn mẫu trước khi cập nhật root.
+
+**Phần đã có và còn chờ:** checkpoint discovery và adapter lưu trữ đã triển khai. `validation/pipeline_contracts.py`, inspector/collection, snapshot, checkpoint trang references và cooldown qua restart thuộc phần các thành viên đang phát triển. Factory truyền cùng store khi constructor khai báo keyword `checkpoints`; module chưa có keyword vẫn chạy theo baseline. Khi validator chung có mặt, CLI dùng `validate_pipeline_document(..., kind="checkpoint")`; hiện kiểm tra envelope không thay thế kiểm tra đầy đủ payload. Lỗi từ constructor/validator được báo, không âm thầm hạ cấp. Chưa có CLI snapshot/collection hoặc HTTP Range trong đợt T1/T5 này.
+
+CLI ghi `provenance.producer_commit` cho Result mới chỉ khi nhận diện được code pipeline sạch trong Git. Code đang sửa hoặc không có Git để trống thông tin đó; không gán HEAD cho artifacts cũ.
+
 ### Chạy thử offline
 
 Chọn một thư mục output mới. Lệnh này gọi các service T1–T4 thật bằng adapter dữ liệu giả, tạo corpus qua writer T5 và không gửi request mạng:
@@ -338,6 +380,8 @@ PYTHONPATH=src python -m arxiv_pipeline.runner \
 Mẫu mặc định có 5 bài giả lập tại ID đầu dải của mỗi owner, mỗi bài 2 phiên bản nguồn. Có 25 Result được công nhận, 9 mục reference gốc và 4 mục có arXiv ID. Mọi Result có `is_mock=true`; đây là dữ liệu kiểm thử, không dùng để báo cáo corpus thật.
 
 CLI hiện tiến độ trực tiếp trên terminal: bài đang xử lý, bước bắt đầu/kết thúc và task được dùng lại. Khi một bước chạy lâu, khoảng mỗi 15 giây sẽ có dòng “Vẫn đang xử lý” kèm thời gian đã chờ. Các dòng này ghi vào stderr và flush ngay; stdout vẫn chỉ chứa JSON tổng kết. Thêm `--quiet` để tắt tiến độ, các file log và báo cáo vẫn được ghi bình thường. Tính năng hiển thị áp dụng khi khởi động CLI mới; lượt đã chạy từ trước tiếp tục dùng code đã nạp.
+
+Mỗi công đoạn có thanh tiến độ riêng: `Discovery` đếm ID đã xử lý trong giới hạn chạy; `Sources` đếm bài sau metadata và mọi phiên bản nguồn; `References` đếm bài sau bước references. Ví dụ: `Sources [##########----------] 50% | 5/10 bài`. Khi resume, kết quả được dùng lại cũng tăng tiến độ. **100% nghĩa là đã xử lý hết công đoạn**, kể cả kết quả thiếu/thất bại; độ đầy đủ xem tổng kết và quality report. Công đoạn không có bài hiển thị `0/0`, không tính 100%. Terminal tương tác cập nhật một dòng, còn khi chuyển hướng stderr vào file thì ghi các mốc thành dòng thường, không có mã điều khiển terminal. Adapter discovery cũ chưa hỗ trợ callback đếm theo dải thay cho ID.
 
 Sau khi xử lý hết các bài của một thành viên, terminal in số bài thành công, còn thiếu và thất bại; cuối lượt có tổng kết toàn bộ mẫu. Ba nhóm không trùng: thành công nghĩa là metadata đầy đủ, nguồn của mọi phiên bản thành công và references success/empty; thiếu nghĩa là đã có kết quả được công nhận nhưng chưa đủ; thất bại nghĩa là đã xử lý mà chưa có kết quả nào được công nhận cho bài. PDF-only tính vào thiếu. Số đếm gồm cả dữ liệu tốt được dùng lại khi resume, không phải số request hoặc task. Các dòng này dùng cùng quy tắc đầy đủ với quality report và không thay thế thống kê T6.
 
@@ -365,7 +409,7 @@ PYTHONPATH=src python -m arxiv_pipeline.runner \
 
 Resume đọc mode, owner và giới hạn đã lưu; không truyền lại các cờ cấu hình đó. Giữ cùng run_id/output root. Run mới dùng output root mới; runner từ chối nhận thư mục dữ liệu có sẵn không có state tương ứng.
 
-Trước khi bỏ qua task đã công nhận, runner đối chiếu file, kích thước và SHA-256 với SQLite. File mất/hỏng được đưa về diện cần xử lý. Task đang dở có thể phải chạy lại từ đầu; baseline chưa tiếp tục theo byte hoặc trang API. Nguồn tốt còn hợp lệ được dùng lại. Retry lỗi không thay bộ dữ liệu tốt bằng kết quả lỗi; partial giữ phần đã có và được thử bổ sung ở lần resume tiếp theo.
+Trước khi bỏ qua task đã công nhận, runner đối chiếu file, kích thước và SHA-256 với SQLite. File mất/hỏng được đưa về diện cần xử lý. Discovery tiếp tục theo checkpoint từng lô; nguồn tải dở và references hiện vẫn thử lại theo task, chưa tiếp tục theo byte/trang API. Nguồn tốt còn hợp lệ được dùng lại. Retry lỗi không thay bộ dữ liệu tốt bằng kết quả lỗi; partial giữ phần đã có và được thử bổ sung ở lần resume tiếp theo.
 
 Downloader kiểm tra HTTP status, Content-Length nếu có và từ chối phản hồi từng phần cho một GET toàn bộ. T3 thử lại tải thiếu hoặc dữ liệu nén kết thúc sớm, với tổng tối đa 3 request trong một lần fetch nguồn bằng client thật; retry tải và giải nén dùng chung ngân sách. GZIP/TAR phải vượt kiểm tra kết thúc stream trước khi bàn giao. Provenance nguồn ghi trạng thái HTTP, số byte kỳ vọng/thực nhận và Content-Range khi có. PDF-only vẫn là unsupported; archive không an toàn hoặc vượt giới hạn không được tải lại vô ích.
 
@@ -379,6 +423,12 @@ PYTHONPATH=src python -m arxiv_pipeline.runner \
 ```
 
 Sau khi runner dừng, đọc validation.json, quality.json và scope.json trong thư mục runs của lượt chạy. Validation hợp lệ xác nhận cấu trúc và artifacts; quality còn issue cần được đối chiếu theo bài/phiên bản. Không coi PDF-only là đã thu thập TeX thành công hoặc coi một đợt mẫu là đã xử lý toàn dải.
+
+### Thử trên Google Colab CPU
+
+Upload [src/colab_baseline_smoke.ipynb](src/colab_baseline_smoke.ipynb) lên Colab, chọn runtime CPU rồi chạy lần lượt các cell. Notebook tải đúng commit baseline `5db78b0`, chạy tối đa 5 bài trong 10 ID ứng viên của Trọng, hiện tiến độ, đo thời gian runner và tạo gói `.tar.gz` kèm SHA-256 để tải về. Lượt chạy dùng dữ liệu thật; mã thoát 2 có thể do PDF-only hoặc API chưa trả đủ dữ liệu, cần đối chiếu các báo cáo.
+
+Đây là phép thử môi trường, chưa phải benchmark chính thức. Dữ liệu làm việc nằm trong `/content/`; notebook chưa tự sao lưu lên Drive hoặc khôi phục sau khi máy ảo bị xóa. Chạy tiếp trong cùng phiên bằng `run_sample(resume=True)` rồi xuất lại gói kết quả. Muốn so tốc độ với máy cá nhân, dùng cùng commit, mẫu, cấu hình API key và output mới cho mỗi lượt đầu.
 
 ### Đọc kết quả
 

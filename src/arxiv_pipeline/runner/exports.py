@@ -29,7 +29,7 @@ class Exporter:
         self.extra_issues=[]
 
     def mark_unavailable(self):
-        r={'owner':self.store.read_scope()['scope']['ranges'][0]['owner'],
+        r={'owner':self.store.read_run_record().config['owners'][0],
            'arxiv_id':None,'version':None,'step':'discovery'}
         atomic_json(safe_path(self.root,f'runs/{self.run_id}/validation.json'),{
             'valid':False,'issues':[issue(r,None,'Handoff is being updated; wait for a successful checkpoint')]})

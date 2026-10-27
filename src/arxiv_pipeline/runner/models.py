@@ -8,10 +8,7 @@ from ..contracts import (Owner, Step, Context, RangeConfig, PaperTask, RunScope,
                          DiscoveryModule, MetadataModule, SourcesModule, ReferencesModule, SCHEMA_VERSION)
 from ..discovery.service import validate_context
 from ..identifiers import is_valid_arxiv_id
-
-
-def canonical(value):
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+from ..json_utils import canonical
 
 
 @dataclass(frozen=True)
