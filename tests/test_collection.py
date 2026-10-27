@@ -1,5 +1,6 @@
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 import hashlib
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -7,6 +8,7 @@ import unittest
 
 from arxiv_pipeline.collection import (CollectionAssembler, CollectionDirectoryReader,
                                        CollectionStatisticsBuilder, combine_summaries)
+from arxiv_pipeline.collection.cli import main
 from arxiv_pipeline.config import ASSIGNED_RANGES
 from arxiv_pipeline.pipeline_contracts import VerifiedRun
 
@@ -121,6 +123,26 @@ class AssemblerTests(unittest.TestCase):
         self.assertEqual(json.loads(path.read_text()), manifest)
         with self.assertRaises(ValueError):
             CollectionAssembler.save(self.root, {**manifest, "members": []})
+
+
+class AssembleCliTests(unittest.TestCase):
+    def test_assemble_command_writes_manifest_and_reports_skipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_snapshot(root, "s/old", "old", ["huynh-nhi"], "2026-10-26T00:00:00Z")
+            write_snapshot(root, "s/new", "new", ["huynh-nhi"], "2026-10-27T00:00:00Z")
+            out = io.StringIO()
+            with redirect_stdout(out):
+                code = main(["assemble", "--root", tmp, "--collection-id", "demo", "s/old", "s/new"])
+            report = json.loads(out.getvalue())
+            self.assertEqual(code, 0)
+            self.assertEqual(report["members"], [{"snapshot_id": "new", "owners": ["huynh-nhi"]}])
+            self.assertEqual(report["skipped"], ["old"])
+            self.assertTrue((root / "collection.json").is_file())
+            err = io.StringIO()
+            with redirect_stdout(io.StringIO()), redirect_stderr(err):
+                self.assertEqual(main(["assemble", "--root", tmp, "--collection-id", "demo", "s/missing"]), 1)
+            self.assertIn("collection:", err.getvalue())
 
 
 class ReaderTests(unittest.TestCase):

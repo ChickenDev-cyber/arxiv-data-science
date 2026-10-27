@@ -461,6 +461,122 @@ Runner đặt `validation.valid=false` trước khi bắt đầu/resume hoặc c
 
 Mã thoát: `0` khi mẫu được xử lý không còn issue chất lượng; `2` khi còn task thiếu hoặc dừng theo giới hạn số task; `1` khi lỗi cấu trúc/cấu hình/lưu trữ; `130` khi Ctrl+C. Argparse dùng mã 2 cho lỗi cú pháp lệnh. Chạy hết chương trình không có nghĩa đã thu thập đủ toàn dải.
 
+## Kiểm tra run và tập hợp snapshot (collection)
+
+`collection/` đọc các lượt chạy đã dừng và các snapshot đã giải nén, **không ghi gì vào corpus hay SQLite**; chỉ lệnh `assemble` ghi đúng một file `collection.json`. Lệnh `inspect`/`check` cần runner state (Linux/macOS/Colab vì runner dùng `fcntl`); `assemble` chạy được cả trên Windows.
+
+### 1. Kiểm tra một run đã dừng
+
+Input: thư mục output của runner (có `state.sqlite` và `runs/<run-id>/`), run đã `paused` hoặc `finished`.
+
+```bash
+PYTHONPATH=src python -m arxiv_pipeline.runner --mock --owner huynh-nhi --run-id nhi-demo --output-root data/nhi-demo
+PYTHONPATH=src python -m arxiv_pipeline.collection inspect --output-root data/nhi-demo --run-id nhi-demo
+```
+
+Output (stdout, JSON):
+
+| Trường | Ý nghĩa |
+|---|---|
+| `run_id`, `run_state`, `is_mock` | Lượt chạy và trạng thái (`paused`/`finished`) |
+| `owners`, `papers`, `accepted_results` | Owner của run, số bài trong scope, số Result được công nhận |
+| `files` | Số file đã kiểm tra kích thước và SHA-256 (dữ liệu được công nhận + 4 file bàn giao) |
+| `quality_valid` | `true` khi mọi bài đã đủ metadata, nguồn và references |
+| `issues` | **Danh sách vấn đề**: mỗi mục `{owner, arxiv_id, version, step, message}` lấy từ kiểm tra độ đầy đủ corpus |
+
+Run có cấu trúc sai (đang chạy, file bị đổi/mất, `validation.json` không hợp lệ, `scope.json`/`accepted_results.jsonl` khác SQLite) không được đọc: lệnh báo lỗi ở stderr, exit 1.
+
+### 2. Tập hợp snapshot thành collection
+
+Input: một thư mục chứa các snapshot **đã giải nén**, mỗi snapshot có `manifest.json` (SnapshotManifest) ở gốc:
+
+```text
+nhom5/
+└── snapshots/
+    ├── nhi-1026/   manifest.json, state.sqlite, raw/, runs/, ...
+    ├── nhi-1027/
+    └── trong-1027/
+```
+
+```bash
+PYTHONPATH=src python -m arxiv_pipeline.collection assemble --root nhom5 --collection-id nhom5-demo \
+  snapshots/nhi-1026 snapshots/nhi-1027 snapshots/trong-1027
+```
+
+Output: mỗi owner giữ snapshot **mới nhất** theo `created_at`; snapshot cũ của cùng owner nằm trong `skipped`. Snapshot được giữ nguyên cả cụm, không tách owner.
+
+```json
+{
+  "collection_id": "nhom5-demo",
+  "is_mock": true,
+  "members": [
+    {"snapshot_id": "nhi-1027", "owners": ["huynh-nhi"]},
+    {"snapshot_id": "trong-1027", "owners": ["trong"]}
+  ],
+  "skipped": ["nhi-1026"],
+  "manifest": "nhom5/collection.json"
+}
+```
+
+`nhom5/collection.json` được ghi nguyên tử:
+
+```json
+{
+  "format_version": 1,
+  "kind": "arxiv-collection",
+  "collection_id": "nhom5-demo",
+  "schema_version": "1.2",
+  "is_mock": true,
+  "created_at": "2026-10-27T15:21:44Z",
+  "members": [
+    {"snapshot_id": "nhi-1027", "run_id": "nhi-1027-run", "owners": ["huynh-nhi"],
+     "exporter_commit": "<40 ký tự hex>", "root": "snapshots/nhi-1027",
+     "manifest_path": "snapshots/nhi-1027/manifest.json"},
+    {"snapshot_id": "trong-1027", "run_id": "trong-1027-run", "owners": ["trong"],
+     "exporter_commit": "<40 ký tự hex>", "root": "snapshots/trong-1027",
+     "manifest_path": "snapshots/trong-1027/manifest.json"}
+  ]
+}
+```
+
+Bị từ chối (exit 1): manifest sai schema, file sai kích thước/hash, cùng `snapshot_id` hai lần, trộn mock với dữ liệu thật, đường dẫn ra ngoài `--root`.
+
+### 3. Kiểm tra lại toàn bộ collection
+
+```bash
+PYTHONPATH=src python -m arxiv_pipeline.collection check --root nhom5
+```
+
+Lệnh đọc `collection.json`, kiểm tra lại hash từng snapshot, mở từng run như `inspect` và in:
+
+| Trường | Ý nghĩa |
+|---|---|
+| `collection_id`, `is_mock` | Collection được kiểm tra |
+| `members` | Mỗi snapshot: `snapshot_id` cùng các trường của `inspect` (trừ `issues`) |
+| `missing_owners` | Owner chưa có snapshot nào, theo thứ tự `ASSIGNED_RANGES` |
+| `issues` | Danh sách vấn đề của mọi run, thêm `snapshot_id` |
+
+### Exit code
+
+| Exit code | Kết quả |
+|---|---|
+| 0 | Hợp lệ và đầy đủ (`inspect`: không còn issue; `check`: không issue, đủ 5 owner; `assemble`: đã ghi collection.json) |
+| 2 | Hợp lệ nhưng chưa đầy đủ: còn issue chất lượng hoặc còn owner thiếu |
+| 1 | Run/snapshot/collection sai cấu trúc, không đọc được, hoặc `inspect`/`check` chạy trên Windows |
+
+### Dùng từ Python
+
+```python
+from pathlib import Path
+from arxiv_pipeline.collection import CollectionDirectoryReader, CollectionStatisticsBuilder
+from arxiv_pipeline.collection.inspector import RunInspector
+
+with CollectionDirectoryReader(RunInspector()).open(Path("nhom5")) as collection:
+    stats = CollectionStatisticsBuilder(summarizer).build(collection)
+```
+
+`summarizer` là đối tượng có `summarize(run, owner) -> Summary` (thống kê từng owner của T6). `build` cộng số đếm theo owner và tính lại tỷ lệ theo công thức mục 11 tài liệu schema; `by_owner` chỉ gồm owner có bài trong `paper_tasks`.
+
 ## Kiểm thử offline
 
 ```bash
