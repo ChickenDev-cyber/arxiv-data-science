@@ -3,7 +3,7 @@ import json
 import unittest
 
 from arxiv_pipeline.json_utils import canonical
-from arxiv_pipeline.validation.pipeline_contracts import validate_pipeline_document
+from arxiv_pipeline.validation.pipeline_contracts import SUMMARY_RATES, validate_pipeline_document
 
 NOW = "2026-10-27T00:00:00Z"
 RANGE = {"owner": "huynh-nhi", "start_month": "2504", "start_id": 1, "end_month": "2504",
@@ -65,27 +65,34 @@ def collection():
 
 
 def summary(**counts):
+    """Counts as given; rates and means derived the way schema spec section 11 defines them."""
     s = {"papers_discovered": 0, "metadata_complete_papers": 0, "papers_complete": 0,
-         "paper_success_rate": None, "source_versions_expected": 0, "source_versions_success": 0,
+         "source_versions_expected": 0, "source_versions_success": 0,
          "source_versions_unsupported": 0, "source_versions_unresolved": 0,
-         "references_fully_fetched_papers": 0, "references_query_success_rate": None,
-         "references_metadata_complete_papers": 0, "metadata_success_rate": None,
-         "source_success_rate": None, "references_arxiv_total": 0, "references_complete_total": 0,
-         "reference_metadata_success_rate": None, "mean_arxiv_references_per_paper": None,
-         "source_size_sample_count": 0, "mean_extracted_bytes_before_filter": None,
-         "mean_retained_source_bytes": None}
+         "references_fully_fetched_papers": 0, "references_metadata_complete_papers": 0,
+         "references_arxiv_total": 0, "references_complete_total": 0, "source_size_sample_count": 0}
     s.update(counts)
+    for name, (numerator, denominator) in SUMMARY_RATES.items():
+        s[name] = s[numerator] / s[denominator] if s[denominator] else None
+    mean = 100.0 if s["source_size_sample_count"] else None
+    s.update(mean_extracted_bytes_before_filter=mean, mean_retained_source_bytes=mean)
     return s
 
 
+NHI_PAPERS = [{"owner": "huynh-nhi", "arxiv_id": f"2409.{n:05d}"} for n in range(3594, 3598)]
+
+
 def statistics():
-    scope = {"ranges": [], "paper_tasks": [], "discovery_complete": False, "versions_complete": False,
-             "owner_count": 0, "paper_count": 0}
+    scope = {"ranges": [], "paper_tasks": list(NHI_PAPERS), "discovery_complete": False,
+             "versions_complete": False, "owner_count": 1, "paper_count": 4}
+    counts = {"papers_discovered": 4, "papers_complete": 2, "metadata_complete_papers": 3,
+              "source_versions_expected": 5, "source_versions_success": 3,
+              "source_versions_unsupported": 1, "source_versions_unresolved": 1,
+              "source_size_sample_count": 2}
     return {"format_version": 1, "kind": "arxiv-collection-statistics", "schema_version": "1.2",
             "collection_id": "group-1", "is_mock": True, "sources": [member("nhi", ["huynh-nhi"])],
             "scope": scope, "missing_owners": ["trong"],
-            "summary": summary(papers_discovered=4, papers_complete=2, paper_success_rate=0.5),
-            "by_owner": {"huynh-nhi": summary(papers_discovered=4, papers_complete=2, paper_success_rate=0.5)}}
+            "summary": summary(**counts), "by_owner": {"huynh-nhi": summary(**counts)}}
 
 
 class PipelineDocumentValidatorTests(unittest.TestCase):
@@ -189,8 +196,31 @@ class PipelineDocumentValidatorTests(unittest.TestCase):
         self.assertInvalid(bad, "collection-statistics")
         bad = statistics(); bad["missing_owners"] = ["huynh-nhi"]
         self.assertInvalid(bad, "collection-statistics")
-        bad = statistics(); bad["by_owner"]["huynh-nhi"]["paper_success_rate"] = 1.5
+
+    def test_statistics_rates_follow_schema_formulas(self):
+        cases = [("paper_success_rate", 0.75),           # not papers_complete / papers_discovered
+                 ("metadata_success_rate", None),        # null although the denominator is 4
+                 ("mean_retained_source_bytes", None)]   # samples exist, so the mean is known
+        for field, value in cases:
+            with self.subTest(field=field):
+                bad = statistics(); bad["by_owner"]["huynh-nhi"][field] = value
+                self.assertInvalid(bad, "collection-statistics")
+        bad = statistics()
+        for s in (bad["summary"], bad["by_owner"]["huynh-nhi"]):
+            s["source_versions_unresolved"] = 0  # versions no longer add up to expected
         self.assertInvalid(bad, "collection-statistics")
+
+    def test_statistics_scope_and_owners_match_paper_tasks(self):
+        bad = statistics(); bad["scope"]["paper_count"] = 3
+        self.assertInvalid(bad, "collection-statistics")
+        bad = statistics(); bad["scope"]["paper_tasks"].append(dict(NHI_PAPERS[0]))
+        self.assertInvalid(bad, "collection-statistics")
+        bad = statistics(); bad["by_owner"]["trong"] = summary()  # owner without papers
+        self.assertInvalid(bad, "collection-statistics")
+        empty = statistics()
+        empty["scope"].update(paper_tasks=[], owner_count=0, paper_count=0)
+        empty.update(summary=summary(), by_owner={})
+        self.assertValid(empty, "collection-statistics")
 
     def test_documents_are_not_modified(self):
         for document, kind in ((discovery_checkpoint(), "checkpoint"), (snapshot(), "snapshot")):

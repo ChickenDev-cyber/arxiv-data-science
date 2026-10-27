@@ -23,6 +23,15 @@ PAYLOADS = {"discovery_batches": DiscoveryBatchCheckpoint, "references": Referen
 NAME = re.compile(r"[A-Za-z0-9_-]+")
 COMMIT = re.compile(r"[0-9a-f]{40}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
+# Schema spec section 11: each rate = numerator / denominator, null when the denominator is 0.
+SUMMARY_RATES = {
+    "paper_success_rate": ("papers_complete", "papers_discovered"),
+    "metadata_success_rate": ("metadata_complete_papers", "papers_discovered"),
+    "source_success_rate": ("source_versions_success", "source_versions_expected"),
+    "references_query_success_rate": ("references_fully_fetched_papers", "papers_discovered"),
+    "reference_metadata_success_rate": ("references_complete_total", "references_arxiv_total"),
+    "mean_arxiv_references_per_paper": ("references_arxiv_total", "references_fully_fetched_papers"),
+}
 
 
 def validate_pipeline_document(document, kind):
@@ -216,6 +225,27 @@ def _member_errors(members, at):
     return errors
 
 
+def _summary_errors(summary, at):
+    errors = []
+    counts = [k for k, h in get_type_hints(Summary).items() if h is int]
+    if any(summary[k] < 0 for k in counts):
+        errors.append(f"{at}: counts must be >= 0")
+    if (summary["source_versions_success"] + summary["source_versions_unsupported"]
+            + summary["source_versions_unresolved"] != summary["source_versions_expected"]):
+        errors.append(f"{at}: success + unsupported + unresolved must equal source_versions_expected")
+    for name, (numerator, denominator) in SUMMARY_RATES.items():
+        value, den = summary[name], summary[denominator]
+        if (value is None) != (den == 0) or (value is not None and abs(value - summary[numerator] / den) > 1e-9):
+            errors.append(f"{at}/{name}: must equal {numerator} / {denominator} (null when it is 0)")
+        elif name.endswith("_rate") and value is not None and not 0 <= value <= 1:
+            errors.append(f"{at}/{name}: rate must be between 0 and 1")
+    for name in ("mean_extracted_bytes_before_filter", "mean_retained_source_bytes"):
+        if (summary[name] is None) != (summary["source_size_sample_count"] == 0) or (
+                summary[name] is not None and summary[name] < 0):
+            errors.append(f"{at}/{name}: null exactly when source_size_sample_count is 0, else >= 0")
+    return errors
+
+
 def _statistics(stats):
     errors = []
     if not NAME.fullmatch(stats["collection_id"]):
@@ -225,19 +255,23 @@ def _statistics(stats):
     missing = stats["missing_owners"]
     if len(set(missing)) != len(missing) or present & set(missing):
         errors.append("/missing_owners: duplicated or also present in sources")
-    if set(stats["by_owner"]) != present:
-        errors.append("/by_owner: owners must equal the owners of sources")
-    hints = get_type_hints(Summary)
-    counts = [k for k, h in hints.items() if h is int]
+    scope = stats["scope"]
+    tasks = [(p["owner"], p["arxiv_id"]) for p in scope["paper_tasks"]]
+    with_papers = {o for o, _ in tasks}
+    if (len(set(tasks)) != len(tasks) or scope["paper_count"] != len(tasks)
+            or scope["owner_count"] != len(with_papers) or not with_papers <= present):
+        errors.append("/scope: paper_tasks duplicated, counts not derived from them, or owner outside sources")
+    # Like per-run statistics, by_owner holds exactly the owners that appear in paper_tasks.
+    if set(stats["by_owner"]) != with_papers:
+        errors.append("/by_owner: owners must equal the owners in scope.paper_tasks")
     for owner, summary in [("", stats["summary"]), *stats["by_owner"].items()]:
         at = f"/by_owner/{owner}" if owner else "/summary"
-        if any(summary[k] < 0 for k in counts):
-            errors.append(f"{at}: counts must be >= 0")
-        if any(summary[k] is not None and k.endswith("_rate") and not 0 <= summary[k] <= 1
-               for k in hints):
-            errors.append(f"{at}: rates must be null or between 0 and 1")
+        errors += _summary_errors(summary, at)
+        expected = len(tasks) if not owner else sum(o == owner for o, _ in tasks)
+        if summary["papers_discovered"] != expected:
+            errors.append(f"{at}/papers_discovered: must equal the papers in scope.paper_tasks")
     # Group rates come from summed counts, so every count must add up across owners.
-    for k in counts:
+    for k in [k for k, h in get_type_hints(Summary).items() if h is int]:
         if stats["summary"][k] != sum(s[k] for s in stats["by_owner"].values()):
             errors.append(f"/summary/{k}: differs from the sum over by_owner")
     return errors
