@@ -48,7 +48,8 @@ class OaiClient(ApiClient):
                 wait = self._next_allowed - self.monotonic()
                 if wait > 0:
                     self.sleep(wait)
-                self.attempts += 1
+                if self.scheduler is None:
+                    self.attempts += 1
                 retry_after = 0.0
                 try:
                     response = self.transport(url, self.timeout, {"User-Agent": self.user_agent,

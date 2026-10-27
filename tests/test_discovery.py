@@ -147,7 +147,7 @@ class DiscoveryTests(unittest.TestCase):
         client = FakeClient([feed(['2504.17523'])])
         result = DiscoveryModule(client).discover(config(17523, 17523), context(self.tmp_path))
         assert set(result) == set(Result.__required_keys__)
-        assert result['schema_version'] == '1.1'
+        assert result['schema_version'] == '1.2'
         assert result['owner'] == 'trong' and result['run_id'] == 'offline-001'
         assert result['error'] is None and result['missing_fields'] == []
         assert result['duration_seconds'] >= 0
@@ -174,7 +174,7 @@ class DiscoveryTests(unittest.TestCase):
     def test_found_missing_reordered_and_versions(self):
         client = FakeClient([feed(['2504.17525v2', '2504.17523v1'])])
         r = DiscoveryModule(client).discover(config(), context(self.tmp_path))
-        assert r['schema_version'] == '1.1'
+        assert r['schema_version'] == '1.2'
         assert r['status'] == 'success' and r['data']['complete']
         assert r['arxiv_id'] is None and r['version'] is None
         assert [p['arxiv_id'] for p in r['data']['papers']] == ['2504.17523', '2504.17525']

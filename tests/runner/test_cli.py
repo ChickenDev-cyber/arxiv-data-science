@@ -1,0 +1,128 @@
+from contextlib import redirect_stdout,redirect_stderr
+import io
+import json
+from pathlib import Path
+import tempfile
+import unittest
+from unittest.mock import patch
+from arxiv_pipeline.runner.cli import main
+
+
+class CLITests(unittest.TestCase):
+    def test_dirty_source_cannot_be_labelled_with_head_commit(self):
+        from arxiv_pipeline.runner import cli
+        self.assertTrue(hasattr(cli, 'producer_revision'), 'Producer revision detection is missing')
+        root = Path(cli.__file__).resolve().parents[3]
+        with patch('arxiv_pipeline.runner.cli.subprocess.check_output',
+                   side_effect=[str(root) + '\n', ' M src/arxiv_pipeline/runner/service.py\n']):
+            self.assertIsNone(cli.producer_revision())
+        with patch('arxiv_pipeline.runner.cli.subprocess.check_output',
+                   side_effect=[str(root) + '\n', '', 'a' * 40 + '\n']):
+            self.assertEqual(cli.producer_revision(), 'a' * 40)
+
+    def test_cli_resume_can_change_stage_and_keeps_single_json_stdout(self):
+        with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()) as out, \
+             redirect_stderr(io.StringIO()) as err:
+            try:
+                code = main(['--mock', '--owner', 'trong', '--run-id', 'stages',
+                             '--output-root', tmp, '--stage', 'sources'])
+            except SystemExit as exc:
+                self.fail(f'CLI stage selection is missing: {exc}')
+            self.assertEqual(code, 2)
+            self.assertEqual(len(out.getvalue().splitlines()), 1)
+            first = json.loads(out.getvalue())
+            self.assertEqual(first['stage'], 'sources')
+            self.assertFalse(first['quality_valid'])
+            self.assertTrue(first['validation_valid'])
+            self.assertNotIn('trong | references |', err.getvalue())
+            out.seek(0); out.truncate(0)
+            self.assertEqual(main(['--resume', '--run-id', 'stages', '--output-root', tmp,
+                                   '--stage', 'references']), 0)
+            second = json.loads(out.getvalue())
+            self.assertEqual(second['executed_tasks'], 1)
+            self.assertEqual(second['stage'], 'references')
+
+    def test_cli_supplies_shared_checkpoint_validator_when_available(self):
+        from arxiv_pipeline.runner import cli
+        self.assertTrue(hasattr(cli, 'checkpoint_validator'), 'Validator integration hook is missing')
+        seen = []
+
+        def validate(record):
+            seen.append(record['namespace'])
+            return []
+
+        with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()), \
+             redirect_stderr(io.StringIO()), patch.object(cli, 'checkpoint_validator', return_value=validate):
+            self.assertEqual(main(['--mock', '--owner', 'trong', '--run-id', 'validator',
+                                   '--output-root', tmp]), 0)
+        self.assertIn('discovery_batches', seen)
+
+    def test_member_summary_is_printed_after_owner_and_on_resume(self):
+        with tempfile.TemporaryDirectory() as tmp,redirect_stdout(io.StringIO()) as out,redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(main(['--mock','--all-owners','--run-id','owners','--output-root',tmp]),0)
+            text=err.getvalue()
+            for name in ('Khang','Trọng','Hoàng','Mẫn Nhi','Huỳnh Nhi'):
+                self.assertIn(f'Tổng kết {name} | 1 bài | thành công: 1 | thiếu: 0 | thất bại: 0',text)
+            reference_pass = text.index('hoang | references |')
+            self.assertLess(text.index('trong | sources | 2504.17523v2 | success'), reference_pass)
+            self.assertLess(reference_pass, text.index('Tổng kết Hoàng'))
+            self.assertLess(text.index('Tổng kết Hoàng'), text.index('Bài 2/5', reference_pass))
+            self.assertIn('Tổng kết toàn bộ mẫu | 5 bài | thành công: 5 | thiếu: 0 | thất bại: 0',text)
+            out.seek(0);out.truncate(0);err.seek(0);err.truncate(0)
+            self.assertEqual(main(['--resume','--run-id','owners','--output-root',tmp]),0)
+            self.assertEqual(json.loads(out.getvalue())['executed_tasks'],0)
+            self.assertIn('Tổng kết Trọng | 1 bài | thành công: 1',err.getvalue())
+
+    def test_progress_is_on_stderr_and_stdout_stays_json(self):
+        with tempfile.TemporaryDirectory() as tmp,redirect_stdout(io.StringIO()) as out,redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(main(['--mock','--owner','trong','--run-id','progress','--output-root',tmp]),0)
+            self.assertEqual(json.loads(out.getvalue())['papers'],1)
+            self.assertEqual(len(out.getvalue().splitlines()),1)
+            self.assertIn('Bài 1/1',err.getvalue())
+            self.assertIn('trong | sources | 2504.17523v2',err.getvalue())
+            self.assertIn('bắt đầu',err.getvalue())
+            self.assertIn('success',err.getvalue())
+            log=Path(tmp)/'logs/progress/events.jsonl'
+            self.assertEqual(len([json.loads(line) for line in log.read_text().splitlines()]),5)
+
+    def test_resume_prints_reused_tasks(self):
+        with tempfile.TemporaryDirectory() as tmp,redirect_stdout(io.StringIO()),redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(main(['--mock','--owner','trong','--run-id','reuse','--output-root',tmp]),0)
+            err.seek(0);err.truncate(0)
+            self.assertEqual(main(['--resume','--run-id','reuse','--output-root',tmp]),0)
+            self.assertIn('dùng lại',err.getvalue())
+
+    def test_quiet_suppresses_progress(self):
+        with tempfile.TemporaryDirectory() as tmp,redirect_stdout(io.StringIO()) as out,redirect_stderr(io.StringIO()) as err:
+            try:
+                code=main(['--mock','--owner','trong','--run-id','quiet','--output-root',tmp,'--quiet'])
+            except SystemExit as exc:
+                self.fail(f'CLI phải hỗ trợ --quiet: {exc}')
+            self.assertEqual(code,0)
+            self.assertEqual(err.getvalue(),'')
+            self.assertEqual(json.loads(out.getvalue())['papers'],1)
+
+    def test_mock_all_owners_and_resume(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args=['--mock','--all-owners','--run-id','mock-cli','--output-root',tmp]
+            with patch('urllib.request.urlopen',side_effect=AssertionError('network forbidden')), \
+                 patch('arxiv_pipeline.discovery.api.urlopen',side_effect=AssertionError('network forbidden')), \
+                 patch('arxiv_pipeline.sources.api.urlopen',side_effect=AssertionError('network forbidden')),redirect_stdout(io.StringIO()) as out,redirect_stderr(io.StringIO()):
+                self.assertEqual(main(args),0)
+                summary=json.loads(out.getvalue());self.assertEqual(summary['papers'],5)
+                out.seek(0);out.truncate(0)
+                self.assertEqual(main(['--resume','--run-id','mock-cli','--output-root',tmp]),0)
+                self.assertEqual(json.loads(out.getvalue())['executed_tasks'],0)
+            accepted=[json.loads(line) for line in (Path(tmp)/'runs/mock-cli/accepted_results.jsonl').read_text().splitlines()]
+            self.assertEqual(len(accepted),25)
+            self.assertEqual(sum(r['step']=='sources' for r in accepted),10)
+            refs=[r for r in accepted if r['step']=='references']
+            self.assertEqual(sum(len(r['data']['raw_references']) for r in refs),9)
+            self.assertEqual(sum(len(r['data']['references']) for r in refs),4)
+            self.assertTrue(all(r['is_mock'] and r['attempts']==0 for r in accepted))
+
+    def test_resume_rejects_changed_options(self):
+        with tempfile.TemporaryDirectory() as tmp,redirect_stdout(io.StringIO()),redirect_stderr(io.StringIO()):
+            self.assertEqual(main(['--mock','--owner','trong','--run-id','x','--output-root',tmp]),0)
+            with self.assertRaises(SystemExit):
+                main(['--resume','--mock','--run-id','x','--output-root',tmp])
