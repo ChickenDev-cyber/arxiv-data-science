@@ -6,10 +6,13 @@ import time
 from datetime import datetime, timezone
 from itertools import islice
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
+from copy import deepcopy
 
 from ..config import OWNERS
 from ..contracts import SCHEMA_VERSION, Context, RangeConfig, Result
+from ..pipeline_contracts import CheckpointStore
+from ..json_utils import canonical
 from .api import API_URL, RemoteError, parse_feed
 
 
@@ -82,14 +85,113 @@ def _utc_now():
 
 
 class DiscoveryModule:
-    def __init__(self, client: QueryClient, *, batch_size=100, max_candidates=None):
+    def __init__(self, client: QueryClient, *, batch_size=100, max_candidates=None,
+                 checkpoints: CheckpointStore | None = None):
         if type(batch_size) is not int or not 1 <= batch_size <= 100:
             raise ValueError("batch_size must be an integer from 1 to 100")
         if max_candidates is not None and (type(max_candidates) is not int or max_candidates < 1):
             raise ValueError("max_candidates must be a positive integer or None")
         self.client, self.batch_size, self.max_candidates = client, batch_size, max_candidates
+        self.checkpoints = checkpoints
 
-    def discover(self, config: RangeConfig, context: Context) -> Result:
+    def _inspect(self, ids):
+        try:
+            return parse_feed(self.client.query(ids), ids)
+        except RemoteError as exc:
+            return exc
+
+    def _resolve_ids(self, ids, on_progress):
+        found, excluded, unresolved = set(), set(), set(ids)
+        first_error = None
+        response = self._inspect(ids)
+        if not isinstance(response, RemoteError):
+            found.update(response.found)
+            unresolved.difference_update(found)
+            missing = set(ids) - found
+            if response.complete:
+                excluded.update(missing)
+                unresolved.clear()
+                on_progress(found, excluded, unresolved, None)
+                return found, excluded, unresolved, None
+        else:
+            missing = set(ids)
+        if len(ids) > 1 and (not isinstance(response, RemoteError)
+                              or response.info["code"] == "invalid_payload"):
+            on_progress(found, excluded, unresolved, None)
+            for arxiv_id in sorted(missing):
+                single = self._inspect([arxiv_id])
+                if isinstance(single, RemoteError):
+                    unresolved.add(arxiv_id)
+                    first_error = first_error or single.info
+                elif arxiv_id in single.found:
+                    found.add(arxiv_id)
+                    unresolved.discard(arxiv_id)
+                elif single.complete:
+                    excluded.add(arxiv_id)
+                    unresolved.discard(arxiv_id)
+                else:
+                    unresolved.add(arxiv_id)
+                    first_error = first_error or RemoteError(
+                        "invalid_payload", "Singleton response cannot establish absence").info
+                on_progress(found, excluded, unresolved, first_error)
+        else:
+            unresolved.update(missing)
+            if missing:
+                first_error = (response.info if isinstance(response, RemoteError) else RemoteError(
+                    "invalid_payload", "Response pagination is incomplete or missing").info)
+            on_progress(found, excluded, unresolved, first_error)
+        return found, excluded, unresolved, first_error
+
+    def _read_batch(self, key, expected):
+        record = self.checkpoints.load("discovery_batches", key) if self.checkpoints is not None else None
+        if record is None:
+            return {**expected, "found_ids": [], "excluded_ids": [],
+                    "unresolved_ids": list(expected["candidate_ids"]), "error": None}
+        payload = record.get("payload")
+        groups = {"found_ids", "excluded_ids", "unresolved_ids"}
+        if (record.get("namespace") != "discovery_batches" or record.get("key") != key
+                or type(record.get("format_version")) is not int or record["format_version"] != 1
+                or not isinstance(payload, dict) or set(payload) != set(expected) | groups | {"error"}
+                or canonical({k: payload[k] for k in expected}) != canonical(expected)):
+            raise ValueError("Discovery checkpoint belongs to another scope or has invalid fields")
+        classified = []
+        for field in ("found_ids", "excluded_ids", "unresolved_ids"):
+            ids = payload[field]
+            if not isinstance(ids, list) or any(not isinstance(i, str) for i in ids):
+                raise ValueError("Invalid discovery checkpoint IDs")
+            classified.extend(ids)
+        if len(classified) != len(set(classified)) or set(classified) != set(expected["candidate_ids"]):
+            raise ValueError("Discovery checkpoint does not partition its candidates")
+        if ((not payload["unresolved_ids"] and payload["error"] is not None)
+                or (payload["unresolved_ids"] and not isinstance(payload["error"], dict))):
+            raise ValueError("Discovery checkpoint error disagrees with unresolved IDs")
+        return deepcopy(payload)
+
+    def _resolve_batch(self, config, batch, offset):
+        key = canonical([config["owner"], config, self.max_candidates, self.batch_size, offset])
+        expected = {"owner": config["owner"], "range_config": deepcopy(config),
+                    "max_candidates": self.max_candidates, "batch_size": self.batch_size,
+                    "offset": offset, "candidate_ids": list(batch)}
+        payload = self._read_batch(key, expected)
+        if payload["unresolved_ids"]:
+            known_found, known_excluded = set(payload["found_ids"]), set(payload["excluded_ids"])
+
+            def save_progress(found, excluded, unresolved, error):
+                if unresolved and error is None:
+                    error = RemoteError("invalid_payload", "Batch resolution is incomplete; "
+                                        "remaining IDs require verification", True).info
+                payload.update(found_ids=sorted(known_found | found),
+                               excluded_ids=sorted(known_excluded | excluded),
+                               unresolved_ids=sorted(unresolved), error=error if unresolved else None)
+                if self.checkpoints is not None:
+                    self.checkpoints.save({"format_version": 1, "namespace": "discovery_batches", "key": key,
+                                           "payload": payload, "updated_at": _utc_now()})
+
+            self._resolve_ids(payload["unresolved_ids"], save_progress)
+        return payload
+
+    def discover(self, config: RangeConfig, context: Context, *,
+                 progress: Callable[[int, int], None] | None = None) -> Result:
         total_candidates = candidate_count(config)
         validate_context(context)
         started_at, start = _utc_now(), time.monotonic()
@@ -101,48 +203,19 @@ class DiscoveryModule:
         found, excluded, unresolved = set(), set(), set()
         first_error = None
         processed = 0
-
-        def inspect(ids):
-            try:
-                return parse_feed(self.client.query(ids), ids)
-            except RemoteError as exc:
-                # Expected service/payload failures only, not arbitrary code errors.
-                return exc
+        progress_total = min(total_candidates, self.max_candidates) if self.max_candidates is not None else total_candidates
+        if progress is not None:
+            progress(0, progress_total)
 
         while batch := list(islice(candidates, self.batch_size)):
+            payload = self._resolve_batch(config, batch, processed)
             processed += len(batch)
-            response = inspect(batch)
-            if not isinstance(response, RemoteError):
-                found.update(response.found)
-                missing = set(batch) - response.found
-                if response.complete:
-                    excluded.update(missing)
-                    continue
-            else:
-                missing = set(batch)
-
-            # Ambiguous payload/pagination can be disambiguated once per ID.
-            # Network/HTTP failures already exhausted the client's retry budget.
-            if len(batch) > 1 and (not isinstance(response, RemoteError)
-                                  or response.info["code"] == "invalid_payload"):
-                for arxiv_id in sorted(missing):
-                    single = inspect([arxiv_id])
-                    if isinstance(single, RemoteError):
-                        unresolved.add(arxiv_id)
-                        first_error = first_error or single.info
-                    elif arxiv_id in single.found:
-                        found.add(arxiv_id)
-                    elif single.complete:
-                        excluded.add(arxiv_id)
-                    else:
-                        unresolved.add(arxiv_id)
-                        first_error = first_error or RemoteError(
-                            "invalid_payload", "Singleton response cannot establish absence").info
-            else:
-                unresolved.update(missing)
-                if missing:
-                    first_error = first_error or (response.info if isinstance(response, RemoteError) else
-                        RemoteError("invalid_payload", "Response pagination is incomplete or missing").info)
+            found.update(payload["found_ids"])
+            excluded.update(payload["excluded_ids"])
+            unresolved.update(payload["unresolved_ids"])
+            first_error = first_error or payload["error"]
+            if progress is not None:
+                progress(processed, progress_total)
 
         complete = not limited and not unresolved
         useful = bool(found or excluded) or processed == 0

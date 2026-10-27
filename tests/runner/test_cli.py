@@ -9,13 +9,64 @@ from arxiv_pipeline.runner.cli import main
 
 
 class CLITests(unittest.TestCase):
+    def test_dirty_source_cannot_be_labelled_with_head_commit(self):
+        from arxiv_pipeline.runner import cli
+        self.assertTrue(hasattr(cli, 'producer_revision'), 'Producer revision detection is missing')
+        root = Path(cli.__file__).resolve().parents[3]
+        with patch('arxiv_pipeline.runner.cli.subprocess.check_output',
+                   side_effect=[str(root) + '\n', ' M src/arxiv_pipeline/runner/service.py\n']):
+            self.assertIsNone(cli.producer_revision())
+        with patch('arxiv_pipeline.runner.cli.subprocess.check_output',
+                   side_effect=[str(root) + '\n', '', 'a' * 40 + '\n']):
+            self.assertEqual(cli.producer_revision(), 'a' * 40)
+
+    def test_cli_resume_can_change_stage_and_keeps_single_json_stdout(self):
+        with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()) as out, \
+             redirect_stderr(io.StringIO()) as err:
+            try:
+                code = main(['--mock', '--owner', 'trong', '--run-id', 'stages',
+                             '--output-root', tmp, '--stage', 'sources'])
+            except SystemExit as exc:
+                self.fail(f'CLI stage selection is missing: {exc}')
+            self.assertEqual(code, 2)
+            self.assertEqual(len(out.getvalue().splitlines()), 1)
+            first = json.loads(out.getvalue())
+            self.assertEqual(first['stage'], 'sources')
+            self.assertFalse(first['quality_valid'])
+            self.assertTrue(first['validation_valid'])
+            self.assertNotIn('trong | references |', err.getvalue())
+            out.seek(0); out.truncate(0)
+            self.assertEqual(main(['--resume', '--run-id', 'stages', '--output-root', tmp,
+                                   '--stage', 'references']), 0)
+            second = json.loads(out.getvalue())
+            self.assertEqual(second['executed_tasks'], 1)
+            self.assertEqual(second['stage'], 'references')
+
+    def test_cli_supplies_shared_checkpoint_validator_when_available(self):
+        from arxiv_pipeline.runner import cli
+        self.assertTrue(hasattr(cli, 'checkpoint_validator'), 'Validator integration hook is missing')
+        seen = []
+
+        def validate(record):
+            seen.append(record['namespace'])
+            return []
+
+        with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()), \
+             redirect_stderr(io.StringIO()), patch.object(cli, 'checkpoint_validator', return_value=validate):
+            self.assertEqual(main(['--mock', '--owner', 'trong', '--run-id', 'validator',
+                                   '--output-root', tmp]), 0)
+        self.assertIn('discovery_batches', seen)
+
     def test_member_summary_is_printed_after_owner_and_on_resume(self):
         with tempfile.TemporaryDirectory() as tmp,redirect_stdout(io.StringIO()) as out,redirect_stderr(io.StringIO()) as err:
             self.assertEqual(main(['--mock','--all-owners','--run-id','owners','--output-root',tmp]),0)
             text=err.getvalue()
             for name in ('Khang','Trọng','Hoàng','Mẫn Nhi','Huỳnh Nhi'):
                 self.assertIn(f'Tổng kết {name} | 1 bài | thành công: 1 | thiếu: 0 | thất bại: 0',text)
-            self.assertLess(text.index('Tổng kết Hoàng'),text.index('Bài 2/5'))
+            reference_pass = text.index('hoang | references |')
+            self.assertLess(text.index('trong | sources | 2504.17523v2 | success'), reference_pass)
+            self.assertLess(reference_pass, text.index('Tổng kết Hoàng'))
+            self.assertLess(text.index('Tổng kết Hoàng'), text.index('Bài 2/5', reference_pass))
             self.assertIn('Tổng kết toàn bộ mẫu | 5 bài | thành công: 5 | thiếu: 0 | thất bại: 0',text)
             out.seek(0);out.truncate(0);err.seek(0);err.truncate(0)
             self.assertEqual(main(['--resume','--run-id','owners','--output-root',tmp]),0)

@@ -1,5 +1,5 @@
 """Single-writer SQLite checkpoint state and prepared-publication journal."""
-from contextlib import contextmanager, closing
+from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
 import fcntl
@@ -10,6 +10,8 @@ from .models import RunOptions, Artifact, canonical, config_fingerprint
 from .scope import initial_scope
 from ..contracts import SCHEMA_VERSION
 from ..validation.artifacts import safe_path
+from ..pipeline_contracts import CheckpointRecord, RunRecord
+from .checkpoints import normalize_checkpoint, validate_checkpoint_key
 
 
 def now():
@@ -37,8 +39,33 @@ class OutputLock:
 
 
 class StateStore:
-    def __init__(self, path: Path, run_id: str):
+    def __init__(self, path: Path, run_id: str, *, read_only: bool = False):
         self.path, self.run_id = Path(path), run_id
+        if read_only:
+            if not self.path.is_file() or self.path.is_symlink():
+                raise ValueError("No saved run at output root")
+            safe_path(self.path.parent, self.path.name)
+            # mode=ro can still create WAL shared-memory files. Inspect the
+            # SQLite header before opening it; handoffs use rollback journals.
+            with self.path.open("rb") as stream:
+                header = stream.read(20)
+            if (2 in header[18:20]
+                    or any(self.path.with_name(self.path.name + suffix).exists()
+                           for suffix in ("-wal", "-shm"))):
+                raise ValueError("WAL databases are not supported for read-only handoff inspection; "
+                                 "use a stopped, verified rollback-journal checkpoint")
+            self.connection = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro",
+                                              uri=True, isolation_level=None)
+            self.connection.row_factory = sqlite3.Row
+            try:
+                self.connection.execute("PRAGMA query_only=ON")
+                if self.connection.execute("PRAGMA user_version").fetchone()[0] not in (1, 2):
+                    raise ValueError("Unsupported state database version")
+                self.read_run_record()
+            except BaseException:
+                self.connection.close()
+                raise
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         safe_path(self.path.parent, self.path.name)
         self.connection = sqlite3.connect(self.path, isolation_level=None)
@@ -46,7 +73,7 @@ class StateStore:
         self.connection.execute("PRAGMA foreign_keys=ON")
         try:
             version = self.connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1):
+            if version not in (0, 1, 2):
                 raise ValueError("Unsupported state database version")
             if version == 0:
                 if self.connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchone():
@@ -65,6 +92,15 @@ class StateStore:
                       state TEXT NOT NULL, manifest_json TEXT NOT NULL);
                     PRAGMA user_version=1;
                     COMMIT;''')
+            if version in (0, 1):
+                with self.transaction():
+                    self.connection.execute('''CREATE TABLE run_checkpoints (
+                        run_id TEXT NOT NULL REFERENCES runs(run_id),
+                        namespace TEXT NOT NULL, key TEXT NOT NULL,
+                        format_version INTEGER NOT NULL, payload_json TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        PRIMARY KEY(run_id, namespace, key))''')
+                    self.connection.execute("PRAGMA user_version=2")
         except BaseException:
             self.connection.close()
             raise
@@ -72,6 +108,52 @@ class StateStore:
     def __enter__(self): return self
 
     def __exit__(self, *args): self.connection.close()
+
+    @classmethod
+    def readonly(cls, path: Path, run_id: str) -> "StateStore":
+        """Open an existing v1/v2 database without creating or migrating it."""
+        return cls(path, run_id, read_only=True)
+
+    def read_run_record(self) -> RunRecord:
+        row = self.connection.execute("SELECT * FROM runs WHERE run_id=?", (self.run_id,)).fetchone()
+        if row is None:
+            raise ValueError("Unknown run ID")
+        config = json.loads(row["config_json"])
+        options = options_from_config(config)
+        if (options.run_id != self.run_id or row["schema_version"] != SCHEMA_VERSION
+                or int(options.is_mock) != row["is_mock"]
+                or config_fingerprint(options) != row["fingerprint"]
+                or row["status"] not in ("created", "running", "paused", "finished", "error")):
+            raise ValueError("Run identity, schema, configuration or fingerprint is inconsistent")
+        return RunRecord(self.run_id, row["schema_version"], row["fingerprint"], config,
+                         row["status"], row["created_at"], row["updated_at"])
+
+    def artifact_inventory(self) -> list[Artifact]:
+        """Return distinct artifacts attached to accepted task results only."""
+        inventory: dict[str, Artifact] = {}
+        for task in self.tasks():
+            for artifact in self.get_task(task["task_key"])["artifacts"]:
+                if artifact.path in inventory and inventory[artifact.path] != artifact:
+                    raise ValueError("Conflicting accepted artifact digests")
+                inventory[artifact.path] = artifact
+        return [inventory[path] for path in sorted(inventory)]
+
+    def relocate_output_root(self, expected_old_root: str, new_output_root: Path) -> None:
+        """Update only a restored run's config root, after the caller verifies files."""
+        root = Path(new_output_root).resolve()
+        if root != self.path.parent.resolve():
+            raise ValueError("New output root must contain this state database")
+        with self.transaction():
+            record = self.read_run_record()
+            if record.config["output_root"] != expected_old_root:
+                raise ValueError("Saved output root differs from the snapshot origin")
+            if record.status not in ("paused", "finished") or self.pending_publications():
+                raise ValueError("Relocation requires a stopped, published checkpoint")
+            config = {**record.config, "output_root": str(root)}
+            if config_fingerprint(options_from_config(config)) != record.fingerprint:
+                raise ValueError("Relocation would change processing configuration")
+            self.connection.execute("UPDATE runs SET config_json=? WHERE run_id=?",
+                                    (canonical(config), self.run_id))
 
     @contextmanager
     def transaction(self):
@@ -195,14 +277,47 @@ class StateStore:
     def tasks(self):
         return [dict(r) for r in self.connection.execute("SELECT * FROM run_tasks WHERE run_id=? ORDER BY task_key", (self.run_id,))]
 
+    def load_checkpoint(self, namespace: str, key: str) -> CheckpointRecord | None:
+        validate_checkpoint_key(namespace, key)
+        row = self.connection.execute(
+            "SELECT format_version,payload_json,updated_at FROM run_checkpoints "
+            "WHERE run_id=? AND namespace=? AND key=?", (self.run_id, namespace, key)).fetchone()
+        if row is None:
+            return None
+        return normalize_checkpoint({
+            "format_version": row["format_version"], "namespace": namespace, "key": key,
+            "payload": json.loads(row["payload_json"]), "updated_at": row["updated_at"]})
 
-def load_options(path, run_id):
-    path = Path(path)
-    if not path.is_file() or path.is_symlink(): raise ValueError("No saved run at output root")
-    with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)) as con:
-        if con.execute("PRAGMA user_version").fetchone()[0] != 1:
-            raise ValueError("Unsupported state version")
-        row = con.execute("SELECT config_json FROM runs WHERE run_id=?", (run_id,)).fetchone()
-        if row is None: raise ValueError("Unknown run ID")
-        value = json.loads(row[0]); value["output_root"] = Path(value["output_root"]); value["owners"] = tuple(value["owners"])
-        return RunOptions(**value)
+    def save_checkpoint(self, record: CheckpointRecord) -> None:
+        record = normalize_checkpoint(record)
+        with self.transaction():
+            self.connection.execute(
+                "INSERT INTO run_checkpoints VALUES(?,?,?,?,?,?) "
+                "ON CONFLICT(run_id,namespace,key) DO UPDATE SET "
+                "format_version=excluded.format_version,payload_json=excluded.payload_json,"
+                "updated_at=excluded.updated_at",
+                (self.run_id, record["namespace"], record["key"], record["format_version"],
+                 canonical(record["payload"]), record["updated_at"]))
+
+    def delete_checkpoint(self, namespace: str, key: str) -> None:
+        validate_checkpoint_key(namespace, key)
+        with self.transaction():
+            self.connection.execute("DELETE FROM run_checkpoints WHERE run_id=? AND namespace=? AND key=?",
+                                    (self.run_id, namespace, key))
+
+
+def options_from_config(value: dict) -> RunOptions:
+    fields = {"run_id", "output_root", "owners", "is_mock", "max_candidates", "max_papers"}
+    if (not isinstance(value, dict) or set(value) != fields
+            or not isinstance(value["output_root"], str) or not isinstance(value["owners"], list)):
+        raise ValueError("Malformed saved run configuration")
+    options = RunOptions(**{**value, "output_root": Path(value["output_root"]),
+                           "owners": tuple(value["owners"])})
+    if options.to_dict() != value:
+        raise ValueError("Saved run configuration is not canonical")
+    return options
+
+
+def load_options(path: Path, run_id: str) -> RunOptions:
+    with StateStore.readonly(path, run_id) as store:
+        return options_from_config(store.read_run_record().config)

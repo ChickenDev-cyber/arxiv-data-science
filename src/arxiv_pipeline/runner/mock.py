@@ -4,12 +4,13 @@ from email.utils import format_datetime
 import io
 import tarfile
 from ..config import ASSIGNED_RANGES
+from ..pipeline_contracts import CheckpointStore
 from ..discovery.service import DiscoveryModule
 from ..metadata.service import MetadataModule
 from ..references.service import ReferencesModule
 from ..sources.service import SourcesModule
 from ..sources.extractor import SourceExtractor
-from .models import ModuleSet
+from .models import ModuleSet, RunOptions
 
 
 def _paper(config):
@@ -73,6 +74,8 @@ class _Sources:
     def provenance(self,arxiv_id,version):return {'source':'synthetic-source','fixture':'t5-mock'}
 
 
-def make_mock_modules(options):
-    return ModuleSet(DiscoveryModule(_Query(),max_candidates=options.max_candidates),MetadataModule(_Record()),
-                     SourcesModule(_Sources(),SourceExtractor()),ReferencesModule(_References(),_Dates()))
+def make_mock_modules(options: RunOptions, *, checkpoints: CheckpointStore | None = None) -> ModuleSet:
+    from .factory import checkpoint_kwargs
+    kwargs = checkpoint_kwargs(ReferencesModule, checkpoints) if checkpoints is not None else {}
+    return ModuleSet(DiscoveryModule(_Query(),max_candidates=options.max_candidates,checkpoints=checkpoints),MetadataModule(_Record()),
+                     SourcesModule(_Sources(),SourceExtractor()),ReferencesModule(_References(),_Dates(),**kwargs))
