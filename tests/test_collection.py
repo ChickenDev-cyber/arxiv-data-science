@@ -1,0 +1,219 @@
+from contextlib import contextmanager
+import hashlib
+import json
+from pathlib import Path
+import tempfile
+import unittest
+
+from arxiv_pipeline.collection import (CollectionAssembler, CollectionDirectoryReader,
+                                       CollectionStatisticsBuilder, combine_summaries)
+from arxiv_pipeline.config import ASSIGNED_RANGES
+from arxiv_pipeline.pipeline_contracts import VerifiedRun
+
+FINGERPRINT = "f" * 64
+
+
+def write_snapshot(root, folder, snapshot_id, owners, created_at="2026-10-27T00:00:00Z", is_mock=True):
+    """An unpacked snapshot: one data file plus a manifest with its size and hash."""
+    base = Path(root) / folder
+    (base / "raw").mkdir(parents=True)
+    data = json.dumps({"snapshot": snapshot_id}).encode()
+    (base / "raw/metadata.json").write_bytes(data)
+    manifest = {"format_version": 1, "kind": "arxiv-snapshot", "snapshot_id": snapshot_id,
+                "schema_version": "1.2", "run_id": snapshot_id + "-run", "is_mock": is_mock,
+                "owners": owners, "created_at": created_at, "exporter_commit": "a" * 40,
+                "producer_commits": [], "unknown_provenance_tasks": 0, "config_fingerprint": FINGERPRINT,
+                "origin_output_root": "/content/out",
+                "files": [{"path": "raw/metadata.json", "size_bytes": len(data),
+                           "sha256": hashlib.sha256(data).hexdigest()}]}
+    (base / "manifest.json").write_text(json.dumps(manifest))
+    return manifest
+
+
+def verified_run(root, run_id, owners, papers=()):
+    ranges = [dict(c) for c in ASSIGNED_RANGES if c["owner"] in owners]
+    tasks = [{"owner": o, "arxiv_id": a} for o, a in papers]
+    scope = {"schema_version": "1.2", "run_id": run_id, "is_mock": True,
+             "scope": {"ranges": ranges, "paper_tasks": tasks, "discovery_complete": False,
+                       "versions_complete": True, "owner_count": len({o for o, _ in papers}),
+                       "paper_count": len(tasks)}}
+    return VerifiedRun(output_root=Path(root), scope=scope, accepted_results=[],
+                       validation={"valid": True, "issues": []}, quality={"valid": True, "issues": []},
+                       files=[], run_state="finished", config_fingerprint=FINGERPRINT,
+                       recorded_output_root="/content/out")
+
+
+class FakeRunReader:
+    """Stands in for RunInspector: returns a VerifiedRun built from the snapshot it is asked for."""
+
+    def __init__(self, owners_by_run, papers_by_run=None):
+        self.owners_by_run, self.papers_by_run = owners_by_run, papers_by_run or {}
+        self.opened, self.closed = [], []
+
+    @contextmanager
+    def open(self, output_root, run_id):
+        self.opened.append(run_id)
+        try:
+            yield verified_run(output_root, run_id, self.owners_by_run[run_id], self.papers_by_run.get(run_id, ()))
+        finally:
+            self.closed.append(run_id)
+
+
+def summary(discovered, complete, expected=0, success=0, samples=0, mean=None):
+    return {"papers_discovered": discovered, "metadata_complete_papers": complete, "papers_complete": complete,
+            "paper_success_rate": complete / discovered if discovered else None,
+            "source_versions_expected": expected, "source_versions_success": success,
+            "source_versions_unsupported": 0, "source_versions_unresolved": 0,
+            "references_fully_fetched_papers": complete, "references_query_success_rate": None,
+            "references_metadata_complete_papers": 0, "metadata_success_rate": None,
+            "source_success_rate": None, "references_arxiv_total": 0, "references_complete_total": 0,
+            "reference_metadata_success_rate": None, "mean_arxiv_references_per_paper": None,
+            "source_size_sample_count": samples, "mean_extracted_bytes_before_filter": mean,
+            "mean_retained_source_bytes": mean}
+
+
+class FakeSummarizer:
+    def __init__(self, values):
+        self.values = values
+
+    def summarize(self, run, owner):
+        return self.values[owner]
+
+
+class AssemblerTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.assembler = CollectionAssembler(clock=lambda: "2026-10-28T00:00:00Z")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_one_member_per_owner_newest_wins(self):
+        write_snapshot(self.root, "s/nhi-old", "nhi-old", ["huynh-nhi"], "2026-10-26T00:00:00Z")
+        write_snapshot(self.root, "s/nhi-new", "nhi-new", ["huynh-nhi"], "2026-10-27T00:00:00Z")
+        write_snapshot(self.root, "s/trong", "trong", ["trong", "khang"])
+        result = self.assembler.assemble(self.root, "group-1", ["s/nhi-old", "s/nhi-new", "s/trong"])
+        members = {m["snapshot_id"]: m for m in result.manifest["members"]}
+        self.assertEqual(sorted(members), ["nhi-new", "trong"])
+        self.assertEqual(result.skipped, ["nhi-old"])
+        self.assertEqual(members["nhi-new"]["manifest_path"], "s/nhi-new/manifest.json")
+        self.assertEqual(result.manifest["created_at"], "2026-10-28T00:00:00Z")
+
+    def test_rejects_changed_files_duplicates_and_mixed_modes(self):
+        write_snapshot(self.root, "s/a", "a", ["trong"])
+        (self.root / "s/a/raw/metadata.json").write_text("changed")
+        with self.assertRaisesRegex(ValueError, "missing or changed"):
+            self.assembler.assemble(self.root, "g", ["s/a"])
+        write_snapshot(self.root, "s/b", "b", ["trong"])
+        with self.assertRaisesRegex(ValueError, "twice"):
+            self.assembler.assemble(self.root, "g", ["s/b", "s/b"])
+        write_snapshot(self.root, "s/c", "c", ["khang"], is_mock=False)
+        with self.assertRaisesRegex(ValueError, "mix"):
+            self.assembler.assemble(self.root, "g", ["s/b", "s/c"])
+        with self.assertRaises(ValueError):
+            self.assembler.assemble(self.root, "g", [])
+        with self.assertRaises(ValueError):
+            self.assembler.assemble(self.root, "g", ["../outside"])
+
+    def test_save_writes_valid_manifest(self):
+        write_snapshot(self.root, "s/a", "a", ["trong"])
+        manifest = self.assembler.assemble(self.root, "g", ["s/a"]).manifest
+        path = CollectionAssembler.save(self.root, manifest)
+        self.assertEqual(json.loads(path.read_text()), manifest)
+        with self.assertRaises(ValueError):
+            CollectionAssembler.save(self.root, {**manifest, "members": []})
+
+
+class ReaderTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        write_snapshot(self.root, "s/nhi", "nhi", ["huynh-nhi"])
+        write_snapshot(self.root, "s/trong", "trong", ["khang", "trong"])
+        assembler = CollectionAssembler(clock=lambda: "2026-10-28T00:00:00Z")
+        CollectionAssembler.save(self.root, assembler.assemble(self.root, "g", ["s/nhi", "s/trong"]).manifest)
+        self.runs = FakeRunReader({"nhi-run": ["huynh-nhi"], "trong-run": ["khang", "trong"]})
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_opens_every_member_and_closes_them(self):
+        with CollectionDirectoryReader(self.runs).open(self.root) as collection:
+            self.assertEqual([r.scope["run_id"] for r in collection.runs], ["nhi-run", "trong-run"])
+            self.assertEqual(self.runs.closed, [])
+            self.assertEqual(collection.runs[0].output_root, self.root / "s/nhi")
+        self.assertEqual(sorted(self.runs.closed), ["nhi-run", "trong-run"])
+
+    def test_rejects_tampered_snapshot_or_mismatched_run(self):
+        (self.root / "s/trong/raw/metadata.json").write_text("changed")
+        with self.assertRaisesRegex(ValueError, "missing or changed"):
+            with CollectionDirectoryReader(self.runs).open(self.root):
+                pass
+        self.assertEqual(self.runs.opened, self.runs.closed)  # nothing left open after a failure
+        write_snapshot(self.root, "t/nhi", "nhi", ["huynh-nhi"])
+        wrong = FakeRunReader({"nhi-run": ["trong"]})
+        assembler = CollectionAssembler()
+        CollectionAssembler.save(self.root, assembler.assemble(self.root, "g", ["t/nhi"]).manifest)
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            with CollectionDirectoryReader(wrong).open(self.root):
+                pass
+
+    def test_rejects_missing_or_invalid_collection_manifest(self):
+        (self.root / "collection.json").write_text("{}")
+        with self.assertRaisesRegex(ValueError, "Invalid collection"):
+            with CollectionDirectoryReader(self.runs).open(self.root):
+                pass
+        (self.root / "collection.json").unlink()
+        with self.assertRaisesRegex(ValueError, "Cannot read"):
+            with CollectionDirectoryReader(self.runs).open(self.root):
+                pass
+
+
+class StatisticsTests(unittest.TestCase):
+    def test_rates_come_from_summed_counts(self):
+        total = combine_summaries([summary(10, 9, 4, 4, 2, 100.0), summary(30, 3, 6, 0, 6, 200.0)])
+        self.assertEqual(total["papers_discovered"], 40)
+        self.assertEqual(total["paper_success_rate"], 12 / 40)  # not (0.9 + 0.1) / 2
+        self.assertEqual(total["source_success_rate"], 4 / 10)
+        self.assertEqual(total["mean_retained_source_bytes"], (2 * 100 + 6 * 200) / 8)
+        self.assertIsNone(total["reference_metadata_success_rate"])  # 0 / 0 is unknown, not 0
+
+    def test_builds_valid_statistics_with_missing_owners(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_snapshot(root, "s/nhi", "nhi", ["huynh-nhi"])
+            write_snapshot(root, "s/trong", "trong", ["khang", "trong"])
+            CollectionAssembler.save(root, CollectionAssembler().assemble(root, "g", ["s/nhi", "s/trong"]).manifest)
+            runs = FakeRunReader({"nhi-run": ["huynh-nhi"], "trong-run": ["khang", "trong"]},
+                                 {"nhi-run": [("huynh-nhi", "2409.03594")], "trong-run": [("trong", "2504.17523")]})
+            values = {"huynh-nhi": summary(4, 2), "trong": summary(6, 6), "khang": summary(0, 0)}
+            with CollectionDirectoryReader(runs).open(root) as collection:
+                stats = CollectionStatisticsBuilder(FakeSummarizer(values)).build(collection)
+        self.assertEqual(stats["missing_owners"], ["hoang", "man-nhi"])
+        self.assertEqual(sorted(stats["by_owner"]), ["huynh-nhi", "khang", "trong"])
+        self.assertEqual(stats["summary"]["papers_complete"], 8)
+        self.assertEqual(stats["summary"]["paper_success_rate"], 8 / 10)
+        self.assertEqual(stats["scope"]["paper_count"], 2)
+
+    def test_matches_worked_example_of_schema_spec(self):
+        # Section 15 of the schema spec: rates recomputed from these counts must match.
+        example = {"papers_discovered": 2, "metadata_complete_papers": 1, "papers_complete": 0,
+                   "paper_success_rate": 0.0, "source_versions_expected": 2, "source_versions_success": 1,
+                   "source_versions_unsupported": 1, "source_versions_unresolved": 0,
+                   "references_fully_fetched_papers": 1, "references_query_success_rate": 0.5,
+                   "references_metadata_complete_papers": 0, "metadata_success_rate": 0.5,
+                   "source_success_rate": 0.5, "references_arxiv_total": 3, "references_complete_total": 2,
+                   "reference_metadata_success_rate": 2 / 3, "mean_arxiv_references_per_paper": 3.0,
+                   "source_size_sample_count": 1, "mean_extracted_bytes_before_filter": 1000.0,
+                   "mean_retained_source_bytes": 400.0}
+        self.assertEqual(combine_summaries([example]), example)
+        self.assertEqual(combine_summaries([example, example])["mean_arxiv_references_per_paper"], 3.0)
+
+    def test_missing_mean_for_sampled_owner_is_an_error(self):
+        with self.assertRaises(ValueError):
+            combine_summaries([summary(1, 1, samples=3, mean=None)])
+
+
+if __name__ == "__main__":
+    unittest.main()

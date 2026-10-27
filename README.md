@@ -368,6 +368,8 @@ Khi mở DB để ghi, T5 tự migration cấu trúc v1→v2 để thêm bảng 
 
 **Validator tài liệu vận hành** (`validation/pipeline_contracts.py`, Huỳnh Nhi): `validate_pipeline_document(document, kind)` với `kind` là `checkpoint`, `snapshot`, `collection` hoặc `collection-statistics`, trả `list[str]` (rỗng là hợp lệ). Kiểm tra cấu trúc theo `pipeline_contracts.py` rồi quy tắc giữa các trường: key checkpoint khớp payload, trang references liền nhau, hash/đường dẫn của snapshot, mỗi owner một snapshot trong collection, số đếm thống kê cộng đúng theo owner.
 
+**Kiểm tra run và tập hợp snapshot** (`collection/`, Huỳnh Nhi): `RunInspector().open(output_root, run_id)` mở một run đã dừng ở chế độ chỉ đọc và trả `VerifiedRun` sau khi kiểm tra SQLite, file/hash và bộ file bàn giao. `CollectionAssembler` chọn một snapshot đã giải nén cho mỗi owner (bản mới nhất), ghi `collection.json`; `CollectionDirectoryReader(RunInspector()).open(root)` kiểm tra lại từng snapshot và run. `CollectionStatisticsBuilder(summarizer)` cộng số đếm theo owner rồi tính lại tỷ lệ chung từ tổng số đếm; thống kê từng owner do T6 cung cấp qua `OwnerSummarizer`. Test inspector cần Linux/macOS (runner dùng `fcntl`).
+
 CLI ghi `provenance.producer_commit` cho Result mới chỉ khi nhận diện được code pipeline sạch trong Git. Code đang sửa hoặc không có Git để trống thông tin đó; không gán HEAD cho artifacts cũ.
 
 ### Chạy thử offline
