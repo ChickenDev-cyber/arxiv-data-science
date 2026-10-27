@@ -8,6 +8,8 @@ from pathlib import Path
 from ..config import OWNERS
 from ..contracts import paper_folder
 from ..discovery.cli import _write_preview
+from ..http import RequestScheduler
+from .checkpoint import JsonFileCheckpointStore
 from .api import ArxivDateClient, SemanticScholarClient
 from .service import ReferencesModule, validate_task
 from ..discovery.service import validate_context
@@ -20,13 +22,22 @@ def main(argv=None):
     parser.add_argument("--arxiv-id", required=True, help="canonical ID, e.g. 2501.12642 (no URL, no vN)")
     parser.add_argument("--run-id", default="t4-preview")
     parser.add_argument("--output-root", type=Path, default=Path("/tmp/arxiv-t4"))
+    parser.add_argument("--state-dir", type=Path, default=None,
+                        help="optional folder for checkpoints: resume reference pages, cache submission dates "
+                             "and keep the API waiting schedule across restarts")
     args = parser.parse_args(argv)
     task = {"owner": args.owner, "arxiv_id": args.arxiv_id}
     context = dict(run_id=args.run_id, is_mock=False, output_root=args.output_root)
     try:
         validate_task(task)
         validate_context(context)
-        module = ReferencesModule(SemanticScholarClient(), ArxivDateClient())
+        if args.state_dir is None:
+            module = ReferencesModule(SemanticScholarClient(), ArxivDateClient())
+        else:
+            store = JsonFileCheckpointStore(args.state_dir)
+            scheduler = RequestScheduler(checkpoints=store)
+            module = ReferencesModule(SemanticScholarClient(scheduler=scheduler),
+                                      ArxivDateClient(scheduler=scheduler), checkpoints=store)
         result = module.fetch_references(task, context)
         path = (args.output_root / "preview" / args.run_id /
                 f"{args.owner}-{paper_folder(args.arxiv_id)}.references.json")

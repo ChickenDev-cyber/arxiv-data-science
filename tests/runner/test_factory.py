@@ -49,6 +49,8 @@ class FactoryTests(unittest.TestCase):
         built = module.LiveModuleFactory().build(options, InMemoryCheckpointStore())
         self.assertIsInstance(built.references, ReferencesModule)
         self.assertIsInstance(built.discovery.client.scheduler, RequestScheduler)
+        self.assertIs(built.references.checkpoints, built.discovery.checkpoints)
+        self.assertIs(built.discovery.client.scheduler.store, built.discovery.checkpoints)
 
     def test_mock_factory_writes_discovery_to_supplied_store(self):
         module = self.factory_module()
