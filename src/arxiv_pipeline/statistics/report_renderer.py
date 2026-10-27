@@ -102,6 +102,14 @@ def render_report_markdown(stats: Statistics, bench: Benchmark | None = None) ->
     lines.append("    E --> F[\"T6: Statistics & Report\"]")
     lines.append("```")
     lines.append("")
+    lines.append("### 3.2. Biểu đồ Phân tích Trực quan")
+    lines.append("")
+    lines.append("![Tiến độ Thu thập theo Thành viên](reports/figures/pipeline_progress.png)")
+    lines.append("")
+    lines.append("![Tối ưu hóa Dung lượng Nguồn TeX](reports/figures/storage_comparison.png)")
+    lines.append("")
+    lines.append("![Hiệu năng Tài nguyên Hệ thống](reports/figures/system_resources.png)")
+    lines.append("")
 
     # Section 4: System Benchmark
     lines.append("## 4. Hiệu năng & Tài nguyên Hệ thống (System Benchmarks)")

@@ -16,5 +16,7 @@ site:
 toc:
   - file: report.md
     title: "Báo cáo Thống kê & Benchmark M1"
+  - file: report.ipynb
+    title: "Phân tích Trực quan (Notebook)"
   - file: README.md
     title: "Kiến trúc & Hướng dẫn Pipeline"

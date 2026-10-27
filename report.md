@@ -36,6 +36,14 @@ flowchart LR
     E --> F["T6: Statistics & Report"]
 ```
 
+### 3.2. Biểu đồ Phân tích Trực quan
+
+![Tiến độ Thu thập theo Thành viên](reports/figures/pipeline_progress.png)
+
+![Tối ưu hóa Dung lượng Nguồn TeX](reports/figures/storage_comparison.png)
+
+![Hiệu năng Tài nguyên Hệ thống](reports/figures/system_resources.png)
+
 ## 4. Hiệu năng & Tài nguyên Hệ thống (System Benchmarks)
 
 - **Thời gian thực thi (Wall Seconds):** `0.00s`
