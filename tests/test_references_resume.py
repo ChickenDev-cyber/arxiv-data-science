@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 
 from arxiv_pipeline.discovery.api import ApiResponse, RemoteError
-from arxiv_pipeline.http import MAX_RESTORED_WAIT, RequestScheduler
+from arxiv_pipeline.http import RequestScheduler
 from arxiv_pipeline.references import (JsonFileCheckpointStore, MemoryCheckpointStore, ReferencesModule)
 from arxiv_pipeline.references.api import SemanticScholarClient
 from arxiv_pipeline.references.checkpoint import DATES_NAMESPACE, PAGES_NAMESPACE, make_record
@@ -16,7 +16,7 @@ from arxiv_pipeline.runner.checkpoints import InMemoryCheckpointStore as RunnerC
 from arxiv_pipeline.references.cli import main as cli_main
 from arxiv_pipeline.references.examples import FakeDates, FakeReader, cited, page
 
-from test_references import D1, D2, TASK, check_contract, ctx
+from tests.test_references import D1, D2, TASK, check_contract, ctx
 
 IDS = ["2001.00001", "2001.00002", "2001.00003"]
 ALL_DATES = {IDS[0]: D1, IDS[1]: D1, IDS[2]: D2}
@@ -43,6 +43,69 @@ class Clock:
 
 
 class PageResumeTests(unittest.TestCase):
+    def test_shared_checkpoint_envelope_validator_is_composed_with_page_validation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = JsonFileCheckpointStore(tmp)
+            from arxiv_pipeline.references.checkpoint import PageCheckpoint
+            checkpoint = PageCheckpoint(store)
+            with self.assertRaises(ValueError):
+                store.save({"format_version": 1, "namespace": PAGES_NAMESPACE,
+                            "key": canonical_checkpoint_key(TASK["owner"], TASK["arxiv_id"], 1, S2_FIELDS),
+                            "payload": {}, "updated_at": "not-a-utc-time"})
+            checkpoint.save(TASK["owner"], TASK["arxiv_id"], 1, S2_FIELDS,
+                            [{"offset": 0, "next_offset": None, "raw_items": [],
+                              "fetched_at": "2026-10-28T00:00:00Z"}])
+            key = PageCheckpoint.key(TASK["owner"], TASK["arxiv_id"], 1, S2_FIELDS)
+            record = store.load(PAGES_NAMESPACE, key)
+            record["payload"]["pages"] = "corrupt"
+            store.save(record)  # valid shared envelope, invalid T4 payload
+            with self.assertRaises(ValueError):
+                checkpoint.load(TASK["owner"], TASK["arxiv_id"], 1, S2_FIELDS)
+
+    def test_legacy_checkpoint_key_is_not_silently_ignored(self):
+        store = MemoryCheckpointStore()
+        legacy_key = canonical_checkpoint_key(TASK["arxiv_id"])
+        store.save(make_record(PAGES_NAMESPACE, legacy_key, {"owner": TASK["owner"],
+                    "arxiv_id": TASK["arxiv_id"], "page_size": 1, "fields": S2_FIELDS,
+                    "pages": [{"offset": 0, "next_offset": None, "raw_items": [],
+                               "fetched_at": "2026-10-28T00:00:00Z"}]}))
+        from arxiv_pipeline.references.checkpoint import PageCheckpoint
+        with self.assertRaisesRegex(ValueError, "legacy reference checkpoint"):
+            PageCheckpoint(store).load(TASK["owner"], TASK["arxiv_id"], 1, S2_FIELDS)
+
+    def test_page_checkpoint_key_contains_all_identity_fields(self):
+        from arxiv_pipeline.references.checkpoint import PageCheckpoint
+        self.assertEqual(PageCheckpoint.key("man-nhi", "2501.12642", 100, S2_FIELDS),
+                         canonical_checkpoint_key("man-nhi", "2501.12642", 100, S2_FIELDS))
+        self.assertNotEqual(PageCheckpoint.key("man-nhi", "2501.12642", 100, S2_FIELDS),
+                            PageCheckpoint.key("trong", "2501.12642", 100, S2_FIELDS))
+        self.assertNotEqual(PageCheckpoint.key("man-nhi", "2501.12642", 100, S2_FIELDS),
+                            PageCheckpoint.key("man-nhi", "2501.12642", 50, S2_FIELDS))
+
+    def test_resume_after_50_saved_pages_can_fetch_page_51(self):
+        store = MemoryCheckpointStore()
+        from arxiv_pipeline.references.checkpoint import PageCheckpoint
+        checkpoint = PageCheckpoint(store)
+        pages = []
+        for offset in range(50):
+            pages.append({"offset": offset, "next_offset": offset + 1,
+                          "raw_items": [cited(IDS[0])], "fetched_at": "2026-10-28T00:00:00Z"})
+        checkpoint.save(TASK["owner"], TASK["arxiv_id"], 1, S2_FIELDS, pages)
+        reader = FakeReader([page([cited(IDS[0])])])
+        m = ReferencesModule(reader, FakeDates(ALL_DATES), page_size=1, max_pages=1, checkpoints=store)
+        result = m.fetch_references(TASK, ctx())
+        self.assertEqual([call[1] for call in reader.calls], [50])
+        self.assertEqual(result["provenance"]["pages_resumed"], "50")
+        self.assertEqual(result["provenance"]["pages_fetched"], "1")
+        self.assertTrue(result["data"]["complete"])
+
+    def test_page_limit_error_is_retryable(self):
+        m, _, _ = module([page([cited(IDS[0])], 1), page([cited(IDS[1])], 2), page([], 3)],
+                         store=MemoryCheckpointStore(), max_pages=2)
+        result = m.fetch_references(TASK, ctx())
+        self.assertEqual(result["error"]["code"], "page_limit")
+        self.assertTrue(result["error"]["retryable"])
+
     def test_without_store_behaviour_is_unchanged(self):
         m, reader, _ = module(three_pages())
         result = m.fetch_references(TASK, ctx())
@@ -55,13 +118,13 @@ class PageResumeTests(unittest.TestCase):
         m, _, _ = module(three_pages(), store=store)
         result = m.fetch_references(TASK, ctx())
         self.assertEqual(result["status"], "success")
-        page_key = canonical_checkpoint_key(TASK["arxiv_id"])
+        page_key = canonical_checkpoint_key(TASK["owner"], TASK["arxiv_id"], 1, S2_FIELDS)
         page_record = store.load("references", page_key)
         self.assertIsNotNone(page_record)
         self.assertEqual(set(page_record["payload"]), {"owner", "arxiv_id", "page_size", "fields", "pages"})
         self.assertEqual(set(page_record["payload"]["pages"][0]),
                          {"offset", "next_offset", "raw_items", "fetched_at"})
-        date_key = canonical_checkpoint_key(IDS[0])
+        date_key = canonical_checkpoint_key(ctx()["run_id"], IDS[0])
         date_record = store.load("arxiv_dates", date_key)
         self.assertEqual(set(date_record["payload"]), {"arxiv_id", "submission_date", "source", "fetched_at"})
         self.assertEqual(date_record["payload"]["source"], ARXIV_API)
@@ -95,7 +158,7 @@ class PageResumeTests(unittest.TestCase):
         self.assertEqual(len(second["data"]["raw_references"]), 3)
         self.assertEqual(second["metrics"]["s2_reference_count"], 3)
         self.assertEqual(second["provenance"]["pages_resumed"], "1")
-        self.assertEqual(second["provenance"]["pages_fetched"], "3")
+        self.assertEqual(second["provenance"]["pages_fetched"], "2")
 
     def test_interrupt_midway_keeps_accepted_pages(self):
         store = MemoryCheckpointStore()
@@ -146,8 +209,8 @@ class PageResumeTests(unittest.TestCase):
         self.assertEqual(result["metrics"], {"s2_reference_count": 3, "arxiv_reference_count": 1,
                                              "complete_reference_count": 1})
 
-    def test_corrupt_or_foreign_checkpoints_are_ignored_not_fatal(self):
-        key = canonical_checkpoint_key(TASK["arxiv_id"])
+    def test_corrupt_or_foreign_checkpoints_fail_loudly(self):
+        key = canonical_checkpoint_key(TASK["owner"], TASK["arxiv_id"], 1, S2_FIELDS)
         page_record = {"offset": 0, "next_offset": None, "raw_items": [], "fetched_at": "2026-10-27T00:00:00Z"}
         good = {"owner": TASK["owner"], "arxiv_id": TASK["arxiv_id"], "page_size": 1,
                 "fields": S2_FIELDS, "pages": [page_record]}
@@ -165,9 +228,9 @@ class PageResumeTests(unittest.TestCase):
                 store = MemoryCheckpointStore()
                 store.records[(PAGES_NAMESPACE, key)] = bad
                 m, r, _ = module(three_pages(), store=store)
-                result = m.fetch_references(TASK, ctx())
-                self.assertEqual(len(r.calls), 3)  # started from scratch
-                self.assertEqual(result["status"], "success")
+                with self.assertRaises(ValueError):
+                    m.fetch_references(TASK, ctx())
+                self.assertEqual(len(r.calls), 0)  # must not silently restart from scratch
 
     def test_checkpoint_write_failure_is_reported_and_does_not_lose_the_result(self):
         store = MemoryCheckpointStore()
@@ -191,6 +254,14 @@ class PageResumeTests(unittest.TestCase):
 
 
 class DateCacheTests(unittest.TestCase):
+    def test_date_cache_is_scoped_to_run_id(self):
+        store = MemoryCheckpointStore()
+        from arxiv_pipeline.references.checkpoint import DateCache
+        cache = DateCache(store)
+        cache.put_many({IDS[0]: D1}, "run-a")
+        self.assertEqual(cache.get_many([IDS[0]], "run-a"), {IDS[0]: D1})
+        self.assertEqual(cache.get_many([IDS[0]], "run-b"), {})
+
     def test_cached_dates_are_not_requested_again_across_papers(self):
         store = MemoryCheckpointStore()
         m1, _, d1 = module(three_pages(), store=store)
@@ -204,6 +275,18 @@ class DateCacheTests(unittest.TestCase):
         self.assertEqual(result["provenance"]["dates_from_cache"], "2")
         self.assertEqual(result["data"]["references"][IDS[0]]["submission_date"], D1)
         self.assertEqual(result["status"], "success")
+
+    def test_module_does_not_reuse_cli_date_cache_across_run_ids(self):
+        store = MemoryCheckpointStore()
+        m1, _, d1 = module(three_pages(), store=store)
+        m1.fetch_references(TASK, ctx())
+        self.assertEqual(d1.calls, [IDS])
+        m2, r2, d2 = module([], store=store)
+        other_context = {**ctx(), "run_id": "another-run"}
+        result = m2.fetch_references(TASK, other_context)
+        self.assertEqual(r2.calls, [])  # page checkpoint remains reusable
+        self.assertEqual(d2.calls, [IDS])  # date cache is isolated by run_id
+        self.assertEqual(result["provenance"]["dates_from_cache"], "0")
 
     def test_failed_batch_keeps_cache_and_retry_asks_only_for_missing_dates(self):
         store = MemoryCheckpointStore()
@@ -233,19 +316,18 @@ class DateCacheTests(unittest.TestCase):
         self.assertEqual(m4.fetch_references(TASK, ctx())["status"], "success")
         self.assertEqual(d4.calls, [[IDS[2]]])
 
-    def test_missing_dates_are_not_cached_and_bad_cache_values_are_ignored(self):
+    def test_missing_dates_are_not_cached_and_corrupt_cache_values_fail_loudly(self):
         store = MemoryCheckpointStore()
         m1, _, _ = module(three_pages(), FakeDates({IDS[0]: D1}), store=store)
         self.assertEqual(m1.fetch_references(TASK, ctx())["status"], "partial")
-        self.assertIsNone(store.get(DATES_NAMESPACE, canonical_checkpoint_key(IDS[1])))  # not cached
-        date_key = canonical_checkpoint_key(IDS[0])
+        self.assertIsNone(store.get(DATES_NAMESPACE, canonical_checkpoint_key(ctx()["run_id"], IDS[1])))  # not cached
+        date_key = canonical_checkpoint_key(ctx()["run_id"], IDS[0])
         store.records[(DATES_NAMESPACE, date_key)] = make_record(
             DATES_NAMESPACE, date_key, {"arxiv_id": IDS[0], "submission_date": "2020",
                                          "source": ARXIV_API, "fetched_at": "2026-10-27T00:00:00Z"})
-        m2, _, d2 = module([], FakeDates(ALL_DATES), store=store)
-        result = m2.fetch_references(TASK, ctx())
-        self.assertEqual(result["status"], "success")
-        self.assertIn(IDS[0], d2.calls[0])  # invalid cached value was re-fetched
+        m2, _, _ = module([], FakeDates(ALL_DATES), store=store)
+        with self.assertRaises(ValueError):
+            m2.fetch_references(TASK, ctx())
 
     def test_dates_not_cached_when_adapter_returns_invalid_or_foreign_ids(self):
         store = MemoryCheckpointStore()
@@ -300,7 +382,7 @@ class SchedulerPersistenceTests(unittest.TestCase):
             pass
         self.assertGreaterEqual(c.now, 300.0)  # the 101st request waits for the window of the first
 
-    def test_expired_and_corrupt_state_is_ignored(self):
+    def test_expired_wait_is_ignored_but_corrupt_state_fails_loudly(self):
         store, c = MemoryCheckpointStore(), Clock()
         s = self.new(store, c)
         s.defer("arxiv", 60)
@@ -309,43 +391,38 @@ class SchedulerPersistenceTests(unittest.TestCase):
         with fresh.request("arxiv"):
             pass
         self.assertEqual(c.now, 500.0)  # expired wait is not applied
-        for payload in ({"next_allowed_at": "soon"}, {"next_allowed_at": float("nan")}, {"s2_429_streak": -3},
-                        {"requests": "x"}, "junk"):
-            bad = MemoryCheckpointStore()
-            key_arxiv = canonical_checkpoint_key("arxiv")
-            key_s2 = canonical_checkpoint_key("semantic_scholar")
-            bad.records[(SCHEDULER_NAMESPACE, key_arxiv)] = make_record(
-                SCHEDULER_NAMESPACE, key_arxiv,
-                {"group": "arxiv", "next_allowed_at": "soon", "recent_requests_at": [], "consecutive_429": -3}) \
-                if isinstance(payload, dict) else payload
-            bad.records[(SCHEDULER_NAMESPACE, key_s2)] = bad.records[(SCHEDULER_NAMESPACE, key_arxiv)]
-            c0 = Clock()
-            sched = self.new(bad, c0)
-            with sched.request("arxiv"):
-                pass
-            self.assertEqual(c0.now, 0.0)
+        bad = MemoryCheckpointStore()
+        key_arxiv = canonical_checkpoint_key("arxiv")
+        bad.records[(SCHEDULER_NAMESPACE, key_arxiv)] = "junk"
+        with self.assertRaises(ValueError):
+            self.new(bad, Clock())
 
-    def test_absurd_future_wait_is_capped(self):
+    def test_retry_after_deadline_longer_than_24_hours_survives_restart(self):
         store, c = MemoryCheckpointStore(), Clock()
         key = canonical_checkpoint_key("arxiv")
         from arxiv_pipeline.http import utc_iso
+        deadline = 1_000_000.0 + 10 ** 6
         record = make_record(SCHEDULER_NAMESPACE, key, {
-            "group": "arxiv", "next_allowed_at": utc_iso(1_000_000.0 + 10 ** 9),
+            "group": "arxiv", "next_allowed_at": utc_iso(deadline),
             "recent_requests_at": [], "consecutive_429": 0})
         store.records[(SCHEDULER_NAMESPACE, key)] = record
         s = self.new(store, c)
         with s.request("arxiv"):
             pass
-        self.assertEqual(c.now, MAX_RESTORED_WAIT)
+        self.assertGreaterEqual(c.now, 10 ** 6)  # no 24-hour cap
 
-    def test_store_write_errors_do_not_break_requests_and_are_counted(self):
+    def test_store_write_failure_prevents_request(self):
         store, c = MemoryCheckpointStore(), Clock()
         store.fail_puts = True
         s = self.new(store, c)
-        with s.request("arxiv"):
-            pass
-        s.defer("arxiv", 5)
-        self.assertGreaterEqual(s.persist_failures, 2)
+        sent = []
+        client = SemanticScholarClient(transport=lambda *args: sent.append(args), scheduler=s,
+                                       max_attempts=1, api_key="", monotonic=c.monotonic, sleep=c.sleep)
+        with self.assertRaises(OSError):
+            client.references_page("2501.12642", 0, 10)
+        self.assertEqual(sent, [])
+        self.assertEqual(client.attempts, 0)
+        self.assertEqual(s.persist_failures, 1)
 
     def test_scheduler_without_store_is_unchanged(self):
         c = Clock()

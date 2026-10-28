@@ -14,7 +14,6 @@ SCHEDULER_NAMESPACE = "rate_limits"
 SCHEDULER_FORMAT_VERSION = 1
 S2_WINDOW_SECONDS = 300
 S2_WINDOW_REQUESTS = 100
-MAX_RESTORED_WAIT = 24 * 3600.
 
 
 def rate_limit_delay(streak, retry_after):
@@ -122,35 +121,40 @@ class RequestScheduler:
         try:
             key = self._key(group)
             self.checkpoints.save(checkpoint_record(SCHEDULER_NAMESPACE, key, self._snapshot(group)))
-        except OSError:
+        except Exception:
             self.persist_failures += 1
+            raise
 
     def _restore(self):
         mono, wall = self.monotonic(), self.wall_clock()
         for group in self._locks:
             record = self.checkpoints.load(SCHEDULER_NAMESPACE, self._key(group))
-            if not isinstance(record, dict) or record.get("format_version") != SCHEDULER_FORMAT_VERSION:
+            if record is None:
                 continue
-            if record.get("namespace") != SCHEDULER_NAMESPACE or record.get("key") != self._key(group):
-                continue
+            if (not isinstance(record, dict) or record.get("format_version") != SCHEDULER_FORMAT_VERSION or
+                    record.get("namespace") != SCHEDULER_NAMESPACE or record.get("key") != self._key(group)):
+                raise ValueError(f"corrupt rate-limit checkpoint for {group}")
             payload = record.get("payload")
             if not isinstance(payload, dict) or payload.get("group") != group:
-                continue
+                raise ValueError(f"corrupt rate-limit payload for {group}")
             at = parse_utc_iso(payload.get("next_allowed_at"))
-            if at is not None:
-                self._next[group] = mono + min(max(0., at - wall), MAX_RESTORED_WAIT)
-                self.restored = True
+            if at is None:
+                raise ValueError(f"invalid next_allowed_at in rate-limit checkpoint for {group}")
+            self._next[group] = mono + max(0., at - wall)
+            self.restored = True
             if group == "semantic_scholar":
                 streak = payload.get("consecutive_429")
-                if type(streak) is int and 0 <= streak <= 1000:
-                    self._s2_429 = streak
-                    self.restored = True
                 stamps = payload.get("recent_requests_at")
-                if isinstance(stamps, list):
-                    ages = sorted(wall - stamp for stamp in (parse_utc_iso(v) for v in stamps)
-                                  if stamp is not None and 0 <= wall - stamp < S2_WINDOW_SECONDS)
-                    self._s2.extend(mono - age for age in reversed(ages[:S2_WINDOW_REQUESTS]))
-                    self.restored = self.restored or bool(self._s2)
+                if type(streak) is not int or not 0 <= streak <= 1000 or not isinstance(stamps, list):
+                    raise ValueError("corrupt Semantic Scholar rate-limit checkpoint")
+                self._s2_429 = streak
+                parsed_stamps = [parse_utc_iso(value) for value in stamps]
+                if any(value is None for value in parsed_stamps):
+                    raise ValueError("invalid recent request timestamp in rate-limit checkpoint")
+                ages = sorted(wall - stamp for stamp in parsed_stamps
+                              if 0 <= wall - stamp < S2_WINDOW_SECONDS)
+                self._s2.extend(mono - age for age in reversed(ages[:S2_WINDOW_REQUESTS]))
+                self.restored = self.restored or bool(self._s2)
 
     @contextmanager
     def request(self, group):
@@ -165,20 +169,36 @@ class RequestScheduler:
                 if at <= now:
                     break
                 self.sleep(at - now)
+
+            # Reserve and persist the request slot BEFORE the caller can send a request.
+            previous_next = self._next[group]
+            request_time = self.monotonic()
+            previous_s2 = tuple(self._s2)
+            self._next[group] = max(previous_next, request_time + (3 if group == "arxiv" else 1))
             if group == "semantic_scholar":
-                self._s2.append(self.monotonic())
+                self._s2.append(request_time)
             try:
-                yield
-            finally:
-                self._next[group] = max(self._next[group], self.monotonic() + (3 if group == "arxiv" else 1))
                 self._persist(group)
+            except Exception:
+                self._next[group] = previous_next
+                self._s2.clear()
+                self._s2.extend(previous_s2)
+                raise
+            yield
 
     def defer(self, group, seconds):
         if type(seconds) not in (int, float) or not math.isfinite(seconds) or seconds < 0:
             raise ValueError("Cooldown must be finite and nonnegative")
         with self._locks[group]:
+            previous_next = self._next[group]
+            previous_streak = self._s2_429
             self._next[group] = max(self._next[group], self.monotonic() + seconds)
-            self._persist(group)
+            try:
+                self._persist(group)
+            except Exception:
+                self._next[group] = previous_next
+                self._s2_429 = previous_streak
+                raise
 
     def rate_limited(self, group, retry_after):
         with self._locks[group]:
@@ -191,8 +211,13 @@ class RequestScheduler:
     def request_succeeded(self, group):
         with self._locks[group]:
             if group == "semantic_scholar" and self._s2_429:
+                previous = self._s2_429
                 self._s2_429 = 0
-                self._persist(group)
+                try:
+                    self._persist(group)
+                except Exception:
+                    self._s2_429 = previous
+                    raise
 
 
 def scheduled_transport(transport, scheduler, group, client):

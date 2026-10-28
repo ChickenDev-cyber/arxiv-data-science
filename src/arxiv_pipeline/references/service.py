@@ -106,11 +106,12 @@ class ReferencesModule:
         validate_context(context)
         started_at, clock = _utc_now(), time.monotonic()
         initial_attempts = self._attempts()
+        self._active_run_id = context["run_id"]
         arxiv_id = task["arxiv_id"]
 
         # 1) Page through Semantic Scholar until it reports no further page. With a store, continue
         #    from the last accepted page of an earlier (interrupted or failed) run.
-        received, pages, offset, page_error, complete = [], 0, 0, None, False
+        received, pages, new_pages, offset, page_error, complete = [], 0, 0, 0, None, False
         first_page_failed, resumed_pages, checkpoint_errors = False, 0, []
         page_records = []
         saved = (self.page_checkpoint.load(task["owner"], arxiv_id, self.page_size, self.fields)
@@ -120,9 +121,10 @@ class ReferencesModule:
             resumed_pages = pages
             offset = following if following is not None else 0
         while not complete:
-            if pages >= self.max_pages:
+            if new_pages >= self.max_pages:
                 page_error = RemoteError(
-                    "remote_error", f"Page limit ({self.max_pages}) reached before the reference list ended").info
+                    "page_limit", f"Page limit ({self.max_pages}) reached before the reference list ended",
+                    retryable=True).info
                 break
             try:
                 payload = self.reader.references_page(arxiv_id, offset, self.page_size)
@@ -133,6 +135,7 @@ class ReferencesModule:
                 page_error, first_page_failed = exc.info, pages == 0
                 break
             pages += 1
+            new_pages += 1
             # Preserve the exact accepted page, offset chain and fetch time for safe resume.
             accepted = deepcopy(items)
             received.extend(accepted)
@@ -181,12 +184,15 @@ class ReferencesModule:
         if status in ("success", "empty"):
             error = None
 
-        provenance = self._provenance(pages, failed_batches)
+        provenance = self._provenance(new_pages, failed_batches)
         if self.store is not None:
             provenance.update({"pages_resumed": str(resumed_pages), "dates_from_cache": str(cached_dates)})
             if checkpoint_errors:
                 provenance["checkpoint_write_errors"] = "; ".join(checkpoint_errors)
         provenance.update(notes)
+        if any(record.get(field) is None for record in merged.values()
+               for field in ("title", "authors", "semantic_scholar_id")):
+            provenance["metadata_enrichment"] = "source_fields_unavailable"
         return self._finish(task, context, started_at, clock, initial_attempts, status=status,
                             data={"references": references, "raw_references": received, "complete": complete},
                             error=error, provenance=provenance, metrics=metrics, missing=missing)
@@ -237,7 +243,7 @@ class ReferencesModule:
         """
         dates, first_error, failed = {}, None, 0
         if self.date_cache:
-            dates = self.date_cache.get_many(ids)
+            dates = self.date_cache.get_many(ids, self._active_run_id)
         cached = len(dates)
         todo = [i for i in ids if i not in dates]
         for start in range(0, len(todo), self.date_batch_size):
@@ -250,7 +256,7 @@ class ReferencesModule:
                 dates.update(good)
                 if self.date_cache:
                     try:
-                        self.date_cache.put_many(good)
+                        self.date_cache.put_many(good, self._active_run_id)
                     except OSError as exc:
                         if checkpoint_errors is not None:
                             checkpoint_errors.append(f"dates: {type(exc).__name__}")

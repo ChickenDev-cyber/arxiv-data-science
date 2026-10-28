@@ -260,13 +260,19 @@ class MergeAndPagingTests(unittest.TestCase):
                 self.assertEqual(result["status"], "failed")
                 self.assertEqual(result["error"]["code"], "invalid_payload")
 
+    def test_metadata_enrichment_provenance_marks_unavailable_source_fields(self):
+        result, _, _ = run([page([cited("2001.00001", title=None, authors=(), paper_id=None)])],
+                           FakeDates({"2001.00001": D1}))
+        self.assertEqual(result["provenance"]["metadata_enrichment"], "source_fields_unavailable")
+
     def test_page_limit_stops_runaway_paging(self):
         replies = [page([cited("2001.00001")], 1), page([cited("2001.00002")], 2), page([], 3)]
         result, _, _ = run(replies, FakeDates({"2001.00001": D1, "2001.00002": D1}), page_size=1, max_pages=2)
         check_contract(self, result)
         self.assertEqual(result["status"], "partial")
         self.assertFalse(result["data"]["complete"])
-        self.assertEqual(result["error"]["code"], "remote_error")
+        self.assertEqual(result["error"]["code"], "page_limit")
+        self.assertTrue(result["error"]["retryable"])
         self.assertIn("Page limit", result["error"]["message"])
 
     def test_adapter_dates_are_revalidated(self):
