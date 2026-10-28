@@ -3,10 +3,13 @@
 ``validate_pipeline_document`` returns readable problems as ``list[str]`` so the
 runner can pass it to checkpoint stores as a ``CheckpointValidator``.
 """
+from itertools import islice
 import json
 import re
 from typing import get_type_hints
 
+from ..config import ASSIGNED_RANGES
+from ..discovery.service import candidate_ids
 from ..identifiers import is_valid_arxiv_id
 from ..json_utils import canonical
 from ..pipeline_contracts import (ArxivDateCheckpoint, CheckpointRecord, CollectionManifest,
@@ -14,6 +17,7 @@ from ..pipeline_contracts import (ArxivDateCheckpoint, CheckpointRecord, Collect
                                   ReferencesCheckpoint, SnapshotManifest)
 from ..references.api import valid_iso_date
 from ..contracts import Summary
+from ..runner.scope import contains
 from .results import _check, utc
 
 DOCUMENTS = {"checkpoint": CheckpointRecord, "snapshot": SnapshotManifest,
@@ -32,12 +36,18 @@ SUMMARY_RATES = {
     "reference_metadata_success_rate": ("references_complete_total", "references_arxiv_total"),
     "mean_arxiv_references_per_paper": ("references_arxiv_total", "references_fully_fetched_papers"),
 }
+# Means over source samples; a group mean is weighted by each owner's sample count.
+SUMMARY_MEANS = {"mean_extracted_bytes_before_filter": "source_size_sample_count",
+                 "mean_retained_source_bytes": "source_size_sample_count"}
+ASSIGNED = {c["owner"]: c for c in ASSIGNED_RANGES}
+# Agreed snapshot layout: <snapshot>/manifest.json next to <snapshot>/corpus/ (the run's output root).
+SNAPSHOT_MANIFEST, SNAPSHOT_CORPUS = "manifest.json", "corpus"
 
 
 def validate_pipeline_document(document, kind):
-    """Structure first, then cross-field rules; an unknown kind is a programming error."""
-    if kind not in DOCUMENTS:
-        raise ValueError(f"Unknown pipeline document kind: {kind!r}")
+    """Structure first, then cross-field rules; bad input is reported, never raised."""
+    if not isinstance(kind, str) or kind not in DOCUMENTS:
+        return [f"Unknown pipeline document kind: {kind!r}"]
     if not isinstance(document, dict):
         return ["Document must be an object"]
     try:
@@ -46,9 +56,10 @@ def validate_pipeline_document(document, kind):
     except (TypeError, ValueError):
         return ["Document must contain finite JSON values only"]
     paths = []
-    if kind == "checkpoint" and document.get("namespace") in PAYLOADS:
+    namespace = document.get("namespace")
+    if kind == "checkpoint" and isinstance(namespace, str) and namespace in PAYLOADS:
         # The payload union would accept another namespace's payload, so check the exact one.
-        paths += _check(document.get("payload"), PAYLOADS[document["namespace"]], "/payload")
+        paths += _check(document.get("payload"), PAYLOADS[namespace], "/payload")
     paths += _check(document, DOCUMENTS[kind], "")
     if paths:
         return [f"{p or '/'}: wrong type or missing/unrecognized field" for p in sorted(set(paths))]
@@ -93,24 +104,22 @@ def _checkpoint(record):
                     payload["batch_size"], payload["offset"]]
         if parts != expected:
             errors.append("/key: does not match owner/range/limits/batch/offset in payload")
-        if payload["range_config"]["owner"] != payload["owner"]:
-            errors.append("/payload/range_config/owner: differs from payload owner")
-        if payload["batch_size"] < 1 or payload["offset"] < 0 or (
+        candidates = payload["candidate_ids"]
+        if payload["range_config"] != ASSIGNED[payload["owner"]]:
+            errors.append("/payload/range_config: must be the range assigned to payload owner")
+        elif payload["batch_size"] < 1 or payload["offset"] < 0 or (
                 payload["max_candidates"] is not None and payload["max_candidates"] < 0):
             errors.append("/payload: batch_size must be >= 1, offset and max_candidates >= 0")
-        candidates = payload["candidate_ids"]
-        if len(candidates) > payload["batch_size"] or len(set(candidates)) != len(candidates):
-            errors.append("/payload/candidate_ids: duplicated or larger than batch_size")
-        if not all(is_valid_arxiv_id(i) for i in candidates):
-            errors.append("/payload/candidate_ids: invalid arXiv ID")
+        elif candidates != _batch_ids(payload):
+            errors.append("/payload/candidate_ids: must be the range IDs at this offset and batch size")
         groups = payload["found_ids"] + payload["excluded_ids"] + payload["unresolved_ids"]
         if len(groups) != len(set(groups)) or set(groups) != set(candidates):
             errors.append("/payload: found/excluded/unresolved must partition candidate_ids")
         if bool(payload["unresolved_ids"]) != (payload["error"] is not None):
             errors.append("/payload/error: required exactly when unresolved_ids is nonempty")
     elif namespace == "references":
-        if parts[:2] != [payload["owner"], payload["arxiv_id"]]:
-            errors.append("/key: must start with [owner, arxiv_id] of the payload")
+        if parts != [payload["owner"], payload["arxiv_id"], payload["page_size"], payload["fields"]]:
+            errors.append("/key: must be [owner, arxiv_id, page_size, fields] of the payload")
         if not is_valid_arxiv_id(payload["arxiv_id"]):
             errors.append("/payload/arxiv_id: invalid arXiv ID")
         if payload["page_size"] < 1 or not payload["fields"].strip():
@@ -152,6 +161,18 @@ def _checkpoint(record):
         if payload["consecutive_429"] < 0:
             errors.append("/payload/consecutive_429: must be >= 0")
     return errors
+
+
+def _batch_ids(payload):
+    """Candidate IDs the discovery service checks for this batch of the owner's range."""
+    limit = payload["max_candidates"]
+    end = payload["offset"] + payload["batch_size"]
+    if limit is not None:
+        end = min(end, limit)
+    if payload["offset"] % payload["batch_size"] or payload["offset"] >= end:
+        return None
+    # Discovery never saves an empty batch, so an offset past the range end is wrong too.
+    return list(islice(candidate_ids(payload["range_config"]), payload["offset"], end)) or None
 
 
 def _snapshot(manifest):
@@ -222,7 +243,15 @@ def _member_errors(members, at):
         for field in ("root", "manifest_path"):
             if not _relative_path(m[field]):
                 errors.append(f"{at}/{i}/{field}: unsafe or non-relative path")
+        if snapshot_paths(m["root"].rpartition("/" + SNAPSHOT_CORPUS)[0]) != (m["root"], m["manifest_path"]):
+            errors.append(f"{at}/{i}: root must be <snapshot>/{SNAPSHOT_CORPUS} next to "
+                          f"manifest_path <snapshot>/{SNAPSHOT_MANIFEST}")
     return errors
+
+
+def snapshot_paths(folder):
+    """(corpus root, manifest path) of an unpacked snapshot folder inside the collection."""
+    return f"{folder}/{SNAPSHOT_CORPUS}", f"{folder}/{SNAPSHOT_MANIFEST}"
 
 
 def _summary_errors(summary, at):
@@ -239,10 +268,22 @@ def _summary_errors(summary, at):
             errors.append(f"{at}/{name}: must equal {numerator} / {denominator} (null when it is 0)")
         elif name.endswith("_rate") and value is not None and not 0 <= value <= 1:
             errors.append(f"{at}/{name}: rate must be between 0 and 1")
-    for name in ("mean_extracted_bytes_before_filter", "mean_retained_source_bytes"):
-        if (summary[name] is None) != (summary["source_size_sample_count"] == 0) or (
+    for name, weight in SUMMARY_MEANS.items():
+        if (summary[name] is None) != (summary[weight] == 0) or (
                 summary[name] is not None and summary[name] < 0):
-            errors.append(f"{at}/{name}: null exactly when source_size_sample_count is 0, else >= 0")
+            errors.append(f"{at}/{name}: null exactly when {weight} is 0, else >= 0")
+    return errors
+
+
+def _weighted_mean_errors(total, parts):
+    errors = []
+    for name, weight in SUMMARY_MEANS.items():
+        known = [s for s in parts if s[weight] and s[name] is not None]
+        if total[name] is None or not known or total[weight] != sum(s[weight] for s in known):
+            continue  # null/count mismatches are already reported per summary
+        expected = sum(s[name] * s[weight] for s in known) / total[weight]
+        if abs(total[name] - expected) > 1e-6 * max(1.0, abs(expected)):
+            errors.append(f"/summary/{name}: must be the mean of by_owner weighted by {weight}")
     return errors
 
 
@@ -252,15 +293,22 @@ def _statistics(stats):
         errors.append("/collection_id: only letters, digits, '_' and '-' are allowed")
     errors += _member_errors(stats["sources"], "/sources")
     present = {o for m in stats["sources"] for o in m["owners"]}
-    missing = stats["missing_owners"]
-    if len(set(missing)) != len(missing) or present & set(missing):
-        errors.append("/missing_owners: duplicated or also present in sources")
+    if stats["missing_owners"] != [o for o in ASSIGNED if o not in present]:
+        errors.append("/missing_owners: must list the assigned owners without a snapshot, in config order")
     scope = stats["scope"]
+    ranges = {c["owner"]: c for c in scope["ranges"]}
+    if len(ranges) != len(scope["ranges"]) or set(ranges) != present or any(
+            c != ASSIGNED[o] for o, c in ranges.items()):
+        errors.append("/scope/ranges: one assigned range for each owner in sources")
+    if scope["discovery_complete"] and (stats["missing_owners"] or len(ranges) != len(ASSIGNED)):
+        errors.append("/scope/discovery_complete: true only when all assigned ranges finished discovery")
     tasks = [(p["owner"], p["arxiv_id"]) for p in scope["paper_tasks"]]
     with_papers = {o for o, _ in tasks}
     if (len(set(tasks)) != len(tasks) or scope["paper_count"] != len(tasks)
             or scope["owner_count"] != len(with_papers) or not with_papers <= present):
         errors.append("/scope: paper_tasks duplicated, counts not derived from them, or owner outside sources")
+    if any(o in ranges and not contains(ranges[o], i) for o, i in tasks):
+        errors.append("/scope/paper_tasks: arXiv ID outside its owner's range")
     # Like per-run statistics, by_owner holds exactly the owners that appear in paper_tasks.
     if set(stats["by_owner"]) != with_papers:
         errors.append("/by_owner: owners must equal the owners in scope.paper_tasks")
@@ -274,4 +322,5 @@ def _statistics(stats):
     for k in [k for k, h in get_type_hints(Summary).items() if h is int]:
         if stats["summary"][k] != sum(s[k] for s in stats["by_owner"].values()):
             errors.append(f"/summary/{k}: differs from the sum over by_owner")
-    return errors
+    return errors + _weighted_mean_errors(stats["summary"], list(stats["by_owner"].values()))
+
