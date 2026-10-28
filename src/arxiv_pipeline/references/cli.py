@@ -34,7 +34,9 @@ def main(argv=None):
         if args.state_dir is None:
             module = ReferencesModule(SemanticScholarClient(), ArxivDateClient())
         else:
-            store = JsonFileCheckpointStore(args.state_dir)
+            # Scope every persisted checkpoint (pages, dates and rate limits) to this run.
+            # The shared schema keys remain canonical within the run-specific store.
+            store = JsonFileCheckpointStore(args.state_dir / args.run_id)
             scheduler = RequestScheduler(checkpoints=store)
             module = ReferencesModule(SemanticScholarClient(scheduler=scheduler),
                                       ArxivDateClient(scheduler=scheduler), checkpoints=store)

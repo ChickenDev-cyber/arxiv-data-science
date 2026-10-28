@@ -190,15 +190,10 @@ class RequestScheduler:
         if type(seconds) not in (int, float) or not math.isfinite(seconds) or seconds < 0:
             raise ValueError("Cooldown must be finite and nonnegative")
         with self._locks[group]:
-            previous_next = self._next[group]
-            previous_streak = self._s2_429
+            # A server-provided Retry-After deadline is authoritative even if writing
+            # the checkpoint fails. Keep it in memory so this process cannot retry early.
             self._next[group] = max(self._next[group], self.monotonic() + seconds)
-            try:
-                self._persist(group)
-            except Exception:
-                self._next[group] = previous_next
-                self._s2_429 = previous_streak
-                raise
+            self._persist(group)
 
     def rate_limited(self, group, retry_after):
         with self._locks[group]:

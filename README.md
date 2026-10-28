@@ -187,7 +187,7 @@ T4 chỉ trả Result và preview. T5 lưu dictionary vào `references.json` và
 | Hết trang, thiếu ít nhất một trường của một mục arXiv (ví dụ không tra được ngày) | partial | **true** | `complete` chỉ nghĩa là đã lấy hết trang; trường thiếu nằm trong `missing_fields` |
 | Hết trang, không có reference arXiv nào | empty | true | `raw_references` vẫn có thể không rỗng; `error=null` |
 | Trang sau trang đầu bị lỗi | partial | false | giữ phần đã nhận, `error` ghi nguyên nhân |
-| Chạm giới hạn số trang mới (`max_pages`, mặc định 50) khi danh sách chưa hết | partial | false | `error.code=page_limit`, `retryable=true`; resume chỉ tính các trang tải mới trong lượt hiện tại |
+| Chạm giới hạn số trang mới (`max_pages`, mặc định 50) khi danh sách chưa hết | partial | false | `error.code=remote_error`, `retryable=true`; resume chỉ tính các trang tải mới trong lượt hiện tại |
 | Lỗi ở trang đầu | failed | — | `data=null`, `metrics={}` |
 | Semantic Scholar trả 404 | not_found | — | `data=null`, `retryable=false` |
 
@@ -210,15 +210,15 @@ T4 dùng `CheckpointStore` chung trong `pipeline_contracts.py` (`load(namespace,
 | Namespace | Key (chuỗi JSON chuẩn tắc) | Payload theo hợp đồng chung |
 |---|---|---|
 | `references` | `["<owner>", "<arxiv_id>", <page_size>, "<fields>"]` | `owner`, `arxiv_id`, `page_size`, `fields`, `pages[]`; mỗi trang có `offset`, `next_offset`, `raw_items`, `fetched_at` |
-| `arxiv_dates` | `["<run_id>", "<cited_arxiv_id>"]` | `arxiv_id`, `submission_date`, `source`, `fetched_at`; cache được cô lập theo run_id |
+| `arxiv_dates` | `["<cited_arxiv_id>"]` | `arxiv_id`, `submission_date`, `source`, `fetched_at`; `run_id` được cô lập ở tầng store |
 | `rate_limits` | `["arxiv"]` hoặc `["semantic_scholar"]` | `group`, `next_allowed_at` (UTC ISO 8601), `recent_requests_at` (danh sách UTC ISO 8601), `consecutive_429` |
 
 - `ReferencesModule(reader, dates, checkpoints=store)` lưu sau mỗi trang được chấp nhận. Key checkpoint trang gồm đủ `owner`, `arxiv_id`, `page_size` và `fields`; checkpoint hoàn tất được dùng lại. `max_pages` chỉ đếm trang tải mới trong lượt chạy hiện tại, vì vậy resume vẫn có thể lấy trang 51 sau khi đã lưu 50 trang. Muốn xóa checkpoint, gọi `PageCheckpoint(store).discard(owner, arxiv_id, page_size, fields)`.
 - Cache ngày chỉ lưu ngày hợp lệ lấy từ arXiv API v1 (`published`), kèm nguồn và thời điểm lấy. ID không được API trả về không bị cache thành “không tồn tại”; batch lỗi chỉ khiến các ID chưa có ngày được hỏi lại.
-- Store dùng validator envelope chung của runner cùng validator payload T4. Key là chuỗi JSON chuẩn tắc biểu diễn mảng không rỗng. Checkpoint hỏng, sai khóa hoặc sai phiên bản được báo lỗi rõ ràng, không âm thầm tải lại từ đầu. Cache ngày có key ràng buộc `run_id`; `provenance.pages_resumed` và `dates_from_cache` cho biết phần dùng lại.
+- Store dùng validator envelope chung của runner cùng validator payload T4. Key là chuỗi JSON chuẩn tắc biểu diễn mảng không rỗng. Checkpoint hỏng, sai khóa hoặc sai phiên bản được báo lỗi rõ ràng, không âm thầm tải lại từ đầu. CLI T4 đặt toàn bộ checkpoint dưới thư mục `state-dir/<run_id>` để cô lập trang, ngày và lịch chờ theo run; key `arxiv_dates` vẫn đúng schema chung `["<cited_arxiv_id>"]`. `provenance.pages_resumed` và `dates_from_cache` cho biết phần dùng lại.
 - Scheduler phải lưu trạng thái đặt chỗ request trước khi gửi request; nếu ghi thất bại thì request không được gửi. Lịch chờ lưu bằng UTC ISO 8601 vì đồng hồ monotonic không sống qua restart; khi khôi phục deadline `Retry-After` được giữ nguyên, không cắt xuống 24 giờ. Scheduler lưu cooldown, khoảng cách tối thiểu giữa request, chuỗi 429 và cửa sổ 100 request/300 giây của Semantic Scholar.
 
-Chạy thử riêng lẻ (cần mạng): `PYTHONPATH=src python -m arxiv_pipeline.references --owner man-nhi --arxiv-id 2501.12642 --state-dir /tmp/t4-state`; Ctrl+C rồi chạy lại cùng lệnh sẽ tiếp tục từ trang đang dở. Test offline: `tests/test_references_resume.py`.
+Chạy thử riêng lẻ (cần mạng): `PYTHONPATH=src python -m arxiv_pipeline.references --owner man-nhi --arxiv-id 2501.12642 --run-id demo --state-dir /tmp/t4-state`; trạng thái của run này nằm dưới `/tmp/t4-state/demo`. Ctrl+C rồi chạy lại cùng lệnh sẽ tiếp tục từ trang đang dở; đổi `--run-id` sẽ dùng một store riêng. Test offline: `tests/test_references_resume.py`.
 
 Test T4 (`tests/test_references.py`) không gửi request thật. Kiểm thử schema 1.2 bao gồm giữ raw có/không có arXiv ID, duplicate, ID sai, citedPaper=null, phân trang lỗi, reader tái sử dụng object và JSON preview. Các lần kiểm chứng Semantic Scholar/arXiv thật dưới đây có trước cập nhật 1.2; lần cập nhật raw_references này chỉ được kiểm thử offline, không xác nhận lại số liệu trực tiếp:
 

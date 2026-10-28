@@ -271,7 +271,7 @@ class MergeAndPagingTests(unittest.TestCase):
         check_contract(self, result)
         self.assertEqual(result["status"], "partial")
         self.assertFalse(result["data"]["complete"])
-        self.assertEqual(result["error"]["code"], "page_limit")
+        self.assertEqual(result["error"]["code"], "remote_error")
         self.assertTrue(result["error"]["retryable"])
         self.assertIn("Page limit", result["error"]["message"])
 

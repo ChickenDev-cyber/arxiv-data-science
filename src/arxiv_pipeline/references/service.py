@@ -106,7 +106,6 @@ class ReferencesModule:
         validate_context(context)
         started_at, clock = _utc_now(), time.monotonic()
         initial_attempts = self._attempts()
-        self._active_run_id = context["run_id"]
         arxiv_id = task["arxiv_id"]
 
         # 1) Page through Semantic Scholar until it reports no further page. With a store, continue
@@ -123,7 +122,7 @@ class ReferencesModule:
         while not complete:
             if new_pages >= self.max_pages:
                 page_error = RemoteError(
-                    "page_limit", f"Page limit ({self.max_pages}) reached before the reference list ended",
+                    "remote_error", f"Page limit ({self.max_pages}) reached before the reference list ended",
                     retryable=True).info
                 break
             try:
@@ -243,7 +242,7 @@ class ReferencesModule:
         """
         dates, first_error, failed = {}, None, 0
         if self.date_cache:
-            dates = self.date_cache.get_many(ids, self._active_run_id)
+            dates = self.date_cache.get_many(ids)
         cached = len(dates)
         todo = [i for i in ids if i not in dates]
         for start in range(0, len(todo), self.date_batch_size):
@@ -256,7 +255,7 @@ class ReferencesModule:
                 dates.update(good)
                 if self.date_cache:
                     try:
-                        self.date_cache.put_many(good, self._active_run_id)
+                        self.date_cache.put_many(good)
                     except OSError as exc:
                         if checkpoint_errors is not None:
                             checkpoint_errors.append(f"dates: {type(exc).__name__}")

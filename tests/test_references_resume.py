@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from arxiv_pipeline.discovery.api import ApiResponse, RemoteError
 from arxiv_pipeline.http import RequestScheduler
@@ -103,7 +104,7 @@ class PageResumeTests(unittest.TestCase):
         m, _, _ = module([page([cited(IDS[0])], 1), page([cited(IDS[1])], 2), page([], 3)],
                          store=MemoryCheckpointStore(), max_pages=2)
         result = m.fetch_references(TASK, ctx())
-        self.assertEqual(result["error"]["code"], "page_limit")
+        self.assertEqual(result["error"]["code"], "remote_error")
         self.assertTrue(result["error"]["retryable"])
 
     def test_without_store_behaviour_is_unchanged(self):
@@ -114,7 +115,16 @@ class PageResumeTests(unittest.TestCase):
         self.assertNotIn("pages_resumed", result["provenance"])
 
     def test_shared_pipeline_store_uses_contract_namespace_keys_and_payloads(self):
-        store = RunnerCheckpointStore()
+        def validate_date_key(record):
+            if record["namespace"] == DATES_NAMESPACE:
+                arxiv_id = record["payload"].get("arxiv_id")
+                if record["key"] != canonical_checkpoint_key(arxiv_id):
+                    return ["arxiv_dates key must be [arxiv_id]"]
+            return []
+
+        # Model the shared runner's semantic checkpoint validator: the key is [arxiv_id],
+        # while run isolation belongs to the store/run scope.
+        store = RunnerCheckpointStore(validate_record=validate_date_key)
         m, _, _ = module(three_pages(), store=store)
         result = m.fetch_references(TASK, ctx())
         self.assertEqual(result["status"], "success")
@@ -124,7 +134,7 @@ class PageResumeTests(unittest.TestCase):
         self.assertEqual(set(page_record["payload"]), {"owner", "arxiv_id", "page_size", "fields", "pages"})
         self.assertEqual(set(page_record["payload"]["pages"][0]),
                          {"offset", "next_offset", "raw_items", "fetched_at"})
-        date_key = canonical_checkpoint_key(ctx()["run_id"], IDS[0])
+        date_key = canonical_checkpoint_key(IDS[0])
         date_record = store.load("arxiv_dates", date_key)
         self.assertEqual(set(date_record["payload"]), {"arxiv_id", "submission_date", "source", "fetched_at"})
         self.assertEqual(date_record["payload"]["source"], ARXIV_API)
@@ -254,13 +264,22 @@ class PageResumeTests(unittest.TestCase):
 
 
 class DateCacheTests(unittest.TestCase):
-    def test_date_cache_is_scoped_to_run_id(self):
+    def test_date_cache_uses_shared_schema_key(self):
         store = MemoryCheckpointStore()
         from arxiv_pipeline.references.checkpoint import DateCache
         cache = DateCache(store)
-        cache.put_many({IDS[0]: D1}, "run-a")
-        self.assertEqual(cache.get_many([IDS[0]], "run-a"), {IDS[0]: D1})
-        self.assertEqual(cache.get_many([IDS[0]], "run-b"), {})
+        cache.put_many({IDS[0]: D1})
+        self.assertEqual(cache.get_many([IDS[0]]), {IDS[0]: D1})
+        key = canonical_checkpoint_key(IDS[0])
+        self.assertEqual(store.get(DATES_NAMESPACE, key)["key"], key)
+        self.assertEqual(key, '["2001.00001"]')
+
+    def test_date_cache_isolation_is_provided_by_separate_stores(self):
+        from arxiv_pipeline.references.checkpoint import DateCache
+        first_store, second_store = MemoryCheckpointStore(), MemoryCheckpointStore()
+        DateCache(first_store).put_many({IDS[0]: D1})
+        self.assertEqual(DateCache(first_store).get_many([IDS[0]]), {IDS[0]: D1})
+        self.assertEqual(DateCache(second_store).get_many([IDS[0]]), {})
 
     def test_cached_dates_are_not_requested_again_across_papers(self):
         store = MemoryCheckpointStore()
@@ -276,16 +295,17 @@ class DateCacheTests(unittest.TestCase):
         self.assertEqual(result["data"]["references"][IDS[0]]["submission_date"], D1)
         self.assertEqual(result["status"], "success")
 
-    def test_module_does_not_reuse_cli_date_cache_across_run_ids(self):
-        store = MemoryCheckpointStore()
-        m1, _, d1 = module(three_pages(), store=store)
-        m1.fetch_references(TASK, ctx())
+    def test_separate_stores_do_not_reuse_date_cache_or_pages(self):
+        first_store, second_store = MemoryCheckpointStore(), MemoryCheckpointStore()
+        m1, _, d1 = module(three_pages(), store=first_store)
+        self.assertEqual(m1.fetch_references(TASK, ctx())["status"], "success")
         self.assertEqual(d1.calls, [IDS])
-        m2, r2, d2 = module([], store=store)
-        other_context = {**ctx(), "run_id": "another-run"}
-        result = m2.fetch_references(TASK, other_context)
-        self.assertEqual(r2.calls, [])  # page checkpoint remains reusable
-        self.assertEqual(d2.calls, [IDS])  # date cache is isolated by run_id
+
+        m2, r2, d2 = module(three_pages(), store=second_store)
+        result = m2.fetch_references(TASK, {**ctx(), "run_id": "another-run"})
+        self.assertEqual(result["status"], "success")
+        self.assertEqual([call[1] for call in r2.calls], [0, 1, 2])
+        self.assertEqual(d2.calls, [IDS])
         self.assertEqual(result["provenance"]["dates_from_cache"], "0")
 
     def test_failed_batch_keeps_cache_and_retry_asks_only_for_missing_dates(self):
@@ -320,8 +340,8 @@ class DateCacheTests(unittest.TestCase):
         store = MemoryCheckpointStore()
         m1, _, _ = module(three_pages(), FakeDates({IDS[0]: D1}), store=store)
         self.assertEqual(m1.fetch_references(TASK, ctx())["status"], "partial")
-        self.assertIsNone(store.get(DATES_NAMESPACE, canonical_checkpoint_key(ctx()["run_id"], IDS[1])))  # not cached
-        date_key = canonical_checkpoint_key(ctx()["run_id"], IDS[0])
+        self.assertIsNone(store.get(DATES_NAMESPACE, canonical_checkpoint_key(IDS[1])))  # not cached
+        date_key = canonical_checkpoint_key(IDS[0])
         store.records[(DATES_NAMESPACE, date_key)] = make_record(
             DATES_NAMESPACE, date_key, {"arxiv_id": IDS[0], "submission_date": "2020",
                                          "source": ARXIV_API, "fetched_at": "2026-10-27T00:00:00Z"})
@@ -424,6 +444,60 @@ class SchedulerPersistenceTests(unittest.TestCase):
         self.assertEqual(client.attempts, 0)
         self.assertEqual(s.persist_failures, 1)
 
+    def test_retry_after_deadline_survives_checkpoint_write_failure_in_memory(self):
+        store, c = MemoryCheckpointStore(), Clock()
+        scheduler = self.new(store, c)
+        store.fail_puts = True
+        with self.assertRaises(OSError):
+            scheduler.rate_limited("semantic_scholar", 120.0)
+
+        # The persistence failure must not erase the server's deadline for this process.
+        store.fail_puts = False
+        starts = []
+        with scheduler.request("semantic_scholar"):
+            starts.append(c.now)
+        self.assertEqual(starts, [120.0])
+
+    def test_retry_after_deadline_survives_timeout_and_oserror_during_persist(self):
+        for failure_type in (TimeoutError, OSError):
+            with self.subTest(failure_type=failure_type.__name__):
+                c = Clock()
+
+                class FailOnceStore(MemoryCheckpointStore):
+                    fail_with = None
+
+                    def save(self, record):
+                        if self.fail_with is not None and record.get("namespace") == SCHEDULER_NAMESPACE:
+                            error_type, self.fail_with = self.fail_with, None
+                            raise error_type("simulated cooldown checkpoint failure")
+                        return super().save(record)
+
+                store = FailOnceStore()
+                scheduler = self.new(store, c)
+                starts = []
+
+                def transport(*args):
+                    starts.append(c.now)
+                    if len(starts) == 1:
+                        # The request reservation has already been persisted. Fail only when
+                        # the 120-second server cooldown is being saved after this response.
+                        store.fail_with = failure_type
+                        return ApiResponse(429, {"Retry-After": "120"}, b"")
+                    return ApiResponse(200, {}, json.dumps({"data": []}).encode())
+
+                client = SemanticScholarClient(transport=transport, scheduler=scheduler,
+                                               max_attempts=2, api_key="",
+                                               monotonic=c.monotonic, sleep=c.sleep)
+                if failure_type is OSError:
+                    with self.assertRaises(OSError):
+                        client.references_page("2501.12642", 0, 10)
+                    client.references_page("2501.12642", 0, 10)
+                else:
+                    client.references_page("2501.12642", 0, 10)
+
+                self.assertEqual(starts, [0.0, 120.0])
+                self.assertEqual(scheduler.persist_failures, 1)
+
     def test_scheduler_without_store_is_unchanged(self):
         c = Clock()
         s = RequestScheduler(monotonic=c.monotonic, sleep=c.sleep)
@@ -476,6 +550,27 @@ class CliResumeTests(unittest.TestCase):
                              "--output-root", tmp])
             self.assertEqual(code, 1)
             self.assertFalse((Path(tmp) / "s").exists())
+
+    def test_cli_scopes_all_checkpoints_by_run_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_dir, output_root = Path(tmp) / "state", Path(tmp) / "out"
+            first_reader, second_reader = FakeReader(three_pages()), FakeReader(three_pages())
+            first_dates, second_dates = FakeDates(ALL_DATES), FakeDates(ALL_DATES)
+            with mock.patch("arxiv_pipeline.references.cli.SemanticScholarClient",
+                            side_effect=[first_reader, second_reader]), \
+                 mock.patch("arxiv_pipeline.references.cli.ArxivDateClient",
+                            side_effect=[first_dates, second_dates]):
+                common = ["--owner", "man-nhi", "--arxiv-id", "2501.12642",
+                          "--state-dir", str(state_dir), "--output-root", str(output_root)]
+                self.assertEqual(cli_main(common + ["--run-id", "run-a"]), 0)
+                self.assertEqual(cli_main(common + ["--run-id", "run-b"]), 0)
+
+            self.assertEqual([call[1] for call in first_reader.calls], [0, 1, 2])
+            self.assertEqual([call[1] for call in second_reader.calls], [0, 1, 2])
+            self.assertEqual(first_dates.calls, [IDS])
+            self.assertEqual(second_dates.calls, [IDS])
+            self.assertTrue((state_dir / "run-a" / "references").is_dir())
+            self.assertTrue((state_dir / "run-b" / "references").is_dir())
 
 
 if __name__ == "__main__":
