@@ -1,4 +1,11 @@
-"""Report renderer: generates formatted MyST markdown report from Statistics and Benchmark data."""
+"""Report renderer: generates formatted MyST markdown report from Statistics and Benchmark data.
+
+Follows strict reporting guidelines:
+- Unmeasured values are presented as 'Chưa đo (N/A)', NEVER as 0 or 0.00.
+- Granular timings (Discovery time, per-paper time, mean paper time) are displayed.
+- Both complete final output bytes and peak disk usage are shown.
+- Notes that official benchmarks run on Google Colab CPU (Linux).
+"""
 
 from __future__ import annotations
 
@@ -10,19 +17,38 @@ from ..contracts import Statistics, Benchmark
 
 
 def _format_bytes(byte_val: int | float | None) -> str:
-    if byte_val is None:
-        return "N/A"
+    """Format byte size, returning 'Chưa đo (N/A)' if None or not measured."""
+    if byte_val is None or byte_val <= 0:
+        return "Chưa đo (N/A)"
     b = float(byte_val)
     if b >= 1024 * 1024 * 1024:
-        return f"{b / (1024**3):.2f} GB"
+        return f"{b / (1024**3):.2f} GB ({int(b):,} bytes)"
     if b >= 1024 * 1024:
-        return f"{b / (1024**2):.2f} MB"
+        return f"{b / (1024**2):.2f} MB ({int(b):,} bytes)"
     if b >= 1024:
-        return f"{b / 1024:.2f} KB"
+        return f"{b / 1024:.2f} KB ({int(b):,} bytes)"
     return f"{int(b)} B"
 
 
+def _format_seconds(sec_val: float | None) -> str:
+    """Format duration in seconds, returning 'Chưa đo (N/A)' if None or not measured."""
+    if sec_val is None or sec_val <= 0:
+        return "Chưa đo (N/A)"
+    return f"{sec_val:.2f}s"
+
+
+def _format_ram(byte_val: int | None) -> str:
+    """Format RAM bytes, returning 'Chưa đo (N/A)' if None or not measured."""
+    if byte_val is None or byte_val <= 0:
+        return "Chưa đo (N/A)"
+    mb = byte_val / (1024 * 1024)
+    if mb >= 1024:
+        return f"{mb / 1024:.2f} GB ({byte_val:,} bytes)"
+    return f"{mb:.2f} MB ({byte_val:,} bytes)"
+
+
 def _format_pct(val: float | None) -> str:
+    """Format percentage, returning 'N/A' if None."""
     if val is None:
         return "N/A"
     return f"{val * 100:.1f}%"
@@ -41,7 +67,6 @@ def render_report_markdown(stats: Statistics, bench: Benchmark | None = None) ->
     """Generate comprehensive MyST Markdown report text from stats and benchmark data."""
     summary = stats.get("summary", {})
     by_owner = stats.get("by_owner", {})
-    scope = stats.get("scope", {})
     run_id = stats.get("run_id", "unknown")
     is_mock = stats.get("is_mock", True)
     mode_str = "Dữ liệu Giả lập (Mock / Synthetic)" if is_mock else "Dữ liệu Thực tế (Live Crawl)"
@@ -49,7 +74,7 @@ def render_report_markdown(stats: Statistics, bench: Benchmark | None = None) ->
     lines: list[str] = []
 
     # Title & Metadata
-    lines.append(f"# 📊 Báo cáo Thống kê & Benchmark Pipeline (Milestone 1)")
+    lines.append("# 📊 Báo cáo Thống kê & Benchmark Pipeline (Milestone 1)")
     lines.append("")
     lines.append(f"> **Mã lượt chạy (Run ID):** `{run_id}` | **Chế độ:** {mode_str} | **Phiên bản Schema:** `{stats.get('schema_version', '1.2')}`")
     lines.append("")
@@ -111,30 +136,75 @@ def render_report_markdown(stats: Statistics, bench: Benchmark | None = None) ->
     lines.append("![Hiệu năng Tài nguyên Hệ thống](reports/figures/system_resources.png)")
     lines.append("")
 
-    # Section 4: System Benchmark
+    # Section 4: System Benchmark & Timings
     lines.append("## 4. Hiệu năng & Tài nguyên Hệ thống (System Benchmarks)")
     lines.append("")
+    lines.append("> **Quy chuẩn thực thi:** Benchmark chính thức được thực hiện trên **Google Colab CPU** (Linux, 2 vCPU, 12GB RAM) theo yêu cầu của đồ án. Môi trường Windows và dữ liệu mock dùng phục vụ kiểm thử cục bộ và phát triển.")
+    lines.append("")
+
+    # Extract timings from bench or summary
+    timings = {}
+    if bench and "timing" in bench:
+        timings = bench["timing"]
+    elif "timing" in summary:
+        timings = summary["timing"]
+    else:
+        timings = {
+            "discovery_seconds": summary.get("discovery_seconds"),
+            "mean_paper_seconds": summary.get("mean_paper_seconds"),
+            "per_paper_seconds": summary.get("per_paper_seconds", {}),
+        }
+
+    discovery_sec = timings.get("discovery_seconds")
+    mean_paper_sec = timings.get("mean_paper_seconds")
+    per_paper_map = timings.get("per_paper_seconds") or {}
+
+    lines.append("### 4.1. Thời gian Xử lý & Phân bổ (Execution Timings)")
+    lines.append("")
+    wall_sec = bench.get("wall_seconds") if bench else None
+    lines.append(f"- **Tổng thời gian thực thi toàn lệnh (Wall Seconds):** `{_format_seconds(wall_sec)}`")
+    lines.append(f"- **Tổng thời gian công đoạn Discovery:** `{_format_seconds(discovery_sec)}`")
+    lines.append(f"- **Thời gian xử lý trung bình mỗi bài báo:** `{_format_seconds(mean_paper_sec)}`")
+    lines.append("")
+
+    if per_paper_map:
+        lines.append("#### Chi tiết thời gian xử lý từng bài báo (Per-paper Processing Times)")
+        lines.append("")
+        lines.append("| STT | Mã bài báo (arXiv ID) | Thời gian xử lý (giây) |")
+        lines.append("| :---: | :--- | :---: |")
+        for idx, (aid, p_time) in enumerate(sorted(per_paper_map.items()), 1):
+            lines.append(f"| {idx} | `{aid}` | `{p_time:.2f}s` |")
+        lines.append("")
+
+    lines.append("### 4.2. Bộ nhớ RAM & Dung lượng Đĩa Lưu trữ (Resources Footprint)")
+    lines.append("")
+
     if bench:
         env = bench.get("environment", {})
-        wall_sec = bench.get("wall_seconds", 0.0)
-        peak_ram_mb = (bench.get("peak_ram_bytes") or 0) / (1024 * 1024)
-        mean_ram_mb = (bench.get("mean_ram_bytes") or 0) / (1024 * 1024)
-        disk_kb = (bench.get("final_output_bytes") or 0) / 1024
+        peak_ram = bench.get("peak_ram_bytes")
+        mean_ram = bench.get("mean_ram_bytes")
+        final_output = bench.get("final_output_bytes")
+        peak_disk = bench.get("peak_disk_bytes")
+        exit_code = bench.get("exit_code")
 
-        lines.append(f"- **Thời gian thực thi (Wall Seconds):** `{wall_sec:.2f}s`")
-        lines.append(f"- **Bộ nhớ RAM cao nhất (Peak RAM):** `{peak_ram_mb:.2f} MB`")
-        lines.append(f"- **Bộ nhớ RAM trung bình (Mean RAM):** `{mean_ram_mb:.2f} MB`")
-        lines.append(f"- **Dung lượng Corpus / Output:** `{disk_kb:.2f} KB`")
+        lines.append(f"- **Bộ nhớ RAM cao nhất (Peak RAM):** `{_format_ram(peak_ram)}`")
+        lines.append(f"- **Bộ nhớ RAM trung bình (Mean RAM):** `{_format_ram(mean_ram)}`")
+        lines.append(f"- **Phương pháp đo RAM:** `{bench.get('method') or 'Chưa đo'}`")
+        lines.append(f"- **Dung lượng đầu ra hoàn chỉnh (Final Output Size):** `{_format_bytes(final_output)}`")
+        lines.append(f"- **Dung lượng đĩa đỉnh (Peak Disk Usage):** `{_format_bytes(peak_disk)}`")
         lines.append(f"- **Chế độ Cache:** `{bench.get('cache_mode', 'cold')}`")
-        lines.append(f"- **Phương pháp đo:** `{bench.get('method', 'tracemalloc')}`")
-        lines.append(f"- **Mã thoát (Exit Code):** `{bench.get('exit_code', 0)}` (Thành công)")
+        exit_code_str = f"`{exit_code}` (Thành công)" if exit_code == 0 else f"`{exit_code}`"
+        lines.append(f"- **Mã thoát (Exit Code):** {exit_code_str}")
         lines.append("")
-        lines.append("### Thông tin Môi trường Thực thi")
+        lines.append("#### Thông tin Môi trường Thực thi")
         lines.append(f"- **Hệ điều hành:** `{env.get('os', 'Unknown')}` ({env.get('architecture', 'Unknown')})")
         lines.append(f"- **Vi xử lý (CPU):** `{env.get('processor', 'Unknown')}` ({env.get('cpu_count', '1')} cores)")
         lines.append(f"- **Phiên bản Python:** `{env.get('python_version', 'Unknown')}` ({env.get('python_implementation', 'CPython')})")
+        if "total_ram_bytes" in env:
+            total_ram_val = int(env["total_ram_bytes"])
+            lines.append(f"- **Tổng RAM vật lý hệ thống:** `{total_ram_val / (1024**3):.2f} GB`")
     else:
-        lines.append("*Chưa có dữ liệu benchmark cho lượt chạy này.*")
+        lines.append("*Chưa có dữ liệu benchmark tài nguyên cho lượt chạy này.*")
     lines.append("")
 
     # Section 5: Data Quality Analysis

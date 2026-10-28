@@ -83,31 +83,41 @@ def generate_all_charts(
     plt.close()
     generated.append(out2)
 
-    # Chart 3: System Performance Benchmark
+    # Chart 3: System Performance Benchmark (Only plot if measured; do not plot unmeasured as 0)
     if bench:
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9, 4), dpi=150)
         
-        peak_ram_mb = (bench.get("peak_ram_bytes") or 0) / (1024 * 1024)
-        mean_ram_mb = (bench.get("mean_ram_bytes") or 0) / (1024 * 1024)
-        wall_sec = bench.get("wall_seconds", 0.0)
+        peak_ram_bytes = bench.get("peak_ram_bytes")
+        mean_ram_bytes = bench.get("mean_ram_bytes")
+        wall_sec = bench.get("wall_seconds")
 
         # RAM comparison
-        ram_labels = ["Mean RAM", "Peak RAM"]
-        ram_values = [mean_ram_mb, peak_ram_mb]
-        bars1 = ax1.bar(ram_labels, ram_values, color=["#9b59b6", "#8e44ad"], width=0.45)
-        ax1.set_ylabel("RAM (MB)", fontsize=11)
-        ax1.set_title("Bộ nhớ RAM Sử dụng", fontsize=12, fontweight="bold")
-        for bar in bars1:
-            yval = bar.get_height()
-            ax1.text(bar.get_x() + bar.get_width()/2, yval + 0.5, f"{yval:.1f} MB", ha="center", va="bottom", fontsize=9)
+        if peak_ram_bytes and peak_ram_bytes > 0:
+            peak_ram_mb = peak_ram_bytes / (1024 * 1024)
+            mean_ram_mb = (mean_ram_bytes or peak_ram_bytes) / (1024 * 1024)
+            ram_labels = ["Mean RAM", "Peak RAM"]
+            ram_values = [mean_ram_mb, peak_ram_mb]
+            bars1 = ax1.bar(ram_labels, ram_values, color=["#9b59b6", "#8e44ad"], width=0.45)
+            ax1.set_ylabel("RAM (MB)", fontsize=11)
+            ax1.set_title("Bộ nhớ RAM Sử dụng", fontsize=12, fontweight="bold")
+            for bar in bars1:
+                yval = bar.get_height()
+                ax1.text(bar.get_x() + bar.get_width()/2, yval + 0.5, f"{yval:.1f} MB", ha="center", va="bottom", fontsize=9)
+        else:
+            ax1.text(0.5, 0.5, "Bộ nhớ RAM:\nChưa có lượt đo", ha="center", va="center", fontsize=11, color="#888888")
+            ax1.set_axis_off()
 
         # Wall time
-        bars2 = ax2.bar(["Wall Time"], [wall_sec], color=["#1abc9c"], width=0.3)
-        ax2.set_ylabel("Thời gian (giây)", fontsize=11)
-        ax2.set_title("Thời gian Thực thi Pipeline", fontsize=12, fontweight="bold")
-        for bar in bars2:
-            yval = bar.get_height()
-            ax2.text(bar.get_x() + bar.get_width()/2, yval + 0.1, f"{yval:.2f}s", ha="center", va="bottom", fontsize=9)
+        if wall_sec and wall_sec > 0:
+            bars2 = ax2.bar(["Wall Time"], [wall_sec], color=["#1abc9c"], width=0.3)
+            ax2.set_ylabel("Thời gian (giây)", fontsize=11)
+            ax2.set_title("Thời gian Thực thi Pipeline", fontsize=12, fontweight="bold")
+            for bar in bars2:
+                yval = bar.get_height()
+                ax2.text(bar.get_x() + bar.get_width()/2, yval + 0.1, f"{yval:.2f}s", ha="center", va="bottom", fontsize=9)
+        else:
+            ax2.text(0.5, 0.5, "Thời gian thực thi:\nChưa có lượt đo", ha="center", va="center", fontsize=11, color="#888888")
+            ax2.set_axis_off()
 
         plt.tight_layout()
         out3 = output_dir / "system_resources.png"

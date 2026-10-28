@@ -202,7 +202,30 @@ def compute_summary(tasks: list[PaperTask], results: list[Result]) -> Summary:
         _safe_div(references_arxiv_total, len(reference_results)) if reference_results else None
     )
 
-    return {
+    # 4. Task and Per-paper Timings (theo yêu cầu đề bài)
+    discovery_duration: float = 0.0
+    has_discovery_timing = False
+    per_paper_durations: dict[str, float] = {}
+
+    for r in norm_results:
+        dur = r.get("duration_seconds")
+        if isinstance(dur, (int, float)) and dur > 0:
+            step = r.get("step")
+            if step == "discovery":
+                discovery_duration += float(dur)
+                has_discovery_timing = True
+            elif step in ("metadata", "sources", "references"):
+                aid = r.get("arxiv_id")
+                if aid:
+                    per_paper_durations[aid] = round(per_paper_durations.get(aid, 0.0) + float(dur), 4)
+
+    mean_paper_seconds = (
+        round(sum(per_paper_durations.values()) / len(per_paper_durations), 4)
+        if per_paper_durations else None
+    )
+    discovery_seconds = round(discovery_duration, 4) if has_discovery_timing else None
+
+    summary_dict: Summary = {
         "papers_discovered": papers_discovered,
         "metadata_complete_papers": metadata_complete_papers,
         "papers_complete": papers_complete,
@@ -224,6 +247,13 @@ def compute_summary(tasks: list[PaperTask], results: list[Result]) -> Summary:
         "mean_extracted_bytes_before_filter": mean_extracted_bytes_before_filter,
         "mean_retained_source_bytes": mean_retained_source_bytes,
     }
+    
+    # Optional timing extensions
+    summary_dict["discovery_seconds"] = discovery_seconds  # type: ignore
+    summary_dict["mean_paper_seconds"] = mean_paper_seconds  # type: ignore
+    summary_dict["per_paper_seconds"] = per_paper_durations  # type: ignore
+
+    return summary_dict
 
 
 class StatisticsService:

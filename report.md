@@ -10,7 +10,7 @@ Các chỉ số cốt lõi tổng hợp từ toàn bộ dải bài báo được
 - **Số bài có Metadata hoàn chỉnh:** 0 (0.0%)
 - **Số bài hoàn thành toàn diện (Papers Complete):** 0 (0.0%)
 - **Tổng số phiên bản nguồn xử lý:** 2 (Thành công: 1, Không hỗ trợ / PDF: 0)
-- **Dung lượng nguồn trung bình:** Trích xuất `488.28 KB` → Giữ lại sau lọc TeX/BibTeX `78.12 KB`
+- **Dung lượng nguồn trung bình:** Trích xuất `488.28 KB (500,000 bytes)` → Giữ lại sau lọc TeX/BibTeX `78.12 KB (80,000 bytes)`
 - **Tài liệu tham khảo (References):** 10 trích dẫn arXiv (100.0% đầy đủ metadata, trung bình 10.0 trích dẫn/bài)
 
 ## 2. Thống kê Chi tiết theo Thành viên (Metrics by Owner)
@@ -46,18 +46,29 @@ flowchart LR
 
 ## 4. Hiệu năng & Tài nguyên Hệ thống (System Benchmarks)
 
-- **Thời gian thực thi (Wall Seconds):** `0.00s`
-- **Bộ nhớ RAM cao nhất (Peak RAM):** `0.00 MB`
-- **Bộ nhớ RAM trung bình (Mean RAM):** `0.00 MB`
-- **Dung lượng Corpus / Output:** `0.99 KB`
+> **Quy chuẩn thực thi:** Benchmark chính thức được thực hiện trên **Google Colab CPU** (Linux, 2 vCPU, 12GB RAM) theo yêu cầu của đồ án. Môi trường Windows và dữ liệu mock dùng phục vụ kiểm thử cục bộ và phát triển.
+
+### 4.1. Thời gian Xử lý & Phân bổ (Execution Timings)
+
+- **Tổng thời gian thực thi toàn lệnh (Wall Seconds):** `Chưa đo (N/A)`
+- **Tổng thời gian công đoạn Discovery:** `Chưa đo (N/A)`
+- **Thời gian xử lý trung bình mỗi bài báo:** `Chưa đo (N/A)`
+
+### 4.2. Bộ nhớ RAM & Dung lượng Đĩa Lưu trữ (Resources Footprint)
+
+- **Bộ nhớ RAM cao nhất (Peak RAM):** `Chưa đo (N/A)`
+- **Bộ nhớ RAM trung bình (Mean RAM):** `Chưa đo (N/A)`
+- **Phương pháp đo RAM:** `system_ram_used (psutil)`
+- **Dung lượng đầu ra hoàn chỉnh (Final Output Size):** `1012 B`
+- **Dung lượng đĩa đỉnh (Peak Disk Usage):** `1012 B`
 - **Chế độ Cache:** `cold`
-- **Phương pháp đo:** `tracemalloc`
 - **Mã thoát (Exit Code):** `0` (Thành công)
 
-### Thông tin Môi trường Thực thi
+#### Thông tin Môi trường Thực thi
 - **Hệ điều hành:** `Windows 10` (AMD64)
 - **Vi xử lý (CPU):** `Intel64 Family 6 Model 78 Stepping 3, GenuineIntel` (4 cores)
 - **Phiên bản Python:** `3.14.1` (CPython)
+- **Tổng RAM vật lý hệ thống:** `3.89 GB`
 
 ## 5. Nhận xét & Đánh giá Chất lượng Dữ liệu
 

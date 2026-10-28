@@ -37,8 +37,16 @@
   "peak_ram_bytes": null,
   "peak_disk_bytes": 1012,
   "final_output_bytes": 1012,
-  "method": "tracemalloc",
+  "method": "system_ram_used (psutil)",
   "mean_ram_bytes": null,
   "sampling_interval_seconds": 0.1,
-  "exit_code": 0
+  "exit_code": 0,
+  "timing": {
+    "discovery_seconds": null,
+    "mean_paper_seconds": null,
+    "min_paper_seconds": null,
+    "max_paper_seconds": null,
+    "per_paper_seconds": {},
+    "total_paper_task_seconds": null
+  }
 }

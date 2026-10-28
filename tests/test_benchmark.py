@@ -44,7 +44,7 @@ class TestBenchmark(unittest.TestCase):
         self.assertIsNotNone(mean_ram)
         self.assertGreaterEqual(mean_ram, 0)
         self.assertGreaterEqual(peak_disk, 0)
-        self.assertIn(method, ("psutil_rss", "tracemalloc"))
+        self.assertTrue(method.startswith("system_ram_used") or method in ("psutil_rss", "unsupported"))
 
     def test_benchmark_callable(self):
         service = BenchmarkService(default_interval=0.02)
@@ -78,6 +78,31 @@ class TestBenchmark(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         bench_file = out_dir / "test-bench-cli.json"
         self.assertTrue(bench_file.exists())
+
+    def test_timings_and_complete_output(self):
+        from arxiv_pipeline.benchmark.runner import extract_run_timings, compute_complete_output_bytes
+        # Create mock run directory
+        run_dir = self.test_root / "runs" / "timing-test"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        results = [
+            {"step": "discovery", "duration_seconds": 2.5, "status": "success"},
+            {"step": "metadata", "arxiv_id": "2501.00001", "duration_seconds": 1.2, "status": "success"},
+            {"step": "sources", "arxiv_id": "2501.00001", "duration_seconds": 0.8, "status": "success"},
+            {"step": "metadata", "arxiv_id": "2501.00002", "duration_seconds": 1.0, "status": "success"},
+        ]
+        import json
+        with open(run_dir / "accepted_results.jsonl", "w", encoding="utf-8") as f:
+            for item in results:
+                f.write(json.dumps(item) + "\n")
+
+        timings = extract_run_timings(self.test_root, "timing-test")
+        self.assertEqual(timings["discovery_seconds"], 2.5)
+        self.assertEqual(timings["per_paper_seconds"]["2501.00001"], 2.0)
+        self.assertEqual(timings["per_paper_seconds"]["2501.00002"], 1.0)
+        self.assertEqual(timings["mean_paper_seconds"], 1.5)
+
+        bytes_count = compute_complete_output_bytes(self.test_root, "timing-test")
+        self.assertGreater(bytes_count, 0)
 
 
 if __name__ == "__main__":
