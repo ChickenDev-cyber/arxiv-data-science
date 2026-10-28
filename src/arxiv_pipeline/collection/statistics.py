@@ -1,7 +1,7 @@
 """Group statistics from per-owner summaries: add counts, then recompute rates."""
 from typing import Protocol, get_type_hints
 
-from ..config import ASSIGNED_RANGES
+from ..config import ASSIGNED_RANGES, OWNERS
 from ..contracts import Owner, Scope, SCHEMA_VERSION, Summary
 from ..pipeline_contracts import CollectionStatistics, VerifiedCollection, VerifiedRun
 from ..validation.pipeline_contracts import SUMMARY_RATES, validate_pipeline_document
@@ -33,8 +33,10 @@ def combine_summaries(summaries: list[Summary]) -> Summary:
 def merge_scopes(runs: list[VerifiedRun]) -> Scope:
     ranges = [c for r in runs for c in r.scope["scope"]["ranges"]]
     papers = [p for r in runs for p in r.scope["scope"]["paper_tasks"]]
+    # Group discovery is complete only when all five assigned ranges are present and done.
+    covers_all = sorted(c["owner"] for c in ranges) == sorted(OWNERS)
     return {"ranges": ranges, "paper_tasks": papers,
-            "discovery_complete": bool(runs) and all(r.scope["scope"]["discovery_complete"] for r in runs),
+            "discovery_complete": covers_all and all(r.scope["scope"]["discovery_complete"] for r in runs),
             "versions_complete": bool(runs) and all(r.scope["scope"]["versions_complete"] for r in runs),
             "owner_count": len({p["owner"] for p in papers}), "paper_count": len(papers)}
 

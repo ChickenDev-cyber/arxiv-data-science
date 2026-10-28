@@ -65,7 +65,7 @@ def main(argv=None):
     p = commands.add_parser("assemble", help="choose one unpacked snapshot per owner and write collection.json")
     p.add_argument("--root", type=Path, required=True, help="collection folder that contains the snapshots")
     p.add_argument("--collection-id", required=True)
-    p.add_argument("snapshots", nargs="+", help="snapshot folders relative to --root, each with manifest.json")
+    p.add_argument("snapshots", nargs="+", help="snapshot folders relative to --root, each with manifest.json next to corpus/")
     p.set_defaults(handler=assemble)
     p = commands.add_parser("check", help="re-verify every snapshot and run of a collection; list all issues")
     p.add_argument("--root", type=Path, required=True)

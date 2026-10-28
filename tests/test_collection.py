@@ -13,50 +13,59 @@ from arxiv_pipeline.config import ASSIGNED_RANGES
 from arxiv_pipeline.pipeline_contracts import VerifiedRun
 
 FINGERPRINT = "f" * 64
+ORIGIN = "/content/out"
+
+
+def inventory(corpus):
+    """Size and hash of every file under a corpus folder, like a run's exact inventory."""
+    files = []
+    for path in sorted(p for p in Path(corpus).rglob("*") if p.is_file()):
+        data = path.read_bytes()
+        files.append({"path": path.relative_to(corpus).as_posix(), "size_bytes": len(data),
+                      "sha256": hashlib.sha256(data).hexdigest()})
+    return files
 
 
 def write_snapshot(root, folder, snapshot_id, owners, created_at="2026-10-27T00:00:00Z", is_mock=True):
-    """An unpacked snapshot: one data file plus a manifest with its size and hash."""
+    """An unpacked snapshot in the agreed layout: <folder>/manifest.json next to <folder>/corpus/."""
     base = Path(root) / folder
-    (base / "raw").mkdir(parents=True)
-    data = json.dumps({"snapshot": snapshot_id}).encode()
-    (base / "raw/metadata.json").write_bytes(data)
+    (base / "corpus/raw").mkdir(parents=True)
+    (base / "corpus/raw/metadata.json").write_text(json.dumps({"snapshot": snapshot_id}))
     manifest = {"format_version": 1, "kind": "arxiv-snapshot", "snapshot_id": snapshot_id,
                 "schema_version": "1.2", "run_id": snapshot_id + "-run", "is_mock": is_mock,
                 "owners": owners, "created_at": created_at, "exporter_commit": "a" * 40,
                 "producer_commits": [], "unknown_provenance_tasks": 0, "config_fingerprint": FINGERPRINT,
-                "origin_output_root": "/content/out",
-                "files": [{"path": "raw/metadata.json", "size_bytes": len(data),
-                           "sha256": hashlib.sha256(data).hexdigest()}]}
+                "origin_output_root": ORIGIN, "files": inventory(base / "corpus")}
     (base / "manifest.json").write_text(json.dumps(manifest))
     return manifest
 
 
-def verified_run(root, run_id, owners, papers=()):
+def verified_run(root, run_id, owners, papers=(), discovery_complete=False, origin=ORIGIN):
     ranges = [dict(c) for c in ASSIGNED_RANGES if c["owner"] in owners]
     tasks = [{"owner": o, "arxiv_id": a} for o, a in papers]
     scope = {"schema_version": "1.2", "run_id": run_id, "is_mock": True,
-             "scope": {"ranges": ranges, "paper_tasks": tasks, "discovery_complete": False,
+             "scope": {"ranges": ranges, "paper_tasks": tasks, "discovery_complete": discovery_complete,
                        "versions_complete": True, "owner_count": len({o for o, _ in papers}),
                        "paper_count": len(tasks)}}
     return VerifiedRun(output_root=Path(root), scope=scope, accepted_results=[],
                        validation={"valid": True, "issues": []}, quality={"valid": True, "issues": []},
-                       files=[], run_state="finished", config_fingerprint=FINGERPRINT,
-                       recorded_output_root="/content/out")
+                       files=inventory(root), run_state="finished", config_fingerprint=FINGERPRINT,
+                       recorded_output_root=origin)
 
 
 class FakeRunReader:
-    """Stands in for RunInspector: returns a VerifiedRun built from the snapshot it is asked for."""
+    """Stands in for RunInspector: returns a VerifiedRun built from the corpus it is asked for."""
 
-    def __init__(self, owners_by_run, papers_by_run=None):
-        self.owners_by_run, self.papers_by_run = owners_by_run, papers_by_run or {}
+    def __init__(self, owners_by_run, papers_by_run=None, **options):
+        self.owners_by_run, self.papers_by_run, self.options = owners_by_run, papers_by_run or {}, options
         self.opened, self.closed = [], []
 
     @contextmanager
     def open(self, output_root, run_id):
         self.opened.append(run_id)
         try:
-            yield verified_run(output_root, run_id, self.owners_by_run[run_id], self.papers_by_run.get(run_id, ()))
+            yield verified_run(output_root, run_id, self.owners_by_run[run_id],
+                               self.papers_by_run.get(run_id, ()), **self.options)
         finally:
             self.closed.append(run_id)
 
@@ -97,12 +106,26 @@ class AssemblerTests(unittest.TestCase):
         members = {m["snapshot_id"]: m for m in result.manifest["members"]}
         self.assertEqual(sorted(members), ["nhi-new", "trong"])
         self.assertEqual(result.skipped, ["nhi-old"])
+        self.assertEqual(members["nhi-new"]["root"], "s/nhi-new/corpus")
         self.assertEqual(members["nhi-new"]["manifest_path"], "s/nhi-new/manifest.json")
         self.assertEqual(result.manifest["created_at"], "2026-10-28T00:00:00Z")
 
+    def test_snapshot_layout_manifest_next_to_corpus(self):
+        write_snapshot(self.root, "s/nhi", "nhi", ["huynh-nhi"])
+        member = self.assembler.assemble(self.root, "g", ["s/nhi/"]).manifest["members"][0]
+        self.assertEqual((member["root"], member["manifest_path"]), ("s/nhi/corpus", "s/nhi/manifest.json"))
+        # Old layout: files beside the manifest instead of inside corpus/.
+        old = self.root / "old"
+        (self.root / "s/nhi/corpus").rename(old)
+        (old / "manifest.json").write_bytes((self.root / "s/nhi/manifest.json").read_bytes())
+        with self.assertRaisesRegex(ValueError, "missing or changed"):
+            self.assembler.assemble(self.root, "g", ["s/nhi"])
+        with self.assertRaisesRegex(ValueError, "missing or changed"):
+            self.assembler.assemble(self.root, "g", ["old"])
+
     def test_rejects_changed_files_duplicates_and_mixed_modes(self):
         write_snapshot(self.root, "s/a", "a", ["trong"])
-        (self.root / "s/a/raw/metadata.json").write_text("changed")
+        (self.root / "s/a/corpus/raw/metadata.json").write_text("changed")
         with self.assertRaisesRegex(ValueError, "missing or changed"):
             self.assembler.assemble(self.root, "g", ["s/a"])
         write_snapshot(self.root, "s/b", "b", ["trong"])
@@ -162,11 +185,11 @@ class ReaderTests(unittest.TestCase):
         with CollectionDirectoryReader(self.runs).open(self.root) as collection:
             self.assertEqual([r.scope["run_id"] for r in collection.runs], ["nhi-run", "trong-run"])
             self.assertEqual(self.runs.closed, [])
-            self.assertEqual(collection.runs[0].output_root, self.root / "s/nhi")
+            self.assertEqual(collection.runs[0].output_root, self.root / "s/nhi/corpus")
         self.assertEqual(sorted(self.runs.closed), ["nhi-run", "trong-run"])
 
     def test_rejects_tampered_snapshot_or_mismatched_run(self):
-        (self.root / "s/trong/raw/metadata.json").write_text("changed")
+        (self.root / "s/trong/corpus/raw/metadata.json").write_text("changed")
         with self.assertRaisesRegex(ValueError, "missing or changed"):
             with CollectionDirectoryReader(self.runs).open(self.root):
                 pass
@@ -175,8 +198,21 @@ class ReaderTests(unittest.TestCase):
         wrong = FakeRunReader({"nhi-run": ["trong"]})
         assembler = CollectionAssembler()
         CollectionAssembler.save(self.root, assembler.assemble(self.root, "g", ["t/nhi"]).manifest)
-        with self.assertRaisesRegex(ValueError, "does not match"):
+        with self.assertRaisesRegex(ValueError, "differs from its verified run: owners"):
             with CollectionDirectoryReader(wrong).open(self.root):
+                pass
+
+    def test_rejects_run_from_another_origin(self):
+        moved = FakeRunReader({"nhi-run": ["huynh-nhi"], "trong-run": ["khang", "trong"]}, origin="/other/out")
+        with self.assertRaisesRegex(ValueError, "origin_output_root"):
+            with CollectionDirectoryReader(moved).open(self.root):
+                pass
+
+    def test_manifest_must_list_the_exact_run_inventory(self):
+        # A file the run inventory covers but the manifest leaves out (e.g. state.sqlite).
+        (self.root / "s/nhi/corpus/state.sqlite").write_bytes(b"db")
+        with self.assertRaisesRegex(ValueError, "differs from its verified run: files"):
+            with CollectionDirectoryReader(self.runs).open(self.root):
                 pass
 
     def test_rejects_missing_or_invalid_collection_manifest(self):
@@ -231,6 +267,21 @@ class StatisticsTests(unittest.TestCase):
                    "mean_retained_source_bytes": 400.0}
         self.assertEqual(combine_summaries([example]), example)
         self.assertEqual(combine_summaries([example, example])["mean_arxiv_references_per_paper"], 3.0)
+
+    def test_discovery_complete_needs_all_five_ranges(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            write_snapshot(root, "s/nhi", "nhi", ["huynh-nhi"])
+            write_snapshot(root, "s/rest", "rest", ["khang", "trong", "hoang", "man-nhi"])
+            for members in (["s/nhi"], ["s/nhi", "s/rest"]):
+                CollectionAssembler.save(root, CollectionAssembler().assemble(root, "g", members).manifest)
+                runs = FakeRunReader({"nhi-run": ["huynh-nhi"], "rest-run": ["khang", "trong", "hoang", "man-nhi"]},
+                                     discovery_complete=True)
+                with CollectionDirectoryReader(runs).open(root) as collection:
+                    stats = CollectionStatisticsBuilder(FakeSummarizer({})).build(collection)
+                with self.subTest(members=members):
+                    # Huỳnh Nhi's run alone finished discovery, but four ranges are still missing.
+                    self.assertEqual(stats["scope"]["discovery_complete"], len(members) == 2)
 
     def test_missing_mean_for_sampled_owner_is_an_error(self):
         with self.assertRaises(ValueError):

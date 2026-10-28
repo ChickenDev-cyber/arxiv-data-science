@@ -42,6 +42,21 @@ def run_owners(run) -> list[str]:
     return sorted(c["owner"] for c in run.scope["scope"]["ranges"])
 
 
+def check_snapshot_run(snapshot, run) -> None:
+    """The manifest must describe exactly this run: identity, origin and the full inventory."""
+    problems = [name for name, ok in (
+        ("run_id", run.scope["run_id"] == snapshot["run_id"]),
+        ("is_mock", run.scope["is_mock"] == snapshot["is_mock"]),
+        ("owners", run_owners(run) == sorted(snapshot["owners"])),
+        ("config_fingerprint", run.config_fingerprint == snapshot["config_fingerprint"]),
+        ("origin_output_root", run.recorded_output_root == snapshot["origin_output_root"]),
+        ("files", sorted(run.files, key=lambda f: f["path"])
+         == sorted(snapshot["files"], key=lambda f: f["path"]))) if not ok]
+    if problems:
+        raise ValueError(f"Snapshot {snapshot['snapshot_id']} differs from its verified run: "
+                         + ", ".join(problems))
+
+
 class CollectionDirectoryReader:
     def __init__(self, runs: RunReader):
         self.runs = runs
@@ -58,12 +73,10 @@ class CollectionDirectoryReader:
                     raise ValueError("Collection member differs from its snapshot: " + member["snapshot_id"])
                 if snapshot["is_mock"] != manifest["is_mock"]:
                     raise ValueError("Collection mixes mock and real data: " + member["snapshot_id"])
-                member_root = safe_path(root, member["root"])
-                verify_files(member_root, snapshot["files"])
-                run = stack.enter_context(self.runs.open(member_root, member["run_id"]))
-                if (run.scope["run_id"] != member["run_id"] or run.scope["is_mock"] != manifest["is_mock"]
-                        or run.config_fingerprint != snapshot["config_fingerprint"]
-                        or run_owners(run) != sorted(member["owners"])):
-                    raise ValueError("Snapshot does not match its verified run: " + member["snapshot_id"])
+                # The validator already tied root to <snapshot>/corpus next to the manifest.
+                corpus = safe_path(root, member["root"])
+                verify_files(corpus, snapshot["files"])
+                run = stack.enter_context(self.runs.open(corpus, member["run_id"]))
+                check_snapshot_run(snapshot, run)
                 verified.append(run)
             yield VerifiedCollection(manifest=manifest, runs=verified)
