@@ -24,7 +24,7 @@ class FakeReader:
         self.calls.append((arxiv_id, offset, limit))
         self.attempts += 1
         reply = self.replies.pop(0)
-        if isinstance(reply, Exception):
+        if isinstance(reply, BaseException):  # also lets tests simulate Ctrl+C
             raise reply
         return reply
 
