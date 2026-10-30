@@ -387,7 +387,7 @@ Khi mở DB để ghi, T5 tự migration cấu trúc v1→v2 để thêm bảng 
 
 **Validator tài liệu vận hành** (`validation/pipeline_contracts.py`, Huỳnh Nhi): `validate_pipeline_document(document, kind)` với `kind` là `checkpoint`, `snapshot`, `collection` hoặc `collection-statistics`, trả `list[str]` (rỗng là hợp lệ). Kiểm tra cấu trúc theo `pipeline_contracts.py` rồi quy tắc giữa các trường: key checkpoint khớp payload (references là `[owner, arxiv_id, page_size, fields]`), ID của batch discovery đúng dải được giao tại offset đó, trang references liền nhau, hash/đường dẫn của snapshot, member trỏ `<snapshot>/corpus` cạnh `<snapshot>/manifest.json`, mỗi owner một snapshot, `missing_owners` đúng, `discovery_complete` chỉ khi đủ năm dải, số đếm cộng đúng theo owner, số đếm con không vượt số đếm cha (ví dụ references đủ metadata ≤ bài lấy hết trang, số mẫu dung lượng ≤ phiên bản nguồn thành công) và trung bình chung có trọng số theo số mẫu. Key checkpoint được so theo văn bản JSON nên `true` khác `1`. Input sai (kể cả `kind` lạ) được trả về trong danh sách lỗi, không ném exception.
 
-**Kiểm tra run và tập hợp snapshot** (`collection/`, Huỳnh Nhi): `RunInspector().open(output_root, run_id)` giữ khóa `.runner.lock` của output root như runner, mở một run đã dừng ở chế độ chỉ đọc và trả `VerifiedRun` sau khi kiểm tra SQLite, file/hash, events và bộ file bàn giao; `files` là inventory đủ để chép sang nơi khác rồi mở lại. `CollectionAssembler` ghi `collection.json` cho các snapshot đã giải nén, báo lỗi nếu một owner có hơn một snapshot và không ghi đè collection đã có; `CollectionService` nhận các archive, giải nén qua `SnapshotReader`, kiểm tra rồi mới ghi `collection.json`; `CollectionDirectoryReader(RunInspector()).open(root)` kiểm tra lại từng snapshot và run. `CollectionStatisticsBuilder(summarizer)` cộng số đếm theo owner rồi tính lại tỷ lệ chung từ tổng số đếm; thống kê từng owner do T6 cung cấp qua `OwnerSummarizer`. Test inspector cần Linux/macOS (runner dùng `fcntl`).
+**Kiểm tra run và tập hợp snapshot** (`collection/`, Huỳnh Nhi): `RunInspector().open(output_root, run_id)` giữ khóa `.runner.lock` của output root như runner, mở một run đã dừng ở chế độ chỉ đọc và trả `VerifiedRun` sau khi kiểm tra SQLite, file/hash, events và bộ file bàn giao; `files` là inventory đủ để chép sang nơi khác rồi mở lại. `CollectionAssembler(run_reader)` mở và kiểm tra mọi run bằng `RunReader` rồi mới ghi `collection.json` cho các snapshot đã giải nén, báo lỗi nếu một owner có hơn một snapshot và không ghi đè collection đã có; `CollectionService(snapshot_reader, run_reader)` có `assemble(archives, destination, *, collection_id)` (giải nén qua `SnapshotReader`, kiểm tra rồi mới ghi) và `open(collection_root)` (`CollectionReader`); `CollectionDirectoryReader(RunInspector()).open(root)` kiểm tra lại từng snapshot và run. `CollectionStatisticsBuilder(summarizer)` cộng số đếm theo owner rồi tính lại tỷ lệ chung từ tổng số đếm; thống kê từng owner do T6 cung cấp qua `OwnerSummarizer`. Test inspector cần Linux/macOS (runner dùng `fcntl`).
 
 CLI ghi `provenance.producer_commit` cho Result mới chỉ khi nhận diện được code pipeline sạch trong Git. Code đang sửa hoặc không có Git để trống thông tin đó; không gán HEAD cho artifacts cũ.
 
@@ -482,7 +482,7 @@ Mã thoát: `0` khi mẫu được xử lý không còn issue chất lượng; `
 
 ## Kiểm tra run và tập hợp snapshot (collection)
 
-`collection/` đọc các lượt chạy đã dừng và các snapshot đã giải nén, **không ghi gì vào corpus hay SQLite**; chỉ lệnh `assemble` ghi đúng một file `collection.json`. Lệnh `inspect`/`check` cần runner state (Linux/macOS/Colab vì runner dùng `fcntl`); `assemble` chạy được cả trên Windows.
+`collection/` đọc các lượt chạy đã dừng và các snapshot đã giải nén, **không ghi gì vào corpus hay SQLite**; chỉ lệnh `assemble` ghi đúng một file `collection.json`. Cả ba lệnh `inspect`/`assemble`/`check` đều mở run bằng runner state nên cần Linux/macOS/Colab (runner dùng `fcntl`).
 
 ### 1. Kiểm tra một run đã dừng
 
@@ -558,7 +558,9 @@ Output: mỗi owner chỉ được có **một** snapshot; nếu hai snapshot c�
 }
 ```
 
-Bị từ chối (exit 1): `collection.json` đã có, hai snapshot cùng owner, manifest sai schema, thiếu `corpus/` hoặc file trong `corpus/` sai kích thước/hash, cùng `snapshot_id` hai lần, trộn mock với dữ liệu thật, đường dẫn ra ngoài `--root`.
+Trước khi ghi, lệnh mở từng `corpus/` như `inspect` và đối chiếu manifest với run (như `check` ở mục 3); các run được giữ khóa cho đến khi ghi xong.
+
+Bị từ chối (exit 1): `collection.json` đã có, hai snapshot cùng owner, manifest sai schema, thiếu `corpus/` hoặc file trong `corpus/` sai kích thước/hash, manifest khác run (ví dụ snapshot thiếu `state.sqlite`/`.runner.lock` mà run có), cùng `snapshot_id` hai lần, trộn mock với dữ liệu thật, đường dẫn ra ngoài `--root`.
 
 ### 3. Kiểm tra lại toàn bộ collection
 
@@ -581,24 +583,25 @@ Lệnh đọc `collection.json`, kiểm tra lại hash từng snapshot, mở t�
 |---|---|
 | 0 | Hợp lệ và đầy đủ (`inspect`: không còn issue; `check`: không issue, đủ 5 owner; `assemble`: đã ghi collection.json) |
 | 2 | Hợp lệ nhưng chưa đầy đủ: còn issue chất lượng hoặc còn owner thiếu |
-| 1 | Run/snapshot/collection sai cấu trúc, không đọc được, hoặc `inspect`/`check` chạy trên Windows |
+| 1 | Run/snapshot/collection sai cấu trúc, không đọc được, hoặc chạy trên Windows |
 
 ### Dùng từ Python
 
 ```python
 from pathlib import Path
-from arxiv_pipeline.collection import CollectionDirectoryReader, CollectionService, CollectionStatisticsBuilder
+from arxiv_pipeline.collection import CollectionService, CollectionStatisticsBuilder
 from arxiv_pipeline.collection.inspector import RunInspector
+from arxiv_pipeline.snapshots import SnapshotService
 
-# Từ archive: snapshot_reader là SnapshotReader của phần snapshots/ (unpack(archive, destination) -> SnapshotManifest).
-service = CollectionService(snapshot_reader, RunInspector())
-manifest = service.create([Path("nhi-1027.tar"), Path("trong-1027.tar")], Path("nhom5"), "nhom5-demo")
+service = CollectionService(SnapshotService(), RunInspector())
+manifest = service.assemble([Path("exports/nhi-1027.tar.gz"), Path("exports/trong-1027.tar.gz")],
+                            Path("nhom5"), collection_id="nhom5-demo")
 
-with CollectionDirectoryReader(RunInspector()).open(Path("nhom5")) as collection:
+with service.open(Path("nhom5")) as collection:
     stats = CollectionStatisticsBuilder(summarizer).build(collection)
 ```
 
-`CollectionService.create` giải nén từng archive vào `snapshots/<snapshot_id>/` (manifest cạnh `corpus/`), báo lỗi khi trùng snapshot hoặc trùng owner, mở và kiểm tra mọi run, rồi mới ghi `collection.json`; lỗi ở bất kỳ bước nào thì không có `collection.json`.
+`assemble` nhận thư mục đích mới hoặc rỗng, giải nén từng archive vào `snapshots/<snapshot_id>/` (manifest cạnh `corpus/`), báo lỗi khi trùng snapshot hoặc trùng owner, mở và kiểm tra mọi run, rồi mới ghi `collection.json`; lỗi ở bất kỳ bước nào thì không có `collection.json`. `open` là `CollectionReader.open`, kiểm tra lại mọi snapshot và run. `create(archives, collection_root, collection_id)` vẫn giữ để tương thích và gọi `assemble`.
 
 `summarizer` là đối tượng có `summarize(run, owner) -> Summary` (thống kê từng owner của T6). `build` cộng số đếm theo owner và tính lại tỷ lệ theo công thức mục 11 tài liệu schema; `by_owner` chỉ gồm owner có bài trong `paper_tasks`. `scope.versions_complete` được tính lại từ metadata đã công nhận của mọi bài trong scope hợp nhất, không lấy cờ của từng run.
 

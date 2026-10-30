@@ -6,10 +6,10 @@ from pathlib import Path
 import tempfile
 
 from ..contracts import SCHEMA_VERSION
-from ..pipeline_contracts import CollectionManifest, CollectionMember
+from ..pipeline_contracts import CollectionManifest, CollectionMember, RunReader
 from ..validation.artifacts import safe_path
 from ..validation.pipeline_contracts import snapshot_paths, validate_pipeline_document
-from .reader import COLLECTION_MANIFEST, read_document, verify_files
+from .reader import COLLECTION_MANIFEST, CollectionDirectoryReader, read_document, verify_files
 
 
 def utc_now() -> str:
@@ -17,12 +17,27 @@ def utc_now() -> str:
 
 
 class CollectionAssembler:
-    def __init__(self, *, clock=utc_now):
-        self.clock = clock
+    def __init__(self, runs: RunReader, *, clock=utc_now):
+        self.runs, self.clock = runs, clock
 
     def assemble(self, collection_root: Path, collection_id: str,
                  snapshot_folders: list[str]) -> CollectionManifest:
-        """Each folder (relative to collection_root) holds manifest.json next to corpus/."""
+        """Verify every snapshot and its run, then write collection.json once.
+
+        Each folder (relative to collection_root) holds manifest.json next to corpus/.
+        The runs stay open, and locked, until the manifest is written.
+        """
+        root = Path(collection_root)
+        if safe_path(root, COLLECTION_MANIFEST).exists():
+            raise ValueError(f"{root / COLLECTION_MANIFEST} already exists; assemble into a new collection folder")
+        manifest = self.describe(root, collection_id, snapshot_folders)
+        with CollectionDirectoryReader(self.runs).verify(root, manifest):
+            self._save(root, manifest)
+        return manifest
+
+    def describe(self, collection_root: Path, collection_id: str,
+                 snapshot_folders: list[str]) -> CollectionManifest:
+        """The manifest for these snapshots; checks their files but not their runs, writes nothing."""
         root = Path(collection_root)
         members: list[CollectionMember] = []
         modes = set()
@@ -57,10 +72,8 @@ class CollectionAssembler:
         return manifest
 
     @staticmethod
-    def save(collection_root: Path, manifest: CollectionManifest) -> Path:
+    def _save(collection_root: Path, manifest: CollectionManifest) -> Path:
         """Write collection.json atomically; never replace a collection that already exists."""
-        if validate_pipeline_document(manifest, "collection"):
-            raise ValueError("Refusing to save an invalid collection manifest")
         target = safe_path(collection_root, COLLECTION_MANIFEST)
         if target.exists():
             raise ValueError(f"{target} already exists; assemble into a new collection folder")

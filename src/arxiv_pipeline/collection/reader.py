@@ -3,6 +3,7 @@ from contextlib import ExitStack, contextmanager
 import hashlib
 import json
 from pathlib import Path
+import re
 
 from ..pipeline_contracts import RunReader, VerifiedCollection
 from ..validation.artifacts import safe_path
@@ -43,9 +44,13 @@ def run_owners(run) -> list[str]:
 
 
 def provenance_of(results) -> tuple[list[str], int]:
-    """Distinct producer commits of accepted Results, and how many Results have none."""
-    commits = [r["provenance"].get("producer_commit") for r in results]
-    return sorted({c for c in commits if c}), sum(1 for c in commits if not c)
+    """Distinct producer commits of accepted Results, and how many Results have none.
+
+    Counted as the snapshot exporter does: only a full 40-hex commit is a known producer.
+    """
+    commits = [(r.get("provenance") or {}).get("producer_commit") for r in results]
+    known = [c for c in commits if isinstance(c, str) and re.fullmatch(r"[0-9a-f]{40}", c)]
+    return sorted(set(known)), len(commits) - len(known)
 
 
 def check_snapshot_run(snapshot, run) -> None:

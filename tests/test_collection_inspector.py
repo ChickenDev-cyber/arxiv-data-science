@@ -10,7 +10,6 @@ import unittest
 from arxiv_pipeline.collection.cli import main
 from arxiv_pipeline.collection.reader import provenance_of
 
-# The runner's state store locks with fcntl, which Windows does not provide.
 NEEDS_RUNNER = unittest.skipIf(util.find_spec("fcntl") is None, "runner state requires fcntl (Linux/macOS/Colab)")
 
 
@@ -89,7 +88,6 @@ class RunInspectorTests(unittest.TestCase):
         with self.inspector.open(copy, "nhi-mock") as run:
             self.assertEqual(run.files, files)
             self.assertEqual(run.recorded_output_root, str(self.root.resolve()))
-        # Every listed file is needed: without one of them the copy no longer opens.
         for name in ("state.sqlite", ".runner.lock", "logs/nhi-mock/events.jsonl", "runs/nhi-mock/quality.json"):
             with self.subTest(missing=name):
                 partial = Path(self.tmp.name) / ("without-" + name.replace("/", "-"))
@@ -121,7 +119,7 @@ class RunInspectorTests(unittest.TestCase):
     def test_events_must_match_sqlite(self):
         events = self.root / "logs/nhi-mock/events.jsonl"
         lines = events.read_text().splitlines(keepends=True)
-        for changed in (lines[:-1], lines + lines[:1], lines[1:] + lines[:1]):  # lost, repeated, reordered
+        for changed in (lines[:-1], lines + lines[:1], lines[1:] + lines[:1]):  
             with self.subTest(lines=len(changed)):
                 events.write_text("".join(changed))
                 self.rejects(self.root, message="Event log")
@@ -138,7 +136,7 @@ class RunInspectorTests(unittest.TestCase):
             with self.subTest(bad=bad):
                 report.write_text(json.dumps(bad))
                 self.rejects(self.root, message="Quality report")
-        report.write_text(json.dumps({"valid": False, "issues": [issue]}))  # extra issues are allowed
+        report.write_text(json.dumps({"valid": False, "issues": [issue]}))  
         with self.inspector.open(self.root, "nhi-mock") as run:
             self.assertFalse(run.quality["valid"])
 
@@ -149,13 +147,13 @@ class RunInspectorTests(unittest.TestCase):
         with self.inspector.open(self.root, "nhi-mock"):
             with self.assertRaisesRegex(ValueError, "Another runner"):
                 self.run_mock(self.root, "nhi-mock")
-        self.run_mock(self.root, "nhi-mock")  # the lock is released after reading
+        self.run_mock(self.root, "nhi-mock")  
 
     def test_rejects_unknown_run_or_missing_database(self):
         self.rejects(self.root, "other-run")
         nowhere = Path(self.tmp.name) / "nowhere"
         self.rejects(nowhere, message="lock file")
-        self.assertFalse(nowhere.exists())  # inspecting never creates the output root
+        self.assertFalse(nowhere.exists()) 
 
     def test_paused_run_can_be_inspected_and_resumed(self):
         paused = Path(self.tmp.name) / "paused"
@@ -163,10 +161,10 @@ class RunInspectorTests(unittest.TestCase):
         with self.inspector.open(paused, "nhi-paused") as run:
             self.assertEqual(run.run_state, "paused")
             self.assertTrue(run.validation["valid"])
-            self.assertFalse(run.quality["valid"])  # work is left; listed as issues, not an error
+            self.assertFalse(run.quality["valid"])  
             self.assertTrue(run.quality["issues"])
         before = (paused / "state.sqlite").read_bytes()
-        self.run_mock(paused, "nhi-paused")  # resume after inspection still works
+        self.run_mock(paused, "nhi-paused")  
         self.assertNotEqual((paused / "state.sqlite").read_bytes(), before)
         with self.inspector.open(paused, "nhi-paused") as run:
             self.assertEqual(run.run_state, "finished")
@@ -189,30 +187,65 @@ class RunInspectorTests(unittest.TestCase):
         self.assertEqual((member["root"], member["manifest_path"]),
                          ("snapshots/nhi/corpus", "snapshots/nhi/manifest.json"))
         code, report = self.cli("check", "--root", str(collection))
-        self.assertEqual(code, 2)  # four owners have no snapshot yet
+        self.assertEqual(code, 2)  
         self.assertEqual(report["missing_owners"], ["khang", "trong", "hoang", "man-nhi"])
         self.assertEqual(report["members"][0]["run_id"], "nhi-mock")
         (collection / "snapshots/nhi/corpus/runs/nhi-mock/scope.json").write_text("{}")
         code, _ = self.cli("check", "--root", str(collection))
-        self.assertEqual(code, 1)  # a changed file fails the snapshot hash check
+        self.assertEqual(code, 1)  
 
     def test_mock_results_count_as_unknown_provenance(self):
         with self.inspector.open(self.root, "nhi-mock") as run:
             self.assertEqual(provenance_of(run.accepted_results), ([], len(run.accepted_results)))
 
-    def test_check_rejects_manifest_that_differs_from_run(self):
+    def test_assemble_rejects_manifest_that_differs_from_run(self):
         with self.inspector.open(self.root, "nhi-mock") as run:
             files = run.files
         cases = {"origin": dict(origin_output_root="/somewhere/else"),
-                 "provenance": dict(unknown_provenance_tasks=0),  # the mock Results have no producer commit
+                 "provenance": dict(unknown_provenance_tasks=0), 
                  "inventory": dict(files=[f for f in files if f["path"] != "state.sqlite"])}
         for name, changes in cases.items():
             with self.subTest(name):
                 collection = Path(self.tmp.name) / ("collection-" + name)
                 self.snapshot_of(self.root, "nhi-mock", collection, "snapshots/nhi", "nhi-1", **changes)
                 self.assertEqual(self.cli("assemble", "--root", str(collection), "--collection-id", "demo",
-                                          "snapshots/nhi")[0], 0)
-                self.assertEqual(self.cli("check", "--root", str(collection)), (1, None))
+                                          "snapshots/nhi"), (1, None))
+                self.assertFalse((collection / "collection.json").exists())
+
+    def test_assemble_rejects_snapshot_without_state_and_lock(self):
+        with self.inspector.open(self.root, "nhi-mock") as run:
+            files = [f for f in run.files if f["path"] not in ("state.sqlite", ".runner.lock")]
+        collection = Path(self.tmp.name) / "collection"
+        self.snapshot_of(self.root, "nhi-mock", collection, "snapshots/nhi", "nhi-1", files=files)
+        for name in ("state.sqlite", ".runner.lock"):
+            (collection / "snapshots/nhi/corpus" / name).unlink()
+        self.assertEqual(self.cli("assemble", "--root", str(collection), "--collection-id", "demo",
+                                  "snapshots/nhi"), (1, None))
+        self.assertFalse((collection / "collection.json").exists())
+
+    def test_collection_service_with_the_shared_snapshot_module(self):
+        from arxiv_pipeline.collection import CollectionService
+        from arxiv_pipeline.collection.inspector import RunInspector
+        from arxiv_pipeline.snapshots import SnapshotService
+        archive = Path(self.tmp.name) / "exports/nhi-1.tar.gz"
+        archive.parent.mkdir()
+        SnapshotService(RunInspector()).export(self.root, "nhi-mock", archive, snapshot_id="nhi-1",
+                                               exporter_commit="a" * 40)
+        service = CollectionService(SnapshotService(), RunInspector())
+        destination = Path(self.tmp.name) / "collection"
+        manifest = service.assemble([archive], destination, collection_id="demo")
+        self.assertEqual([(m["snapshot_id"], m["root"], m["manifest_path"]) for m in manifest["members"]],
+                         [("nhi-1", "snapshots/nhi-1/corpus", "snapshots/nhi-1/manifest.json")])
+        with service.open(destination) as collection:
+            self.assertEqual(collection.manifest, manifest)
+            [run] = collection.runs
+            self.assertEqual(run.scope["run_id"], "nhi-mock")
+            self.assertEqual(run.output_root, destination / "snapshots/nhi-1/corpus")
+            self.assertEqual(run.recorded_output_root, str(self.root.resolve()))
+        code, report = self.cli("check", "--root", str(destination))
+        self.assertEqual((code, report["members"][0]["snapshot_id"]), (2, "nhi-1")) 
+        with self.assertRaisesRegex(ValueError, "not empty"):
+            service.assemble([archive], destination, collection_id="demo")
 
 
 if __name__ == "__main__":

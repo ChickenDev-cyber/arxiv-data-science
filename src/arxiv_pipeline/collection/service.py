@@ -1,11 +1,12 @@
-"""Build one verified collection from snapshot archives."""
+"""Build one verified collection from snapshot archives, and open it again."""
 from pathlib import Path
+from typing import ContextManager
 
-from ..pipeline_contracts import CollectionManifest, RunReader, SnapshotReader
+from ..pipeline_contracts import CollectionManifest, RunReader, SnapshotReader, VerifiedCollection
 from ..validation.artifacts import safe_path
 from ..validation.pipeline_contracts import validate_pipeline_document
-from .assembler import CollectionAssembler
-from .reader import COLLECTION_MANIFEST, CollectionDirectoryReader
+from .assembler import CollectionAssembler, utc_now
+from .reader import CollectionDirectoryReader
 
 SNAPSHOTS = "snapshots"
 
@@ -17,27 +18,29 @@ class CollectionService:
     so a failed build leaves no collection that readers could pick up.
     """
 
-    def __init__(self, snapshots: SnapshotReader, runs: RunReader, *,
-                 assembler: CollectionAssembler | None = None):
+    def __init__(self, snapshots: SnapshotReader, runs: RunReader, *, clock=utc_now):
         self.snapshots, self.runs = snapshots, runs
-        self.assembler = assembler or CollectionAssembler()
+        self.assembler = CollectionAssembler(runs, clock=clock)
+
+    def assemble(self, archives: list[Path], destination: Path, *, collection_id: str) -> CollectionManifest:
+        """destination must be new or empty; each archive lands in snapshots/<snapshot_id>/."""
+        root = Path(destination)
+        if root.is_symlink() or (root.exists() and (not root.is_dir() or any(root.iterdir()))):
+            raise ValueError(f"{root} already exists and is not empty; use a new collection folder")
+        root.mkdir(parents=True, exist_ok=True)
+        folders = [self._unpack(Path(archive), root, index) for index, archive in enumerate(archives)]
+        return self.assembler.assemble(root, collection_id, folders)
+
+    def open(self, collection_root: Path) -> ContextManager[VerifiedCollection]:
+        return CollectionDirectoryReader(self.runs).open(Path(collection_root))
 
     def create(self, archives: list[Path], collection_root: Path, collection_id: str) -> CollectionManifest:
-        root = Path(collection_root)
-        if safe_path(root, COLLECTION_MANIFEST).exists():
-            raise ValueError(f"{root / COLLECTION_MANIFEST} already exists; use a new collection folder")
-        folders = [self._unpack(Path(archive), root, index) for index, archive in enumerate(archives)]
-        manifest = self.assembler.assemble(root, collection_id, folders)
-        with CollectionDirectoryReader(self.runs).verify(root, manifest):
-            pass
-        CollectionAssembler.save(root, manifest)
-        return manifest
+        """Kept for earlier callers; same as assemble."""
+        return self.assemble(archives, collection_root, collection_id=collection_id)
 
     def _unpack(self, archive: Path, root: Path, index: int) -> str:
         """Unpack into a temporary folder, then name it after the verified snapshot ID."""
         staging = safe_path(root, f"{SNAPSHOTS}/.unpack-{index}")
-        if staging.exists():
-            raise ValueError(f"{staging} already exists; use a new collection folder")
         staging.parent.mkdir(parents=True, exist_ok=True)
         snapshot = self.snapshots.unpack(archive, staging)
         problems = validate_pipeline_document(snapshot, "snapshot")
