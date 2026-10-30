@@ -39,6 +39,16 @@ SUMMARY_RATES = {
 # Means over source samples; a group mean is weighted by each owner's sample count.
 SUMMARY_MEANS = {"mean_extracted_bytes_before_filter": "source_size_sample_count",
                  "mean_retained_source_bytes": "source_size_sample_count"}
+# Counts that are subsets of another count (schema spec section 11), as (part, whole).
+SUMMARY_SUBSETS = [
+    ("metadata_complete_papers", "papers_discovered"),
+    ("papers_complete", "metadata_complete_papers"),
+    ("papers_complete", "references_metadata_complete_papers"),
+    ("references_fully_fetched_papers", "papers_discovered"),
+    ("references_metadata_complete_papers", "references_fully_fetched_papers"),
+    ("references_complete_total", "references_arxiv_total"),
+    ("source_size_sample_count", "source_versions_success"),
+]
 ASSIGNED = {c["owner"]: c for c in ASSIGNED_RANGES}
 # Agreed snapshot layout: <snapshot>/manifest.json next to <snapshot>/corpus/ (the run's output root).
 SNAPSHOT_MANIFEST, SNAPSHOT_CORPUS = "manifest.json", "corpus"
@@ -96,13 +106,16 @@ def _checkpoint(record):
     payload, namespace = record["payload"], record["namespace"]
     if not _is_utc(record["updated_at"]):
         errors.append("/updated_at: expected a UTC timestamp ending in Z")
-    parts = _key_parts(record["key"])
-    if parts is None:
+    if _key_parts(record["key"]) is None:
         return errors + ["/key: must be a nonempty canonical JSON array"]
+
+    def key_is(*parts):
+        # Compare JSON text, not Python values: in Python true == 1 and false == 0.
+        return record["key"] == canonical(list(parts))
+
     if namespace == "discovery_batches":
-        expected = [payload["owner"], payload["range_config"], payload["max_candidates"],
-                    payload["batch_size"], payload["offset"]]
-        if parts != expected:
+        if not key_is(payload["owner"], payload["range_config"], payload["max_candidates"],
+                      payload["batch_size"], payload["offset"]):
             errors.append("/key: does not match owner/range/limits/batch/offset in payload")
         candidates = payload["candidate_ids"]
         if payload["range_config"] != ASSIGNED[payload["owner"]]:
@@ -118,19 +131,19 @@ def _checkpoint(record):
         if bool(payload["unresolved_ids"]) != (payload["error"] is not None):
             errors.append("/payload/error: required exactly when unresolved_ids is nonempty")
     elif namespace == "references":
-        if parts != [payload["owner"], payload["arxiv_id"], payload["page_size"], payload["fields"]]:
+        if not key_is(payload["owner"], payload["arxiv_id"], payload["page_size"], payload["fields"]):
             errors.append("/key: must be [owner, arxiv_id, page_size, fields] of the payload")
         if not is_valid_arxiv_id(payload["arxiv_id"]):
             errors.append("/payload/arxiv_id: invalid arXiv ID")
         if payload["page_size"] < 1 or not payload["fields"].strip():
             errors.append("/payload: page_size must be >= 1 and fields nonempty")
+        if not payload["pages"]:
+            errors.append("/payload/pages: T4 saves a checkpoint only after a page was accepted")
         expected_offset = 0
         for i, page in enumerate(payload["pages"]):
             at = f"/payload/pages/{i}"
             if page["offset"] != expected_offset:
                 errors.append(f"{at}/offset: pages must be contiguous from 0")
-            if len(page["raw_items"]) > payload["page_size"]:
-                errors.append(f"{at}/raw_items: more items than page_size")
             last = i == len(payload["pages"]) - 1
             if page["next_offset"] is None and not last:
                 errors.append(f"{at}/next_offset: only the last page may end pagination")
@@ -140,7 +153,7 @@ def _checkpoint(record):
                 errors.append(f"{at}/fetched_at: expected a UTC timestamp ending in Z")
             expected_offset = page["next_offset"]
     elif namespace == "arxiv_dates":
-        if parts != [payload["arxiv_id"]]:
+        if not key_is(payload["arxiv_id"]):
             errors.append("/key: must be [arxiv_id] of the payload")
         if not is_valid_arxiv_id(payload["arxiv_id"]):
             errors.append("/payload/arxiv_id: invalid arXiv ID")
@@ -151,7 +164,7 @@ def _checkpoint(record):
         if not _is_utc(payload["fetched_at"]):
             errors.append("/payload/fetched_at: expected a UTC timestamp ending in Z")
     else:
-        if parts != [payload["group"]]:
+        if not key_is(payload["group"]):
             errors.append("/key: must be [group] of the payload")
         times = [payload["next_allowed_at"], *payload["recent_requests_at"]]
         if not all(_is_utc(t) for t in times):
@@ -259,6 +272,9 @@ def _summary_errors(summary, at):
     counts = [k for k, h in get_type_hints(Summary).items() if h is int]
     if any(summary[k] < 0 for k in counts):
         errors.append(f"{at}: counts must be >= 0")
+    for part, whole in SUMMARY_SUBSETS:
+        if summary[part] > summary[whole]:
+            errors.append(f"{at}/{part}: cannot exceed {whole}")
     if (summary["source_versions_success"] + summary["source_versions_unsupported"]
             + summary["source_versions_unresolved"] != summary["source_versions_expected"]):
         errors.append(f"{at}: success + unsupported + unresolved must equal source_versions_expected")
@@ -304,6 +320,8 @@ def _statistics(stats):
         errors.append("/scope/discovery_complete: true only when all assigned ranges finished discovery")
     tasks = [(p["owner"], p["arxiv_id"]) for p in scope["paper_tasks"]]
     with_papers = {o for o, _ in tasks}
+    if scope["versions_complete"] and not tasks:
+        errors.append("/scope/versions_complete: must be false when there are no papers (spec section 11)")
     if (len(set(tasks)) != len(tasks) or scope["paper_count"] != len(tasks)
             or scope["owner_count"] != len(with_papers) or not with_papers <= present):
         errors.append("/scope: paper_tasks duplicated, counts not derived from them, or owner outside sources")
