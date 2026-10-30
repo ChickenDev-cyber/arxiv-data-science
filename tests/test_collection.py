@@ -148,6 +148,7 @@ class AssemblerTests(unittest.TestCase):
         write_snapshot(self.root, "s/nhi", "nhi", ["huynh-nhi"])
         member = self.assembler.describe(self.root, "g", ["s/nhi/"])["members"][0]
         self.assertEqual((member["root"], member["manifest_path"]), ("s/nhi/corpus", "s/nhi/manifest.json"))
+        # Old layout: files beside the manifest instead of inside corpus/.
         old = self.root / "old"
         (self.root / "s/nhi/corpus").rename(old)
         (old / "manifest.json").write_bytes((self.root / "s/nhi/manifest.json").read_bytes())
@@ -174,6 +175,7 @@ class AssemblerTests(unittest.TestCase):
 
     def test_assemble_verifies_every_run_before_writing(self):
         write_snapshot(self.root, "s/nhi", "nhi", ["huynh-nhi"])
+        # Files the run inventory has but the snapshot left out: the manifest hashes still match.
         (self.root / "s/nhi/corpus/state.sqlite").write_bytes(b"db")
         (self.root / "s/nhi/corpus/.runner.lock").write_bytes(b"")
         with self.assertRaisesRegex(ValueError, "differs from its verified run: files"):
@@ -181,7 +183,7 @@ class AssemblerTests(unittest.TestCase):
         self.assertEqual(self.runs.opened, ["nhi-run"])
         self.assertEqual(self.runs.opened, self.runs.closed)
         self.assertFalse((self.root / "collection.json").exists())
-        write_snapshot(self.root, "s/trong", "trong", ["trong"])  
+        write_snapshot(self.root, "s/trong", "trong", ["trong"])  # its run covers khang too
         with self.assertRaisesRegex(ValueError, "differs from its verified run: owners"):
             self.assembler.assemble(self.root, "g", ["s/trong"])
         self.assertFalse((self.root / "collection.json").exists())
@@ -195,7 +197,7 @@ class AssemblerTests(unittest.TestCase):
         before = path.read_bytes()
         with self.assertRaisesRegex(ValueError, "already exists"):
             self.assembler.assemble(self.root, "other", ["s/a"])
-        self.assertEqual(path.read_bytes(), before)  
+        self.assertEqual(path.read_bytes(), before)  # the existing collection is untouched
         self.assertEqual([p.name for p in self.root.iterdir() if p.name.startswith(".collection-")], [])
 
 
@@ -217,7 +219,7 @@ class AssembleCliTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(report["members"], [{"snapshot_id": "nhi", "owners": ["huynh-nhi"]}])
             self.assertTrue((root / "collection.json").is_file())
-            self.assertEqual(runs.opened, ["nhi-run"])  
+            self.assertEqual(runs.opened, ["nhi-run"])  # the run was verified before writing
             code, report, err = self.run_cli("assemble", "--root", tmp, "--collection-id", "demo", "s/nhi")
             self.assertEqual((code, report), (1, None))
             self.assertIn("already exists", err)
@@ -228,6 +230,7 @@ class AssembleCliTests(unittest.TestCase):
                     self.assertEqual((code, report), (1, None))
                     self.assertIn("collection:", err)
             self.assertFalse((root / "collection.json").exists())
+            # A snapshot without files its run has (state.sqlite here) is refused, not reported as success.
             (root / "s/nhi/corpus/state.sqlite").write_bytes(b"db")
             code, report, err = self.run_cli("assemble", "--root", tmp, "--collection-id", "demo", "s/nhi")
             self.assertEqual((code, report), (1, None))
@@ -259,7 +262,7 @@ class ReaderTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "missing or changed"):
             with CollectionDirectoryReader(self.runs).open(self.root):
                 pass
-        self.assertEqual(self.runs.opened, self.runs.closed)  
+        self.assertEqual(self.runs.opened, self.runs.closed)  # nothing left open after a failure
         write_snapshot(self.root, "t/nhi", "nhi", ["huynh-nhi"])
         wrong = FakeRunReader({"nhi-run": ["trong"]})
         (self.root / "collection.json").unlink()
@@ -275,6 +278,7 @@ class ReaderTests(unittest.TestCase):
                 pass
 
     def test_manifest_must_list_the_exact_run_inventory(self):
+        # A file the run inventory covers but the manifest leaves out (e.g. state.sqlite).
         (self.root / "s/nhi/corpus/state.sqlite").write_bytes(b"db")
         with self.assertRaisesRegex(ValueError, "differs from its verified run: files"):
             with CollectionDirectoryReader(self.runs).open(self.root):
@@ -333,10 +337,10 @@ class StatisticsTests(unittest.TestCase):
     def test_rates_come_from_summed_counts(self):
         total = combine_summaries([summary(10, 9, 4, 4, 2, 100.0), summary(30, 3, 6, 0, 6, 200.0)])
         self.assertEqual(total["papers_discovered"], 40)
-        self.assertEqual(total["paper_success_rate"], 12 / 40)  
+        self.assertEqual(total["paper_success_rate"], 12 / 40)  # not (0.9 + 0.1) / 2
         self.assertEqual(total["source_success_rate"], 4 / 10)
         self.assertEqual(total["mean_retained_source_bytes"], (2 * 100 + 6 * 200) / 8)
-        self.assertIsNone(total["reference_metadata_success_rate"])  
+        self.assertIsNone(total["reference_metadata_success_rate"])  # 0 / 0 is unknown, not 0
 
     def test_builds_valid_statistics_with_missing_owners(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -347,6 +351,7 @@ class StatisticsTests(unittest.TestCase):
                                  {"nhi-run": [("huynh-nhi", f"2409.{n:05d}") for n in range(3594, 3598)],
                                   "trong-run": [("trong", f"2504.{n:05d}") for n in range(17523, 17529)]})
             save_collection(root, ["s/nhi", "s/trong"], runs)
+            # Khang is in the trong snapshot but has no selected paper, so gets no summary.
             values = {"huynh-nhi": summary(4, 2), "trong": summary(6, 6)}
             with CollectionDirectoryReader(runs).open(root) as collection:
                 stats = CollectionStatisticsBuilder(FakeSummarizer(values)).build(collection)
@@ -357,6 +362,7 @@ class StatisticsTests(unittest.TestCase):
         self.assertEqual(stats["scope"]["paper_count"], 10)
 
     def test_matches_worked_example_of_schema_spec(self):
+        # Section 15 of the schema spec: rates recomputed from these counts must match.
         example = {"papers_discovered": 2, "metadata_complete_papers": 1, "papers_complete": 0,
                    "paper_success_rate": 0.0, "source_versions_expected": 2, "source_versions_success": 1,
                    "source_versions_unsupported": 1, "source_versions_unresolved": 0,
@@ -382,6 +388,7 @@ class StatisticsTests(unittest.TestCase):
                 with CollectionDirectoryReader(runs).open(root) as collection:
                     stats = CollectionStatisticsBuilder(FakeSummarizer({})).build(collection)
                 with self.subTest(members=members):
+                    # Huỳnh Nhi's run alone finished discovery, but four ranges are still missing.
                     self.assertEqual(stats["scope"]["discovery_complete"], len(members) == 2)
 
     def test_versions_complete_comes_from_metadata_of_merged_papers(self):
@@ -396,6 +403,7 @@ class StatisticsTests(unittest.TestCase):
                 root = Path(tmp)
                 write_snapshot(root, "s/nhi", "nhi", ["huynh-nhi"], producer_commits=[COMMIT])
                 write_snapshot(root, "s/trong", "trong", ["trong"], producer_commits=[COMMIT] if trong else [])
+                # Each run's own flag says the opposite; the merged scope must not copy it.
                 runs = FakeRunReader({"nhi-run": ["huynh-nhi"], "trong-run": ["trong"]}, papers,
                                      accepted={"nhi-run": nhi, "trong-run": trong})
                 save_collection(root, ["s/nhi", "s/trong"], runs)
@@ -444,12 +452,12 @@ class CollectionServiceTests(unittest.TestCase):
         self.assertEqual([(m["snapshot_id"], m["root"]) for m in manifest["members"]],
                          [("nhi-1", "snapshots/nhi-1/corpus"), ("trong-1", "snapshots/trong-1/corpus")])
         self.assertEqual(json.loads((self.root / "collection.json").read_text()), manifest)
-        self.assertEqual(sorted(self.runs.opened), ["nhi-1-run", "trong-1-run"])  
+        self.assertEqual(sorted(self.runs.opened), ["nhi-1-run", "trong-1-run"])  # every run was verified
         with self.service.open(self.root) as collection:
             self.assertEqual(collection.manifest, manifest)
             self.assertEqual([r.scope["run_id"] for r in collection.runs], ["nhi-1-run", "trong-1-run"])
         with self.assertRaises(TypeError):
-            self.service.assemble([self.archives / "nhi.tar"], self.root, "group")  
+            self.service.assemble([self.archives / "nhi.tar"], self.root, "group")  # collection_id is keyword-only
 
     def test_create_is_a_wrapper_of_assemble(self):
         manifest = self.service.create([self.archives / "nhi.tar"], self.root, "group")
@@ -457,6 +465,7 @@ class CollectionServiceTests(unittest.TestCase):
             self.assertEqual(collection.manifest, manifest)
 
     def test_snapshot_missing_run_files_is_refused(self):
+        # The archive leaves out state.sqlite and .runner.lock, which the run inventory lists.
         runs = FakeRunReader({"nhi-1-run": ["huynh-nhi"]})
         original = runs.open
 
@@ -472,21 +481,29 @@ class CollectionServiceTests(unittest.TestCase):
                                                                    collection_id="g")
         self.assertFalse((self.root / "collection.json").exists())
 
-    def test_errors_leave_no_collection(self):
+    def leftovers(self):
+        return sorted(p.name for p in self.root.parent.iterdir() if p.name != "archives")
+
+    def test_errors_leave_nothing_behind_and_can_be_retried(self):
         cases = {"two snapshots of one owner": ("nhi.tar", "nhi-again.tar"),
                  "same archive twice": ("nhi.tar", "nhi.tar")}
         for name, archives in cases.items():
             with self.subTest(name):
-                shutil.rmtree(self.root, ignore_errors=True)
                 with self.assertRaises(ValueError):
                     self.create(*archives)
-                self.assertFalse((self.root / "collection.json").exists())
-        shutil.rmtree(self.root, ignore_errors=True)
+                self.assertEqual(self.leftovers(), [])  # no destination, no hidden build folder
         moved = FakeRunReader({"nhi-1-run": ["huynh-nhi"]}, origin="/other/out")
         with self.assertRaisesRegex(ValueError, "origin_output_root"):
             CollectionService(FakeSnapshotReader(), moved).assemble([self.archives / "nhi.tar"], self.root,
                                                                     collection_id="g")
-        self.assertFalse((self.root / "collection.json").exists())
+        self.assertEqual(self.leftovers(), [])
+        self.root.mkdir()  # an empty destination is also kept as it was
+        with self.assertRaises(ValueError):
+            self.create("nhi.tar", "nhi-again.tar")
+        self.assertEqual((self.leftovers(), list(self.root.iterdir())), (["collection"], []))
+        self.create("nhi.tar", "trong.tar")  # the same command works again once the input is fixed
+        self.assertTrue((self.root / "collection.json").is_file())
+        self.assertEqual(self.leftovers(), ["collection"])
 
     def test_does_not_replace_an_existing_collection(self):
         self.create("nhi.tar")
@@ -494,7 +511,8 @@ class CollectionServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "not empty"):
             self.create("trong.tar")
         self.assertEqual((self.root / "collection.json").read_bytes(), before)
-        self.assertFalse((self.root / "snapshots/trong-1").exists())  
+        self.assertFalse((self.root / "snapshots/trong-1").exists())  # nothing unpacked either
+
 
 if __name__ == "__main__":
     unittest.main()

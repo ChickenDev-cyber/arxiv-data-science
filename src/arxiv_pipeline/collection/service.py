@@ -1,5 +1,7 @@
 """Build one verified collection from snapshot archives, and open it again."""
 from pathlib import Path
+import shutil
+import tempfile
 from typing import ContextManager
 
 from ..pipeline_contracts import CollectionManifest, RunReader, SnapshotReader, VerifiedCollection
@@ -23,13 +25,26 @@ class CollectionService:
         self.assembler = CollectionAssembler(runs, clock=clock)
 
     def assemble(self, archives: list[Path], destination: Path, *, collection_id: str) -> CollectionManifest:
-        """destination must be new or empty; each archive lands in snapshots/<snapshot_id>/."""
+        """destination must be new or empty; each archive lands in snapshots/<snapshot_id>/.
+
+        Everything is built in a hidden folder next to destination and moved there only
+        once collection.json is written, so a failure leaves destination as it was.
+        """
         root = Path(destination)
         if root.is_symlink() or (root.exists() and (not root.is_dir() or any(root.iterdir()))):
             raise ValueError(f"{root} already exists and is not empty; use a new collection folder")
-        root.mkdir(parents=True, exist_ok=True)
-        folders = [self._unpack(Path(archive), root, index) for index, archive in enumerate(archives)]
-        return self.assembler.assemble(root, collection_id, folders)
+        root.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix=f".{root.name}-", dir=root.parent))
+        try:
+            folders = [self._unpack(Path(archive), staging, index) for index, archive in enumerate(archives)]
+            manifest = self.assembler.assemble(staging, collection_id, folders)
+            if root.exists():
+                root.rmdir()  # still empty: a folder that gained files meanwhile is not removed
+            staging.rename(root)
+        except BaseException:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        return manifest
 
     def open(self, collection_root: Path) -> ContextManager[VerifiedCollection]:
         return CollectionDirectoryReader(self.runs).open(Path(collection_root))
