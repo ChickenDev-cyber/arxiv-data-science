@@ -14,7 +14,8 @@ from ..contracts import SCHEMA_VERSION, Context, PaperTask, Result
 from ..discovery.api import RemoteError
 from ..discovery.service import validate_context
 from ..identifiers import is_valid_arxiv_id, normalize_arxiv_id
-from .api import ARXIV_API, S2_BASE, valid_iso_date
+from .api import ARXIV_API, S2_BASE, S2_FIELDS, valid_iso_date
+from .checkpoint import DateCache, PageCheckpoint
 
 REQUIRED_FIELDS = ("title", "authors", "submission_date", "semantic_scholar_id")
 
@@ -77,15 +78,25 @@ def _read_page(payload, offset):
 
 class ReferencesModule:
     def __init__(self, reader: ReferencesReader, dates: DateReader, *, page_size=100, max_pages=50,
-                 date_batch_size=100):
+                 date_batch_size=100, fields=S2_FIELDS, checkpoints=None, store=None):
         if type(page_size) is not int or not 1 <= page_size <= 1000:
             raise ValueError("page_size must be an integer from 1 to 1000")
         if type(max_pages) is not int or max_pages < 1:
             raise ValueError("max_pages must be a positive integer")
         if type(date_batch_size) is not int or not 1 <= date_batch_size <= 100:
             raise ValueError("date_batch_size must be an integer from 1 to 100")
+        if not isinstance(fields, str) or not fields.strip():
+            raise ValueError("fields must be a nonempty string")
+        if checkpoints is not None and store is not None and checkpoints is not store:
+            raise ValueError("pass either checkpoints or store, not both")
         self.reader, self.dates = reader, dates
         self.page_size, self.max_pages, self.date_batch_size = page_size, max_pages, date_batch_size
+        self.fields = fields
+        # `checkpoints` is the shared pipeline port; `store` remains a backwards-compatible alias.
+        self.checkpoints = checkpoints if checkpoints is not None else store
+        self.store = self.checkpoints
+        self.page_checkpoint = PageCheckpoint(self.checkpoints) if self.checkpoints is not None else None
+        self.date_cache = DateCache(self.checkpoints) if self.checkpoints is not None else None
 
     def _attempts(self):
         return getattr(self.reader, "attempts", 0) + getattr(self.dates, "attempts", 0)
@@ -97,13 +108,22 @@ class ReferencesModule:
         initial_attempts = self._attempts()
         arxiv_id = task["arxiv_id"]
 
-        # 1) Page through Semantic Scholar until it reports no further page.
-        received, pages, offset, page_error, complete = [], 0, 0, None, False
-        first_page_failed = False
-        while True:
-            if pages >= self.max_pages:
+        # 1) Page through Semantic Scholar until it reports no further page. With a store, continue
+        #    from the last accepted page of an earlier (interrupted or failed) run.
+        received, pages, new_pages, offset, page_error, complete = [], 0, 0, 0, None, False
+        first_page_failed, resumed_pages, checkpoint_errors = False, 0, []
+        page_records = []
+        saved = (self.page_checkpoint.load(task["owner"], arxiv_id, self.page_size, self.fields)
+                 if self.page_checkpoint else None)
+        if saved is not None:
+            page_records, received, following, complete, pages = saved
+            resumed_pages = pages
+            offset = following if following is not None else 0
+        while not complete:
+            if new_pages >= self.max_pages:
                 page_error = RemoteError(
-                    "remote_error", f"Page limit ({self.max_pages}) reached before the reference list ended").info
+                    "remote_error", f"Page limit ({self.max_pages}) reached before the reference list ended",
+                    retryable=True).info
                 break
             try:
                 payload = self.reader.references_page(arxiv_id, offset, self.page_size)
@@ -114,10 +134,20 @@ class ReferencesModule:
                 page_error, first_page_failed = exc.info, pages == 0
                 break
             pages += 1
-            # Snapshot accepted pages before a reader can reuse its nested objects.
-            received.extend(deepcopy(items))
-            if following is None:
-                complete = True
+            new_pages += 1
+            # Preserve the exact accepted page, offset chain and fetch time for safe resume.
+            accepted = deepcopy(items)
+            received.extend(accepted)
+            page_records.append({"offset": offset, "next_offset": following,
+                                 "raw_items": accepted, "fetched_at": _utc_now()})
+            complete = following is None
+            if self.page_checkpoint:
+                try:
+                    self.page_checkpoint.save(task["owner"], arxiv_id, self.page_size,
+                                              self.fields, page_records)
+                except OSError as exc:
+                    checkpoint_errors.append(f"pages: {type(exc).__name__}")
+            if complete:
                 break
             offset = following
 
@@ -130,7 +160,7 @@ class ReferencesModule:
         merged, notes = self._merge(received)
 
         # 3) arXiv submission date, only from the arXiv API.
-        dates, date_error, failed_batches = self._submission_dates(list(merged))
+        dates, date_error, failed_batches, cached_dates = self._submission_dates(list(merged), checkpoint_errors)
         for key, record in merged.items():
             record["submission_date"] = dates.get(key)
 
@@ -153,8 +183,15 @@ class ReferencesModule:
         if status in ("success", "empty"):
             error = None
 
-        provenance = self._provenance(pages, failed_batches)
+        provenance = self._provenance(new_pages, failed_batches)
+        if self.store is not None:
+            provenance.update({"pages_resumed": str(resumed_pages), "dates_from_cache": str(cached_dates)})
+            if checkpoint_errors:
+                provenance["checkpoint_write_errors"] = "; ".join(checkpoint_errors)
         provenance.update(notes)
+        if any(record.get(field) is None for record in merged.values()
+               for field in ("title", "authors", "semantic_scholar_id")):
+            provenance["metadata_enrichment"] = "source_fields_unavailable"
         return self._finish(task, context, started_at, clock, initial_attempts, status=status,
                             data={"references": references, "raw_references": received, "complete": complete},
                             error=error, provenance=provenance, metrics=metrics, missing=missing)
@@ -198,19 +235,34 @@ class ReferencesModule:
             provenance[_pointer("data", "references", key, field)] = text
         return merged, provenance
 
-    def _submission_dates(self, ids):
+    def _submission_dates(self, ids, checkpoint_errors=None):
+        """Dates from the cache first, then arXiv for the rest; every good batch is cached at once.
+
+        Returns (dates, first_error, failed_batches, cached_count).
+        """
         dates, first_error, failed = {}, None, 0
-        for start in range(0, len(ids), self.date_batch_size):
-            batch = ids[start:start + self.date_batch_size]
+        if self.date_cache:
+            dates = self.date_cache.get_many(ids)
+        cached = len(dates)
+        todo = [i for i in ids if i not in dates]
+        for start in range(0, len(todo), self.date_batch_size):
+            batch = todo[start:start + self.date_batch_size]
             try:
                 answer = self.dates.submission_dates(batch)
                 # An adapter may be shared or replaced by the runner, so re-check what it returns:
                 # only requested IDs, only valid ISO dates. Anything else counts as a missing date.
-                dates.update({k: v for k, v in answer.items() if k in batch and valid_iso_date(v)})
+                good = {k: v for k, v in answer.items() if k in batch and valid_iso_date(v)}
+                dates.update(good)
+                if self.date_cache:
+                    try:
+                        self.date_cache.put_many(good)
+                    except OSError as exc:
+                        if checkpoint_errors is not None:
+                            checkpoint_errors.append(f"dates: {type(exc).__name__}")
             except RemoteError as exc:
                 failed += 1
                 first_error = first_error or exc.info
-        return dates, first_error, failed
+        return dates, first_error, failed, cached
 
     @staticmethod
     def _provenance(pages, failed_batches):

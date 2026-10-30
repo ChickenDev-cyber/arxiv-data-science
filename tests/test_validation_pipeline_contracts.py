@@ -101,6 +101,8 @@ def statistics():
     scope = {"ranges": [dict(RANGE)], "paper_tasks": deepcopy(NHI_PAPERS), "discovery_complete": False,
              "versions_complete": False, "owner_count": 1, "paper_count": 4}
     counts = {"papers_discovered": 4, "papers_complete": 2, "metadata_complete_papers": 3,
+              "references_fully_fetched_papers": 3, "references_metadata_complete_papers": 2,
+              "references_arxiv_total": 10, "references_complete_total": 7,
               "source_versions_expected": 5, "source_versions_success": 3,
               "source_versions_unsupported": 1, "source_versions_unresolved": 1,
               "source_size_sample_count": 2}
@@ -119,7 +121,8 @@ def two_owner_statistics(group_mean):
     stats["scope"]["paper_tasks"].append({"owner": "trong", "arxiv_id": "2504.17523"})
     stats["scope"].update(owner_count=2, paper_count=5)
     nhi = stats["by_owner"]["huynh-nhi"]
-    trong = summary(papers_discovered=1, source_size_sample_count=6)
+    trong = summary(papers_discovered=1, source_versions_expected=6, source_versions_success=6,
+                    source_size_sample_count=6)
     trong.update(mean_extracted_bytes_before_filter=300.0, mean_retained_source_bytes=300.0)
     total = summary(**{k: nhi[k] + trong[k] for k in nhi if type(nhi[k]) is int})
     total.update(mean_extracted_bytes_before_filter=group_mean, mean_retained_source_bytes=group_mean)
@@ -218,13 +221,32 @@ class PipelineDocumentValidatorTests(unittest.TestCase):
             with self.subTest(name):
                 self.assertInvalid(discovery_batch(**changes), "checkpoint")
 
+    def test_checkpoint_key_keeps_json_types(self):
+        record = discovery_checkpoint()  # offset 0 in the payload, false in the key
+        record["key"] = canonical(["huynh-nhi", RANGE, None, 3, False])
+        self.assertInvalid(record, "checkpoint")
+        record = discovery_checkpoint(); record["key"] = canonical(["huynh-nhi", RANGE, None, 3.0, 0])
+        self.assertInvalid(record, "checkpoint")
+        record = references_checkpoint()
+        record["key"] = canonical(["man-nhi", "2504.17523", 2.0, "title,externalIds"])
+        self.assertInvalid(record, "checkpoint")
+        page = {"offset": 0, "next_offset": None, "raw_items": [{}], "fetched_at": NOW}
+        record["payload"].update(page_size=1, pages=[page])
+        record["key"] = canonical(["man-nhi", "2504.17523", True, "title,externalIds"])  # true is not 1
+        self.assertInvalid(record, "checkpoint")
+        record["key"] = canonical(["man-nhi", "2504.17523", 1, "title,externalIds"])
+        self.assertValid(record, "checkpoint")
+
     def test_reference_pages_are_contiguous(self):
         record = references_checkpoint(); record["payload"]["pages"][1]["offset"] = 3
         self.assertInvalid(record, "checkpoint")
         record = references_checkpoint(); record["payload"]["pages"][0]["next_offset"] = None
         self.assertInvalid(record, "checkpoint")
-        record = references_checkpoint(); record["payload"]["pages"][0]["raw_items"].append({})
+        record = references_checkpoint(); record["payload"]["pages"] = []
         self.assertInvalid(record, "checkpoint")
+        # T4 keeps every item a page returned; the contract sets no limit per page, so neither do we.
+        record = references_checkpoint(); record["payload"]["pages"][0]["raw_items"].append({})
+        self.assertValid(record, "checkpoint")
 
     def test_reference_key_is_owner_id_page_size_and_fields(self):
         for key in (["trong", "2504.17523", 2, "title,externalIds"],  # another owner
@@ -299,6 +321,23 @@ class PipelineDocumentValidatorTests(unittest.TestCase):
         self.assertValid(two_owner_statistics(250.0), "collection-statistics")    # (2*100 + 6*300) / 8
         self.assertInvalid(two_owner_statistics(200.0), "collection-statistics")  # plain mean of the means
 
+    def test_statistics_counts_respect_subsets(self):
+        cases = {"references_metadata_complete_papers": 4,  # more than the papers fetched to the end
+                 "source_size_sample_count": 4,              # more than the successful source versions
+                 "metadata_complete_papers": 5, "references_fully_fetched_papers": 5,
+                 "papers_complete": 3,                       # more than metadata-complete papers
+                 "references_complete_total": 11}
+        for field, value in cases.items():
+            with self.subTest(field=field):
+                bad = statistics()
+                for s in (bad["summary"], bad["by_owner"]["huynh-nhi"]):
+                    s[field] = value
+                    for name, (numerator, denominator) in SUMMARY_RATES.items():
+                        s[name] = s[numerator] / s[denominator] if s[denominator] else None
+                self.assertInvalid(bad, "collection-statistics")
+                self.assertTrue(any(field in e and "exceed" in e
+                                    for e in validate_pipeline_document(bad, "collection-statistics")))
+
     def test_statistics_rates_follow_schema_formulas(self):
         cases = [("paper_success_rate", 0.75),           # not papers_complete / papers_discovered
                  ("metadata_success_rate", None),        # null although the denominator is 4
@@ -323,6 +362,8 @@ class PipelineDocumentValidatorTests(unittest.TestCase):
         empty["scope"].update(paper_tasks=[], owner_count=0, paper_count=0)
         empty.update(summary=summary(), by_owner={})
         self.assertValid(empty, "collection-statistics")
+        empty["scope"]["versions_complete"] = True  # no papers means no history to call complete
+        self.assertInvalid(empty, "collection-statistics")
 
     def test_documents_are_not_modified(self):
         for document, kind in ((discovery_checkpoint(), "checkpoint"), (snapshot(), "snapshot"),
