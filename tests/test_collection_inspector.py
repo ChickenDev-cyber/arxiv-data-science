@@ -8,6 +8,7 @@ import tempfile
 import unittest
 
 from arxiv_pipeline.collection.cli import main
+from arxiv_pipeline.collection.reader import provenance_of
 
 # The runner's state store locks with fcntl, which Windows does not provide.
 NEEDS_RUNNER = unittest.skipIf(util.find_spec("fcntl") is None, "runner state requires fcntl (Linux/macOS/Colab)")
@@ -57,11 +58,12 @@ class RunInspectorTests(unittest.TestCase):
         (target / "corpus").mkdir(parents=True)
         self.copy_inventory(run_root, run_id, target / "corpus")
         with self.inspector.open(target / "corpus", run_id) as run:
+            commits, unknown = provenance_of(run.accepted_results)
             manifest = {"format_version": 1, "kind": "arxiv-snapshot", "snapshot_id": snapshot_id,
                         "schema_version": "1.2", "run_id": run_id, "is_mock": True,
                         "owners": sorted(c["owner"] for c in run.scope["scope"]["ranges"]),
                         "created_at": "2026-10-27T00:00:00Z", "exporter_commit": "a" * 40,
-                        "producer_commits": [], "unknown_provenance_tasks": 0,
+                        "producer_commits": commits, "unknown_provenance_tasks": unknown,
                         "config_fingerprint": run.config_fingerprint,
                         "origin_output_root": run.recorded_output_root, "files": run.files, **changes}
         (target / "manifest.json").write_text(json.dumps(manifest))
@@ -194,10 +196,15 @@ class RunInspectorTests(unittest.TestCase):
         code, _ = self.cli("check", "--root", str(collection))
         self.assertEqual(code, 1)  # a changed file fails the snapshot hash check
 
+    def test_mock_results_count_as_unknown_provenance(self):
+        with self.inspector.open(self.root, "nhi-mock") as run:
+            self.assertEqual(provenance_of(run.accepted_results), ([], len(run.accepted_results)))
+
     def test_check_rejects_manifest_that_differs_from_run(self):
         with self.inspector.open(self.root, "nhi-mock") as run:
             files = run.files
         cases = {"origin": dict(origin_output_root="/somewhere/else"),
+                 "provenance": dict(unknown_provenance_tasks=0),  # the mock Results have no producer commit
                  "inventory": dict(files=[f for f in files if f["path"] != "state.sqlite"])}
         for name, changes in cases.items():
             with self.subTest(name):

@@ -2,6 +2,7 @@
 
 Import RunInspector from .inspector explicitly: it needs the runner's SQLite state.
 """
-from .assembler import Assembly, CollectionAssembler
+from .assembler import CollectionAssembler
 from .reader import CollectionDirectoryReader
+from .service import CollectionService
 from .statistics import CollectionStatisticsBuilder, OwnerSummarizer, combine_summaries

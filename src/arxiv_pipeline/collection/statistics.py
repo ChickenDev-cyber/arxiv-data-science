@@ -1,10 +1,11 @@
 """Group statistics from per-owner summaries: add counts, then recompute rates."""
 from typing import Protocol, get_type_hints
 
-from ..config import ASSIGNED_RANGES, OWNERS
+from ..config import OWNERS
 from ..contracts import Owner, Scope, SCHEMA_VERSION, Summary
 from ..pipeline_contracts import CollectionStatistics, VerifiedCollection, VerifiedRun
 from ..validation.pipeline_contracts import SUMMARY_RATES, validate_pipeline_document
+from .report import missing_owners
 
 COUNTS = [k for k, hint in get_type_hints(Summary).items() if hint is int]
 # Derived value = numerator / denominator over summed counts, never an average of rates.
@@ -35,9 +36,15 @@ def merge_scopes(runs: list[VerifiedRun]) -> Scope:
     papers = [p for r in runs for p in r.scope["scope"]["paper_tasks"]]
     # Group discovery is complete only when all five assigned ranges are present and done.
     covers_all = sorted(c["owner"] for c in ranges) == sorted(OWNERS)
+    # Like validate_handoff: every merged paper needs accepted metadata with a verified history.
+    metadata = {(r["owner"], r["arxiv_id"]): r for run in runs for r in run.accepted_results
+                if r["step"] == "metadata"}
+    versions = bool(papers) and all((p["owner"], p["arxiv_id"]) in metadata
+                                    and metadata[p["owner"], p["arxiv_id"]]["data"]["versions_complete"]
+                                    for p in papers)
     return {"ranges": ranges, "paper_tasks": papers,
             "discovery_complete": covers_all and all(r.scope["scope"]["discovery_complete"] for r in runs),
-            "versions_complete": bool(runs) and all(r.scope["scope"]["versions_complete"] for r in runs),
+            "versions_complete": versions,
             "owner_count": len({p["owner"] for p in papers}), "paper_count": len(papers)}
 
 
@@ -51,13 +58,12 @@ class CollectionStatisticsBuilder:
             # Like per-run T6 statistics, only owners with selected papers get a summary.
             for owner in sorted({p["owner"] for p in run.scope["scope"]["paper_tasks"]}):
                 by_owner[owner] = self.summarizer.summarize(run, owner)
-        present = {o for m in collection.manifest["members"] for o in m["owners"]}
         manifest = collection.manifest
         stats: CollectionStatistics = {
             "format_version": 1, "kind": "arxiv-collection-statistics", "schema_version": SCHEMA_VERSION,
             "collection_id": manifest["collection_id"], "is_mock": manifest["is_mock"],
             "sources": manifest["members"], "scope": merge_scopes(collection.runs),
-            "missing_owners": [c["owner"] for c in ASSIGNED_RANGES if c["owner"] not in present],
+            "missing_owners": missing_owners(manifest),
             "summary": combine_summaries(list(by_owner.values())), "by_owner": by_owner}
         problems = validate_pipeline_document(stats, "collection-statistics")
         if problems:

@@ -42,14 +42,23 @@ def run_owners(run) -> list[str]:
     return sorted(c["owner"] for c in run.scope["scope"]["ranges"])
 
 
+def provenance_of(results) -> tuple[list[str], int]:
+    """Distinct producer commits of accepted Results, and how many Results have none."""
+    commits = [r["provenance"].get("producer_commit") for r in results]
+    return sorted({c for c in commits if c}), sum(1 for c in commits if not c)
+
+
 def check_snapshot_run(snapshot, run) -> None:
-    """The manifest must describe exactly this run: identity, origin and the full inventory."""
+    """The manifest must describe exactly this run: identity, origin, provenance and inventory."""
+    commits, unknown = provenance_of(run.accepted_results)
     problems = [name for name, ok in (
         ("run_id", run.scope["run_id"] == snapshot["run_id"]),
         ("is_mock", run.scope["is_mock"] == snapshot["is_mock"]),
         ("owners", run_owners(run) == sorted(snapshot["owners"])),
         ("config_fingerprint", run.config_fingerprint == snapshot["config_fingerprint"]),
         ("origin_output_root", run.recorded_output_root == snapshot["origin_output_root"]),
+        ("producer_commits", sorted(snapshot["producer_commits"]) == commits),
+        ("unknown_provenance_tasks", snapshot["unknown_provenance_tasks"] == unknown),
         ("files", sorted(run.files, key=lambda f: f["path"])
          == sorted(snapshot["files"], key=lambda f: f["path"]))) if not ok]
     if problems:
@@ -61,10 +70,15 @@ class CollectionDirectoryReader:
     def __init__(self, runs: RunReader):
         self.runs = runs
 
-    @contextmanager
     def open(self, collection_root: Path):
         root = Path(collection_root)
-        manifest = read_document(root, COLLECTION_MANIFEST, "collection")
+        return self.verify(root, read_document(root, COLLECTION_MANIFEST, "collection"))
+
+    @contextmanager
+    def verify(self, root: Path, manifest):
+        """Check every member of a collection manifest, saved or not yet saved."""
+        if validate_pipeline_document(manifest, "collection"):
+            raise ValueError("Invalid collection manifest")
         with ExitStack() as stack:
             verified = []
             for member in manifest["members"]:

@@ -1,4 +1,4 @@
-""""Read-only verification of one stopped run; implements ``RunReader``."""
+"""Read-only verification of one stopped run; implements ``RunReader``."""
 from contextlib import contextmanager
 import json
 from pathlib import Path
