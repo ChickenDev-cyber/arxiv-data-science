@@ -502,4 +502,62 @@ Generator tạo Result mẫu cho năm thành viên, archive thử, cả thư m�
 - [Hướng dẫn API arXiv](https://info.arxiv.org/help/api/user-manual.html)
 - [Điều khoản truy cập API](https://info.arxiv.org/help/api/tou.html)
 
+## Đóng gói và khôi phục corpus
+
+`arxiv_pipeline.snapshots` cung cấp `export`, `verify`, `unpack` và `restore`.
+Archive `.tar.gz` chứa `manifest.json` cạnh `corpus/`; manifest ghi inventory,
+SHA-256, phạm vi, nguồn code đã biết và số Result chưa biết nguồn code.
+Snapshot giữ nguyên schema dữ liệu 1.2 và không biến lượt mẫu thành toàn dải.
+
+CLI dùng validator document chung; `export`/`restore` cần thêm `RunInspector`
+của module collection. Khi hai thành phần này chưa được tích hợp, CLI báo rõ
+dependency còn thiếu. Lớp `SnapshotService` nhận `RunReader`, `StateRelocator`
+và validator qua constructor để kiểm thử độc lập, không viết lại phần của
+thành viên khác.
+
+Sau khi các dependency trên đã có, xuất một corpus đã dừng vào đường dẫn mới
+**bên ngoài output root**:
+
+```bash
+PYTHONPATH=src python -m arxiv_pipeline.snapshots export \
+  --output-root data/m1-trong --run-id m1-trong \
+  --destination exports/trong-001.tar.gz --snapshot-id trong-001 \
+  --exporter-commit "$(git rev-parse HEAD)"
+
+PYTHONPATH=src python -m arxiv_pipeline.snapshots verify \
+  --archive exports/trong-001.tar.gz
+
+PYTHONPATH=src python -m arxiv_pipeline.snapshots unpack \
+  --archive exports/trong-001.tar.gz --destination data/trong-readonly
+```
+
+`exporter-commit` là SHA của code đóng gói đã commit; chỉ dùng `git rev-parse HEAD`
+khi thay đổi code liên quan đã được commit. Nó không thay thế provenance của
+những Result đã thu thập trước đó. Không tự gán revision mới cho dữ liệu cũ.
+
+`unpack` bảo toàn bản bàn giao để đọc/tổng hợp. Muốn tiếp tục crawl tại máy mới,
+dùng `restore` với một đích khác chưa tồn tại:
+
+```bash
+PYTHONPATH=src python -m arxiv_pipeline.snapshots restore \
+  --archive exports/trong-001.tar.gz --destination data/trong-restored
+
+PYTHONPATH=src python -m arxiv_pipeline.runner --resume \
+  --run-id m1-trong --output-root data/trong-restored/corpus
+```
+
+Restore chỉ cập nhật output root của DB bản sao qua `StateRelocator`, kiểm tra
+lại corpus rồi ghi `restore_receipt.json` cạnh `manifest.json`. Manifest gốc
+mô tả DB trước relocate; không sửa hash trong manifest để che thay đổi này.
+Nếu relocate thất bại sau khi unpack, bản đã giải nén được giữ để kiểm tra,
+không có receipt xác nhận restore thành công. Archive và corpus gốc không bị đổi.
+
+Không ghi đè archive/đích đã tồn tại. Mặc định giới hạn 100.000 file archive
+(gồm manifest), 2 GiB/file và 20 GiB tổng byte giải nén; có thể cấu hình bằng
+`--max-files`, `--max-file-bytes`, `--max-total-bytes`. Các số này là giới hạn
+kỹ thuật, không phải hạn mức của đề bài. Link, đường dẫn nguy hiểm, file thiếu/thừa,
+byte/hash sai và archive hỏng đều bị từ chối trước khi công bố đích unpack.
+Nếu filesystem đích không hỗ trợ công bố archive mà không ghi đè, hãy xuất ra
+ổ cục bộ trước rồi sao chép gói đã hoàn tất sang nơi lưu trữ.
+
 Mã nguồn không tự commit, push hoặc xuất bản dữ liệu.
