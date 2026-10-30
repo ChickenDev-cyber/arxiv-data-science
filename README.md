@@ -27,6 +27,7 @@ src/
 │   │   ├── cli.py         # Chạy một bài, ghi preview JSON
 │   │   ├── service.py     # fetch_references: giữ raw, phân trang, gộp trùng, status, metrics
 │   │   ├── api.py         # Client Semantic Scholar + client ngày nộp arXiv, parser
+│   │   ├── checkpoint.py  # PageCheckpoint, DateCache, store bộ nhớ/file JSON
 │   │   └── examples.py    # Bốn Result mẫu giả lập sinh bằng chính module
 │   ├── discovery/         # T1 của Trọng
 │   │   ├── __init__.py    # Các hàm dùng khi tích hợp T1
@@ -45,6 +46,7 @@ tests/
 ├── fixtures/metadata/     # Phản hồi arXivRaw giả lập cho T2
 ├── test_discovery.py
 ├── test_references.py
+├── test_references_resume.py
 ├── test_metadata.py
 ├── test_identifiers.py
 └── test_contract_examples.py
@@ -185,7 +187,7 @@ T4 chỉ trả Result và preview. T5 lưu dictionary vào `references.json` và
 | Hết trang, thiếu ít nhất một trường của một mục arXiv (ví dụ không tra được ngày) | partial | **true** | `complete` chỉ nghĩa là đã lấy hết trang; trường thiếu nằm trong `missing_fields` |
 | Hết trang, không có reference arXiv nào | empty | true | `raw_references` vẫn có thể không rỗng; `error=null` |
 | Trang sau trang đầu bị lỗi | partial | false | giữ phần đã nhận, `error` ghi nguyên nhân |
-| Chạm giới hạn số trang (`max_pages`, mặc định 50) khi danh sách chưa hết | partial | false | `error.code=remote_error`, `retryable=false`, thông điệp nêu giới hạn trang; spec chưa có mã riêng cho trường hợp này |
+| Chạm giới hạn số trang mới (`max_pages`, mặc định 50) khi danh sách chưa hết | partial | false | `error.code=remote_error`, `retryable=true`; resume chỉ tính các trang tải mới trong lượt hiện tại |
 | Lỗi ở trang đầu | failed | — | `data=null`, `metrics={}` |
 | Semantic Scholar trả 404 | not_found | — | `data=null`, `retryable=false` |
 
@@ -200,6 +202,23 @@ Mẫu offline (đủ metadata, thiếu ngày, rỗng, lỗi phân trang), do ch�
 ```bash
 PYTHONPATH=src python -m arxiv_pipeline.references.examples --owner man-nhi --output-dir /tmp/arxiv-t4-examples
 ```
+
+### T4 resume: tiếp tục theo trang, cache ngày nộp, lịch chờ API
+
+T4 dùng `CheckpointStore` chung trong `pipeline_contracts.py` (`load(namespace, key)`, `save(record)`, `delete(namespace, key)`). `LiveModuleFactory` truyền cùng store cho `ReferencesModule(checkpoints=...)` và `RequestScheduler(checkpoints=...)`; `store=` vẫn được giữ làm bí danh tương thích ngược. Khi dùng runner, dữ liệu checkpoint nằm trong SQLite. CLI T4 độc lập hỗ trợ `MemoryCheckpointStore` cho test và `JsonFileCheckpointStore` cho state bền vững.
+
+| Namespace | Key (chuỗi JSON chuẩn tắc) | Payload theo hợp đồng chung |
+|---|---|---|
+| `references` | `["<owner>", "<arxiv_id>", <page_size>, "<fields>"]` | `owner`, `arxiv_id`, `page_size`, `fields`, `pages[]`; mỗi trang có `offset`, `next_offset`, `raw_items`, `fetched_at` |
+| `arxiv_dates` | `["<cited_arxiv_id>"]` | `arxiv_id`, `submission_date`, `source`, `fetched_at`; `run_id` được cô lập ở tầng store |
+| `rate_limits` | `["arxiv"]` hoặc `["semantic_scholar"]` | `group`, `next_allowed_at` (UTC ISO 8601), `recent_requests_at` (danh sách UTC ISO 8601), `consecutive_429` |
+
+- `ReferencesModule(reader, dates, checkpoints=store)` lưu sau mỗi trang được chấp nhận. Key checkpoint trang gồm đủ `owner`, `arxiv_id`, `page_size` và `fields`; checkpoint hoàn tất được dùng lại. `max_pages` chỉ đếm trang tải mới trong lượt chạy hiện tại, vì vậy resume vẫn có thể lấy trang 51 sau khi đã lưu 50 trang. Muốn xóa checkpoint, gọi `PageCheckpoint(store).discard(owner, arxiv_id, page_size, fields)`.
+- Cache ngày chỉ lưu ngày hợp lệ lấy từ arXiv API v1 (`published`), kèm nguồn và thời điểm lấy. ID không được API trả về không bị cache thành “không tồn tại”; batch lỗi chỉ khiến các ID chưa có ngày được hỏi lại.
+- Store dùng validator envelope chung của runner cùng validator payload T4. Key là chuỗi JSON chuẩn tắc biểu diễn mảng không rỗng. Checkpoint hỏng, sai khóa hoặc sai phiên bản được báo lỗi rõ ràng, không âm thầm tải lại từ đầu. CLI T4 đặt toàn bộ checkpoint dưới thư mục `state-dir/<run_id>` để cô lập trang, ngày và lịch chờ theo run; key `arxiv_dates` vẫn đúng schema chung `["<cited_arxiv_id>"]`. `provenance.pages_resumed` và `dates_from_cache` cho biết phần dùng lại.
+- Scheduler phải lưu trạng thái đặt chỗ request trước khi gửi request; nếu ghi thất bại thì request không được gửi. Lịch chờ lưu bằng UTC ISO 8601 vì đồng hồ monotonic không sống qua restart; khi khôi phục deadline `Retry-After` được giữ nguyên, không cắt xuống 24 giờ. Scheduler lưu cooldown, khoảng cách tối thiểu giữa request, chuỗi 429 và cửa sổ 100 request/300 giây của Semantic Scholar.
+
+Chạy thử riêng lẻ (cần mạng): `PYTHONPATH=src python -m arxiv_pipeline.references --owner man-nhi --arxiv-id 2501.12642 --run-id demo --state-dir /tmp/t4-state`; trạng thái của run này nằm dưới `/tmp/t4-state/demo`. Ctrl+C rồi chạy lại cùng lệnh sẽ tiếp tục từ trang đang dở; đổi `--run-id` sẽ dùng một store riêng. Test offline: `tests/test_references_resume.py`.
 
 Test T4 (`tests/test_references.py`) không gửi request thật. Kiểm thử schema 1.2 bao gồm giữ raw có/không có arXiv ID, duplicate, ID sai, citedPaper=null, phân trang lỗi, reader tái sử dụng object và JSON preview. Các lần kiểm chứng Semantic Scholar/arXiv thật dưới đây có trước cập nhật 1.2; lần cập nhật raw_references này chỉ được kiểm thử offline, không xác nhận lại số liệu trực tiếp:
 
@@ -364,7 +383,7 @@ PYTHONPATH=src python -m arxiv_pipeline.runner \
 
 Khi mở DB để ghi, T5 tự migration cấu trúc v1→v2 để thêm bảng run_checkpoints. Accepted data, run_id, fingerprint và schema crawl 1.2 được giữ. DB v2 cần runner mới; code baseline cũ chỉ đọc DB v1. Giữ nguyên đường dẫn cho resume thông thường; khôi phục sang nơi khác đi qua cơ chế snapshot/relocator. Relocator đối chiếu scope với cấu hình đã fingerprint và các giới hạn mẫu trước khi cập nhật root.
 
-**Phần đã có và còn chờ:** checkpoint discovery và adapter lưu trữ đã triển khai. `validation/pipeline_contracts.py`, inspector/collection, snapshot, checkpoint trang references và cooldown qua restart thuộc phần các thành viên đang phát triển. Factory truyền cùng store khi constructor khai báo keyword `checkpoints`; module chưa có keyword vẫn chạy theo baseline. Khi validator chung có mặt, CLI dùng `validate_pipeline_document(..., kind="checkpoint")`; hiện kiểm tra envelope không thay thế kiểm tra đầy đủ payload. Lỗi từ constructor/validator được báo, không âm thầm hạ cấp. Chưa có CLI snapshot/collection hoặc HTTP Range trong đợt T1/T5 này.
+**Phần đã có và còn chờ:** checkpoint discovery và adapter lưu trữ đã triển khai. `validation/pipeline_contracts.py`, inspector/collection và snapshot thuộc phần các thành viên đang phát triển. T4 đã tích hợp checkpoint trang references, cache ngày và cooldown qua restart theo hợp đồng chung: `LiveModuleFactory` truyền cùng store cho `ReferencesModule` và `RequestScheduler` qua keyword `checkpoints`; constructor vẫn chấp nhận `store` như bí danh tương thích ngược. Các payload T4 tuân thủ TypedDict trong `pipeline_contracts.py`, với key JSON chuẩn tắc và thời gian ISO 8601. Khi validator chung có mặt, CLI dùng `validate_pipeline_document(..., kind="checkpoint")`; kiểm tra envelope không thay thế kiểm tra đầy đủ payload. Lỗi từ constructor/validator được báo, không âm thầm hạ cấp. Chưa có CLI snapshot/collection hoặc HTTP Range trong đợt T1/T5 này.
 
 CLI ghi `provenance.producer_commit` cho Result mới chỉ khi nhận diện được code pipeline sạch trong Git. Code đang sửa hoặc không có Git để trống thông tin đó; không gán HEAD cho artifacts cũ.
 
@@ -409,11 +428,11 @@ PYTHONPATH=src python -m arxiv_pipeline.runner \
 
 Resume đọc mode, owner và giới hạn đã lưu; không truyền lại các cờ cấu hình đó. Giữ cùng run_id/output root. Run mới dùng output root mới; runner từ chối nhận thư mục dữ liệu có sẵn không có state tương ứng.
 
-Trước khi bỏ qua task đã công nhận, runner đối chiếu file, kích thước và SHA-256 với SQLite. File mất/hỏng được đưa về diện cần xử lý. Discovery tiếp tục theo checkpoint từng lô; nguồn tải dở và references hiện vẫn thử lại theo task, chưa tiếp tục theo byte/trang API. Nguồn tốt còn hợp lệ được dùng lại. Retry lỗi không thay bộ dữ liệu tốt bằng kết quả lỗi; partial giữ phần đã có và được thử bổ sung ở lần resume tiếp theo.
+Trước khi bỏ qua task đã công nhận, runner đối chiếu file, kích thước và SHA-256 với SQLite. File mất/hỏng được đưa về diện cần xử lý. Discovery tiếp tục theo checkpoint từng lô; nguồn tải dở vẫn thử lại theo task, chưa tiếp tục theo byte. References tiếp tục theo trang khi runner truyền checkpoint store chung cho `ReferencesModule` (xem "T4 resume"). Nguồn tốt còn hợp lệ được dùng lại. Retry lỗi không thay bộ dữ liệu tốt bằng kết quả lỗi; partial giữ phần đã có và được thử bổ sung ở lần resume tiếp theo.
 
 Downloader kiểm tra HTTP status, Content-Length nếu có và từ chối phản hồi từng phần cho một GET toàn bộ. T3 thử lại tải thiếu hoặc dữ liệu nén kết thúc sớm, với tổng tối đa 3 request trong một lần fetch nguồn bằng client thật; retry tải và giải nén dùng chung ngân sách. GZIP/TAR phải vượt kiểm tra kết thúc stream trước khi bàn giao. Provenance nguồn ghi trạng thái HTTP, số byte kỳ vọng/thực nhận và Content-Range khi có. PDF-only vẫn là unsupported; archive không an toàn hoặc vượt giới hạn không được tải lại vô ích.
 
-Khi Semantic Scholar trả 429, khoảng chờ dự phòng tăng 30 → 60 → 120 giây và giữ 120 giây nếu tiếp tục bị giới hạn; HTTP 200 đặt lại mức chờ. Luôn đợi ít nhất Retry-After hợp lệ của máy chủ, kể cả khi dài hơn mức dự phòng hoặc ở dạng HTTP-date. Khoảng chờ dùng chung áp dụng cả sang bài tiếp theo sau khi hết 3 attempts. Cooldown này nằm trong tiến trình, chưa được lưu qua lần khởi động lại. References chưa lấy đủ vẫn được ghi failed/partial để bổ sung bằng resume.
+Khi Semantic Scholar trả 429, khoảng chờ dự phòng tăng 30 → 60 → 120 giây và giữ 120 giây nếu tiếp tục bị giới hạn; HTTP 200 đặt lại mức chờ. Luôn đợi ít nhất Retry-After hợp lệ của máy chủ, kể cả khi dài hơn mức dự phòng hoặc ở dạng HTTP-date. Khoảng chờ dùng chung áp dụng cả sang bài tiếp theo sau khi hết 3 attempts. Nếu `RequestScheduler` được tạo với `checkpoints=` (checkpoint store của runner), cooldown, khoảng cách tối thiểu giữa các request, chuỗi 429 của Semantic Scholar và cửa sổ 100 request/300 giây được lưu và khôi phục sau khi khởi động lại (xem mục "T4 resume"); không truyền thì vẫn chỉ nằm trong tiến trình. References chưa lấy đủ vẫn được ghi failed/partial để bổ sung bằng resume.
 
 Chạy bổ sung lượt mẫu thật đã có, giữ nguyên cấu hình đã lưu:
 
