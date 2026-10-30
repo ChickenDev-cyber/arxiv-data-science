@@ -61,15 +61,18 @@ def generate_all_charts(
 
     # Chart 2: Storage Optimization (Extracted vs Retained)
     fig, ax = plt.subplots(figsize=(7, 4.5), dpi=150)
-    extracted = [by_owner[o].get("mean_extracted_bytes_before_filter") or 0 for o in owners]
-    retained = [by_owner[o].get("mean_retained_source_bytes") or 0 for o in owners]
+    extracted_raw = [by_owner[o].get("mean_extracted_bytes_before_filter") for o in owners]
+    retained_raw = [by_owner[o].get("mean_retained_source_bytes") for o in owners]
 
-    # Convert to KB
-    extracted_kb = [e / 1024 for e in extracted]
-    retained_kb = [r / 1024 for r in retained]
+    extracted_kb = [(e / 1024) if e is not None else 0.0 for e in extracted_raw]
+    retained_kb = [(r / 1024) if r is not None else 0.0 for r in retained_raw]
 
     ax.bar([i - 0.15 for i in x], extracted_kb, 0.3, label="Trước lọc (Tổng giải nén)", color="#e74c3c")
     ax.bar([i + 0.15 for i in x], retained_kb, 0.3, label="Sau lọc (Chỉ TeX/BibTeX)", color="#27ae60")
+
+    for i, (e_val, r_val) in enumerate(zip(extracted_raw, retained_raw)):
+        if e_val is None:
+            ax.text(i, 5, "N/A", ha="center", va="bottom", fontsize=9, color="#888888", fontweight="bold")
 
     ax.set_ylabel("Dung lượng trung bình (KB)", fontsize=11)
     ax.set_title("Tối ưu hóa Dung lượng Nguồn TeX qua Bộ lọc T3", fontsize=13, fontweight="bold", pad=12)
@@ -86,29 +89,29 @@ def generate_all_charts(
     # Chart 3: System Performance Benchmark (Only plot if measured; do not plot unmeasured as 0)
     if bench:
         fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(9, 4), dpi=150)
-        
+
         peak_ram_bytes = bench.get("peak_ram_bytes")
         mean_ram_bytes = bench.get("mean_ram_bytes")
         wall_sec = bench.get("wall_seconds")
 
         # RAM comparison
-        if peak_ram_bytes and peak_ram_bytes > 0:
+        if peak_ram_bytes is not None and peak_ram_bytes > 0:
             peak_ram_mb = peak_ram_bytes / (1024 * 1024)
             mean_ram_mb = (mean_ram_bytes or peak_ram_bytes) / (1024 * 1024)
             ram_labels = ["Mean RAM", "Peak RAM"]
             ram_values = [mean_ram_mb, peak_ram_mb]
             bars1 = ax1.bar(ram_labels, ram_values, color=["#9b59b6", "#8e44ad"], width=0.45)
             ax1.set_ylabel("RAM (MB)", fontsize=11)
-            ax1.set_title("Bộ nhớ RAM Sử dụng", fontsize=12, fontweight="bold")
+            ax1.set_title("Bộ nhớ RAM Tiến trình (RSS)", fontsize=12, fontweight="bold")
             for bar in bars1:
                 yval = bar.get_height()
                 ax1.text(bar.get_x() + bar.get_width()/2, yval + 0.5, f"{yval:.1f} MB", ha="center", va="bottom", fontsize=9)
         else:
-            ax1.text(0.5, 0.5, "Bộ nhớ RAM:\nChưa có lượt đo", ha="center", va="center", fontsize=11, color="#888888")
+            ax1.text(0.5, 0.5, "Bộ nhớ RAM:\nChưa có lượt đo (N/A)", ha="center", va="center", fontsize=11, color="#888888")
             ax1.set_axis_off()
 
         # Wall time
-        if wall_sec and wall_sec > 0:
+        if wall_sec is not None and wall_sec > 0:
             bars2 = ax2.bar(["Wall Time"], [wall_sec], color=["#1abc9c"], width=0.3)
             ax2.set_ylabel("Thời gian (giây)", fontsize=11)
             ax2.set_title("Thời gian Thực thi Pipeline", fontsize=12, fontweight="bold")
@@ -116,7 +119,7 @@ def generate_all_charts(
                 yval = bar.get_height()
                 ax2.text(bar.get_x() + bar.get_width()/2, yval + 0.1, f"{yval:.2f}s", ha="center", va="bottom", fontsize=9)
         else:
-            ax2.text(0.5, 0.5, "Thời gian thực thi:\nChưa có lượt đo", ha="center", va="center", fontsize=11, color="#888888")
+            ax2.text(0.5, 0.5, "Thời gian thực thi:\nChưa có lượt đo (N/A)", ha="center", va="center", fontsize=11, color="#888888")
             ax2.set_axis_off()
 
         plt.tight_layout()

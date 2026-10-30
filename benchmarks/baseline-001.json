@@ -37,7 +37,7 @@
   "peak_ram_bytes": null,
   "peak_disk_bytes": 1012,
   "final_output_bytes": 1012,
-  "method": "system_ram_used (psutil)",
+  "method": "process_tree_rss (psutil)",
   "mean_ram_bytes": null,
   "sampling_interval_seconds": 0.1,
   "exit_code": 0,

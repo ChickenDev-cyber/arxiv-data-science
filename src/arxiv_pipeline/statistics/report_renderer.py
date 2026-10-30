@@ -1,7 +1,7 @@
 """Report renderer: generates formatted MyST markdown report from Statistics and Benchmark data.
 
 Follows strict reporting guidelines:
-- Unmeasured values are presented as 'Chưa đo (N/A)', NEVER as 0 or 0.00.
+- Unmeasured values are presented as 'Chưa đo (N/A)' or 'N/A', NEVER as 0 or 0.00.
 - Granular timings (Discovery time, per-paper time, mean paper time) are displayed.
 - Both complete final output bytes and peak disk usage are shown.
 - Notes that official benchmarks run on Google Colab CPU (Linux).
@@ -17,10 +17,12 @@ from ..contracts import Statistics, Benchmark
 
 
 def _format_bytes(byte_val: int | float | None) -> str:
-    """Format byte size, returning 'Chưa đo (N/A)' if None or not measured."""
-    if byte_val is None or byte_val <= 0:
+    """Format byte size, returning 'Chưa đo (N/A)' if None."""
+    if byte_val is None:
         return "Chưa đo (N/A)"
     b = float(byte_val)
+    if b == 0:
+        return "0 B"
     if b >= 1024 * 1024 * 1024:
         return f"{b / (1024**3):.2f} GB ({int(b):,} bytes)"
     if b >= 1024 * 1024:
@@ -31,15 +33,15 @@ def _format_bytes(byte_val: int | float | None) -> str:
 
 
 def _format_seconds(sec_val: float | None) -> str:
-    """Format duration in seconds, returning 'Chưa đo (N/A)' if None or not measured."""
-    if sec_val is None or sec_val <= 0:
+    """Format duration in seconds, returning 'Chưa đo (N/A)' if None."""
+    if sec_val is None:
         return "Chưa đo (N/A)"
     return f"{sec_val:.2f}s"
 
 
 def _format_ram(byte_val: int | None) -> str:
-    """Format RAM bytes, returning 'Chưa đo (N/A)' if None or not measured."""
-    if byte_val is None or byte_val <= 0:
+    """Format RAM bytes, returning 'Chưa đo (N/A)' if None."""
+    if byte_val is None:
         return "Chưa đo (N/A)"
     mb = byte_val / (1024 * 1024)
     if mb >= 1024:
@@ -63,7 +65,11 @@ OWNER_DISPLAY_NAMES = {
 }
 
 
-def render_report_markdown(stats: Statistics, bench: Benchmark | None = None) -> str:
+def render_report_markdown(
+    stats: Statistics,
+    bench: Benchmark | None = None,
+    timings: dict[str, Any] | None = None,
+) -> str:
     """Generate comprehensive MyST Markdown report text from stats and benchmark data."""
     summary = stats.get("summary", {})
     by_owner = stats.get("by_owner", {})
@@ -89,7 +95,9 @@ def render_report_markdown(stats: Statistics, bench: Benchmark | None = None) ->
     lines.append(f"- **Số bài hoàn thành toàn diện (Papers Complete):** {summary.get('papers_complete', 0):,} ({_format_pct(summary.get('paper_success_rate'))})")
     lines.append(f"- **Tổng số phiên bản nguồn xử lý:** {summary.get('source_versions_expected', 0):,} (Thành công: {summary.get('source_versions_success', 0):,}, Không hỗ trợ / PDF: {summary.get('source_versions_unsupported', 0):,})")
     lines.append(f"- **Dung lượng nguồn trung bình:** Trích xuất `{_format_bytes(summary.get('mean_extracted_bytes_before_filter'))}` → Giữ lại sau lọc TeX/BibTeX `{_format_bytes(summary.get('mean_retained_source_bytes'))}`")
-    lines.append(f"- **Tài liệu tham khảo (References):** {summary.get('references_arxiv_total', 0):,} trích dẫn arXiv ({_format_pct(summary.get('reference_metadata_success_rate'))} đầy đủ metadata, trung bình {summary.get('mean_arxiv_references_per_paper') or 0:.1f} trích dẫn/bài)")
+    
+    mean_refs_str = f"{summary.get('mean_arxiv_references_per_paper'):.1f}" if summary.get('mean_arxiv_references_per_paper') is not None else "N/A"
+    lines.append(f"- **Tài liệu tham khảo (References):** {summary.get('references_arxiv_total', 0):,} trích dẫn arXiv ({_format_pct(summary.get('reference_metadata_success_rate'))} đầy đủ metadata, trung bình {mean_refs_str} trích dẫn/bài)")
     lines.append("")
 
     # Section 2: Detailed by Owner Table
@@ -142,22 +150,16 @@ def render_report_markdown(stats: Statistics, bench: Benchmark | None = None) ->
     lines.append("> **Quy chuẩn thực thi:** Benchmark chính thức được thực hiện trên **Google Colab CPU** (Linux, 2 vCPU, 12GB RAM) theo yêu cầu của đồ án. Môi trường Windows và dữ liệu mock dùng phục vụ kiểm thử cục bộ và phát triển.")
     lines.append("")
 
-    # Extract timings from bench or summary
-    timings = {}
-    if bench and "timing" in bench:
-        timings = bench["timing"]
-    elif "timing" in summary:
-        timings = summary["timing"]
-    else:
-        timings = {
-            "discovery_seconds": summary.get("discovery_seconds"),
-            "mean_paper_seconds": summary.get("mean_paper_seconds"),
-            "per_paper_seconds": summary.get("per_paper_seconds", {}),
-        }
+    # Extract timings from timings arg or bench
+    timing_data: dict[str, Any] = {}
+    if timings:
+        timing_data = timings
+    elif bench and "timing" in bench:
+        timing_data = bench["timing"]
 
-    discovery_sec = timings.get("discovery_seconds")
-    mean_paper_sec = timings.get("mean_paper_seconds")
-    per_paper_map = timings.get("per_paper_seconds") or {}
+    discovery_sec = timing_data.get("discovery_seconds")
+    mean_paper_sec = timing_data.get("mean_paper_seconds")
+    per_paper_map = timing_data.get("per_paper_seconds") or {}
 
     lines.append("### 4.1. Thời gian Xử lý & Phân bổ (Execution Timings)")
     lines.append("")

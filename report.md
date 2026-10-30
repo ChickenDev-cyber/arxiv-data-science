@@ -50,7 +50,7 @@ flowchart LR
 
 ### 4.1. Thời gian Xử lý & Phân bổ (Execution Timings)
 
-- **Tổng thời gian thực thi toàn lệnh (Wall Seconds):** `Chưa đo (N/A)`
+- **Tổng thời gian thực thi toàn lệnh (Wall Seconds):** `0.00s`
 - **Tổng thời gian công đoạn Discovery:** `Chưa đo (N/A)`
 - **Thời gian xử lý trung bình mỗi bài báo:** `Chưa đo (N/A)`
 
@@ -58,7 +58,7 @@ flowchart LR
 
 - **Bộ nhớ RAM cao nhất (Peak RAM):** `Chưa đo (N/A)`
 - **Bộ nhớ RAM trung bình (Mean RAM):** `Chưa đo (N/A)`
-- **Phương pháp đo RAM:** `system_ram_used (psutil)`
+- **Phương pháp đo RAM:** `process_tree_rss (psutil)`
 - **Dung lượng đầu ra hoàn chỉnh (Final Output Size):** `1012 B`
 - **Dung lượng đĩa đỉnh (Peak Disk Usage):** `1012 B`
 - **Chế độ Cache:** `cold`

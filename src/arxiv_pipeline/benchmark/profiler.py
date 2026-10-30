@@ -1,7 +1,9 @@
 """System environment inspection and background resource usage sampling.
 
-Benchmark chính thức chạy trên Google Colab CPU (Linux).
-Windows và dữ liệu giả lập (mock) dùng để kiểm thử cục bộ.
+Measures RAM of the pipeline process tree (RSS), never whole-machine RAM,
+and never falls back to wrapper Python heap (tracemalloc).
+Official benchmarks run on Google Colab CPU (Linux).
+Windows and mock data serve local unit tests and development.
 """
 
 from __future__ import annotations
@@ -32,7 +34,7 @@ def get_environment_info() -> dict[str, str]:
         "python_implementation": platform.python_implementation(),
     }
     
-    # Total system RAM
+    # Total physical system RAM (for reference only, not used as process consumption)
     if HAS_PSUTIL:
         try:
             info["total_ram_bytes"] = str(psutil.virtual_memory().total)
@@ -51,46 +53,46 @@ def get_environment_info() -> dict[str, str]:
     return info
 
 
-def get_system_ram_used() -> tuple[int | None, str]:
-    """Get system-wide used RAM in bytes.
+def get_pipeline_process_ram(pid: int | None = None) -> tuple[int | None, str]:
+    """Get the RSS of the pipeline process and its child processes.
     
-    Returns (used_bytes, method_name). Does NOT fall back to Python heap allocations.
+    Measures pipeline processes only; does NOT return entire system RAM
+    and does NOT fall back to Python heap allocations (tracemalloc).
     """
-    # 1. psutil (works cross-platform: Windows, Linux, macOS)
+    target_pid = pid or os.getpid()
+
+    # 1. psutil: process RSS + all recursive child processes
     if HAS_PSUTIL:
         try:
-            vm = psutil.virtual_memory()
-            return int(vm.used), "system_ram_used (psutil)"
+            proc = psutil.Process(target_pid)
+            total_rss = proc.memory_info().rss
+            for child in proc.children(recursive=True):
+                try:
+                    total_rss += child.memory_info().rss
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            return int(total_rss), "process_tree_rss (psutil)"
         except Exception:
             pass
 
-    # 2. Linux /proc/meminfo (Google Colab CPU / Linux servers)
-    meminfo_path = Path("/proc/meminfo")
-    if meminfo_path.exists():
+    # 2. Linux /proc/<pid>/status: VmRSS
+    status_file = Path(f"/proc/{target_pid}/status")
+    if status_file.exists():
         try:
-            data: dict[str, int] = {}
-            for line in meminfo_path.read_text().splitlines():
-                parts = line.split(":")
-                if len(parts) == 2:
-                    k, v = parts[0].strip(), parts[1].strip()
-                    val = int(v.split()[0]) * 1024  # kB to bytes
-                    data[k] = val
-            if "MemTotal" in data and "MemAvailable" in data:
-                return data["MemTotal"] - data["MemAvailable"], "system_ram_used (/proc/meminfo)"
-            if "MemTotal" in data and "MemFree" in data:
-                buffers = data.get("Buffers", 0)
-                cached = data.get("Cached", 0)
-                return data["MemTotal"] - data["MemFree"] - buffers - cached, "system_ram_used (/proc/meminfo)"
+            for line in status_file.read_text().splitlines():
+                if line.startswith("VmRSS:"):
+                    parts = line.split()
+                    return int(parts[1]) * 1024, "process_rss (/proc)"
         except Exception:
             pass
 
-    # No valid system RAM measurement available; do not fake it with tracemalloc
+    # Never fall back to tracemalloc or machine total RAM
     return None, "unsupported"
 
 
 def get_dir_size(path: Path) -> int:
-    """Calculate total byte size of all files in a directory tree, ignoring broken symlinks."""
-    if not path.exists():
+    """Calculate total byte size of all files in directory tree, never following symlinks."""
+    if not path.exists() or path.is_symlink():
         return 0
     if path.is_file():
         try:
@@ -101,6 +103,9 @@ def get_dir_size(path: Path) -> int:
     total = 0
     try:
         for entry in path.rglob("*"):
+            # Never follow or count symlinks
+            if entry.is_symlink():
+                continue
             if entry.is_file():
                 try:
                     total += entry.stat().st_size
@@ -112,9 +117,10 @@ def get_dir_size(path: Path) -> int:
 
 
 class ResourceSampler:
-    """Background thread that periodically samples system RAM and disk footprint.
+    """Background thread sampling pipeline process tree RAM and disk footprint.
     
-    Reflects whole-system / OS-level metrics and never falls back to wrapper Python heap.
+    Tracks pipeline process RSS only; never measures whole-machine RAM,
+    never falls back to wrapper Python heap, and ignores symlinks.
     """
 
     def __init__(
@@ -137,7 +143,7 @@ class ResourceSampler:
         self.measurement_method: str = "none"
 
     def _sample_once(self) -> None:
-        ram, method = get_system_ram_used()
+        ram, method = get_pipeline_process_ram(self.process_pid)
         if ram is not None:
             self.ram_samples.append(ram)
             self.measurement_method = method
@@ -172,7 +178,7 @@ class ResourceSampler:
     def stop(self) -> tuple[int | None, int | None, int | None, str]:
         """Stop sampling and return (peak_ram, mean_ram, peak_disk, method).
         
-        Returns None for metrics that could not be measured (never fakes as 0).
+        Returns None for unmeasured metrics; never returns 0 as a placeholder.
         """
         self._stop_event.set()
         if self._thread and self._thread.is_alive():
