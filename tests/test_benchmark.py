@@ -16,6 +16,7 @@ from arxiv_pipeline.benchmark.runner import (
     extract_run_timings,
 )
 from arxiv_pipeline.benchmark.cli import main as cli_main
+from arxiv_pipeline.runner.models import RunOutcome, RunScope
 
 
 class TestBenchmark(unittest.TestCase):
@@ -54,13 +55,12 @@ class TestBenchmark(unittest.TestCase):
         try:
             symlink_path.symlink_to(staging_dir / "stage_file.bin")
             size_with_link = get_dir_size(self.test_root)
-            # Size must NOT double count the symlinked file
             self.assertEqual(base_size, size_with_link)
         except (OSError, NotImplementedError):
             pass
 
     def test_resource_sampler_process_tree(self):
-        """Resource sampler measures process tree RSS, never whole-machine RAM or tracemalloc."""
+        """Resource sampler measures process tree RSS (wrapper + runner), never whole-machine RAM or tracemalloc."""
         sampler = ResourceSampler(target_dir=self.test_root, interval_seconds=0.02)
         sampler.start()
         time.sleep(0.06)
@@ -74,43 +74,93 @@ class TestBenchmark(unittest.TestCase):
             self.assertGreaterEqual(mean_ram, 0)
         self.assertGreaterEqual(peak_disk, 0)
 
-    def test_benchmark_callable_exit_code_and_interrupt(self):
-        """Exit codes (including 2 and 130) are preserved and benchmarks are persisted on interrupt."""
+    def test_time_weighted_mean_ram(self):
+        """Mean RAM calculation uses trapezoidal time-weighted integration."""
+        sampler = ResourceSampler(interval_seconds=0.1)
+        # Mock samples: (time, ram)
+        # 0s to 1s: RAM = 100MB
+        # 1s to 2s: RAM = 200MB
+        # Trapezoidal area: (100+200)/2 * 1s = 150MB*s
+        # Total duration: 2s -> weighted mean: 150MB
+        sampler.ram_samples = [
+            (10.0, 100 * 1024 * 1024),
+            (11.0, 100 * 1024 * 1024),
+            (12.0, 200 * 1024 * 1024),
+        ]
+        sampler._sample_once = lambda: None  # avoid overriding manual samples in stop()
+        _, mean_ram, _, _ = sampler.stop()
+        self.assertIsNotNone(mean_ram)
+        # Area: (100+100)/2 * 1 + (100+200)/2 * 1 = 100 + 150 = 250 MB*s over 2s -> 125 MB
+        expected_mb = 125
+        self.assertEqual(round(mean_ram / (1024 * 1024)), expected_mb)
+
+    def test_callable_returns_none_stops_sampler_and_saves_benchmark(self):
+        """When callable returns None, sampler must stop and benchmark record must be completed and saved."""
         service = BenchmarkService(default_interval=0.02)
-        out_dir = self.test_root / "benchmarks_out"
+        out_dir = self.test_root / "bench_none_out"
 
-        # 1. Normal run
-        def normal_task():
-            return 42
+        def none_task():
+            time.sleep(0.03)
+            return None
 
-        res, bench = service.benchmark_callable(
-            normal_task,
-            run_id="bench-normal",
+        result, bench = service.benchmark_callable(
+            none_task,
+            run_id="bench-none",
             output_root=self.test_root,
             output_dir=out_dir,
         )
-        self.assertEqual(res, 42)
+        self.assertIsNone(result)
         self.assertEqual(bench["exit_code"], 0)
+        self.assertGreater(bench["wall_seconds"], 0.02)
+        saved_file = out_dir / "bench-none.json"
+        self.assertTrue(saved_file.exists())
 
-        # 2. SystemExit(2)
-        def exit_code_2_task():
-            raise SystemExit(2)
+    def test_callable_preserves_runoutcome_exit_code_2(self):
+        """When callable returns a RunOutcome with exit_code=2, it must NOT be converted to 0."""
+        service = BenchmarkService(default_interval=0.02)
+        out_dir = self.test_root / "bench_outcome_out"
 
-        with self.assertRaises(SystemExit) as ctx:
-            service.benchmark_callable(
-                exit_code_2_task,
-                run_id="bench-exit-2",
-                output_root=self.test_root,
-                output_dir=out_dir,
-            )
-        self.assertEqual(ctx.exception.code, 2)
-        # Check saved benchmark file
-        bench_file_2 = out_dir / "bench-exit-2.json"
-        self.assertTrue(bench_file_2.exists())
-        saved_2 = json.loads(bench_file_2.read_text(encoding="utf-8"))
-        self.assertEqual(saved_2["exit_code"], 2)
+        mock_scope: RunScope = {
+            "schema_version": SCHEMA_VERSION,
+            "run_id": "bench-outcome-2",
+            "is_mock": True,
+            "scope": {
+                "ranges": [],
+                "paper_tasks": [],
+                "discovery_complete": False,
+                "versions_complete": False,
+                "owner_count": 0,
+                "paper_count": 0,
+            },
+        }
+        outcome = RunOutcome(
+            exit_code=2,
+            scope=mock_scope,
+            executed_tasks=0,
+            reused_tasks=0,
+            validation={"valid": False, "issues": []},
+            quality={"valid": False, "issues": []},
+        )
 
-        # 3. KeyboardInterrupt (Ctrl+C) -> exit code 130 and benchmark saved
+        def outcome_task():
+            return outcome
+
+        res, bench = service.benchmark_callable(
+            outcome_task,
+            run_id="bench-outcome-2",
+            output_root=self.test_root,
+            output_dir=out_dir,
+        )
+        self.assertEqual(res.exit_code, 2)
+        self.assertEqual(bench["exit_code"], 2)  # Strictly preserved, not coerced to 0!
+        saved = json.loads((out_dir / "bench-outcome-2.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["exit_code"], 2)
+
+    def test_benchmark_callable_interrupt_130(self):
+        """KeyboardInterrupt records exit code 130 and saves benchmark file."""
+        service = BenchmarkService(default_interval=0.02)
+        out_dir = self.test_root / "bench_interrupt_out"
+
         def interrupt_task():
             raise KeyboardInterrupt()
 
@@ -126,32 +176,68 @@ class TestBenchmark(unittest.TestCase):
         saved_c = json.loads(bench_file_c.read_text(encoding="utf-8"))
         self.assertEqual(saved_c["exit_code"], 130)
 
-    def test_timings_failed_retries_and_complete_output(self):
-        """Extract timings from events.jsonl to include retries/failed attempts, separated from wall time."""
+    def test_benchmark_has_no_timing_field(self):
+        """Benchmark must strictly adhere to the 14 Schema 1.2 fields and NOT include a timing field."""
+        service = BenchmarkService()
+        bench = service.build_benchmark(
+            run_id="strict-bench",
+            output_root=self.test_root,
+            wall_seconds=1.23,
+        )
+        self.assertNotIn("timing", bench)
+        self.assertEqual(len(bench.keys()), 14)
+
+    def test_timings_failed_retries_and_resume_isolation(self):
+        """extract_run_timings supports since_timestamp to isolate invocation and ignore old resume data."""
         logs_dir = self.test_root / "logs" / "timing-test"
         logs_dir.mkdir(parents=True, exist_ok=True)
 
         events = [
-            {"step": "discovery", "duration_seconds": 2.5, "status": "success"},
-            # failed attempt for paper 2501.00001 (0.5s), followed by retry success (1.2s)
-            {"step": "metadata", "arxiv_id": "2501.00001", "duration_seconds": 0.5, "status": "failed"},
-            {"step": "metadata", "arxiv_id": "2501.00001", "duration_seconds": 1.2, "status": "success"},
-            {"step": "sources", "arxiv_id": "2501.00001", "duration_seconds": 0.8, "status": "success"},
-            {"step": "metadata", "arxiv_id": "2501.00002", "duration_seconds": 1.0, "status": "success"},
+            # Old invocation from yesterday
+            {
+                "step": "discovery",
+                "duration_seconds": 10.0,
+                "status": "success",
+                "finished_at": "2026-10-20T00:00:00Z",
+            },
+            # Current invocation
+            {
+                "step": "discovery",
+                "duration_seconds": 2.5,
+                "status": "success",
+                "finished_at": "2026-10-31T10:00:00Z",
+            },
+            {
+                "step": "metadata",
+                "arxiv_id": "2501.00001",
+                "duration_seconds": 0.5,
+                "status": "failed",
+                "finished_at": "2026-10-31T10:00:05Z",
+            },
+            {
+                "step": "metadata",
+                "arxiv_id": "2501.00001",
+                "duration_seconds": 1.2,
+                "status": "success",
+                "finished_at": "2026-10-31T10:00:10Z",
+            },
         ]
         with open(logs_dir / "events.jsonl", "w", encoding="utf-8") as f:
             for item in events:
                 f.write(json.dumps(item) + "\n")
 
-        timings = extract_run_timings(self.test_root, "timing-test")
-        self.assertEqual(timings["discovery_seconds"], 2.5)
-        # 2501.00001 total duration: 0.5 (failed) + 1.2 (retry) + 0.8 (source) = 2.5s
-        self.assertEqual(timings["per_paper_seconds"]["2501.00001"], 2.5)
-        self.assertEqual(timings["per_paper_seconds"]["2501.00002"], 1.0)
-        self.assertEqual(timings["mean_paper_seconds"], 1.75)
+        # Without timestamp filter: counts old 10s discovery + 2.5s = 12.5s
+        all_timings = extract_run_timings(self.test_root, "timing-test")
+        self.assertEqual(all_timings["discovery_seconds"], 12.5)
 
-        bytes_count = compute_complete_output_bytes(self.test_root, "timing-test")
-        self.assertGreater(bytes_count, 0)
+        # With since_timestamp: only current invocation
+        current_timings = extract_run_timings(
+            self.test_root,
+            "timing-test",
+            since_timestamp="2026-10-31T09:00:00Z",
+        )
+        self.assertEqual(current_timings["discovery_seconds"], 2.5)
+        self.assertEqual(current_timings["per_paper_seconds"]["2501.00001"], 1.7)
 
     def test_unmeasured_numbers_as_none_not_zero(self):
         """Unmeasured values return None, never converted to 0."""

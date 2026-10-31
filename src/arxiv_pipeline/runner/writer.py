@@ -25,6 +25,8 @@ def digest(path):
 
 
 def sync_dir(path):
+    if not hasattr(os, 'O_DIRECTORY'):
+        return
     fd=os.open(path,os.O_RDONLY | os.O_DIRECTORY)
     try:os.fsync(fd)
     finally:os.close(fd)

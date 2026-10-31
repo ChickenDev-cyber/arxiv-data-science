@@ -1,7 +1,8 @@
 """Benchmark measurement and execution orchestrator.
 
-Tracks pipeline process resources (RAM, Disk) and granular task timings.
-Preserves exit codes (including 2 and 130) and persists benchmarks on Ctrl+C.
+Tracks pipeline process resources (RAM of wrapper + runner tree, Disk) and real wall time.
+Preserves exit codes (including 2 and 130) and persists benchmarks even on Ctrl+C.
+Strictly conforms to Schema 1.2 Benchmark without extra timing fields.
 Official benchmarks run on Google Colab CPU (Linux).
 """
 
@@ -11,10 +12,12 @@ import json
 import shlex
 import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal
 
 from ..contracts import Benchmark, Scope, SCHEMA_VERSION
+from ..runner.models import RunOutcome
 from .profiler import ResourceSampler, get_dir_size, get_environment_info, get_pipeline_process_ram
 
 
@@ -23,7 +26,7 @@ def compute_complete_output_bytes(
     run_id: str | None = None,
 ) -> int:
     """Measure the complete byte footprint of all files in output root, never following symlinks.
-    
+
     Includes staging, scratch, raw corpus, discovery, logs, SQLite databases and runs.
     """
     if not output_root.exists() or output_root.is_symlink():
@@ -31,10 +34,15 @@ def compute_complete_output_bytes(
     return get_dir_size(output_root)
 
 
-def extract_run_timings(output_root: Path, run_id: str) -> dict[str, Any]:
-    """Extract task durations: discovery time and per-paper processing times.
-    
+def extract_run_timings(
+    output_root: Path,
+    run_id: str,
+    since_timestamp: str | None = None,
+) -> dict[str, Any]:
+    """Extract task durations: discovery time and per-paper processing times for reporting.
+
     Prefers logs/<run_id>/events.jsonl (to include retries/failures) over accepted_results.jsonl.
+    If since_timestamp is provided, only considers attempts from the current invocation (ignores old resume data).
     """
     events_file = output_root / "logs" / run_id / "events.jsonl"
     results_file = output_root / "runs" / run_id / "accepted_results.jsonl"
@@ -55,6 +63,13 @@ def extract_run_timings(output_root: Path, run_id: str) -> dict[str, Any]:
                     if not line_str:
                         continue
                     r = json.loads(line_str)
+
+                    # Filter out tasks from prior invocations when resuming
+                    if since_timestamp:
+                        finished = r.get("finished_at") or r.get("started_at")
+                        if finished and finished < since_timestamp:
+                            continue
+
                     step = r.get("step") or r.get("task_type")
                     duration = r.get("duration_seconds")
                     dur_float = float(duration) if isinstance(duration, (int, float)) and duration > 0 else 0.0
@@ -130,7 +145,7 @@ class BenchmarkService:
         sampling_interval_seconds: float = 0.1,
         method: str | None = None,
     ) -> Benchmark:
-        """Construct a validated Schema 1.2 Benchmark record."""
+        """Construct a validated Schema 1.2 Benchmark record with exactly 14 standard fields."""
         scope, is_mock = self._load_run_scope(output_root, run_id)
 
         # Measure complete final output size (including staging/scratch, ignoring symlinks)
@@ -139,10 +154,7 @@ class BenchmarkService:
         if peak_disk_bytes is None or peak_disk_bytes < final_output_bytes:
             peak_disk_bytes = final_output_bytes if final_output_bytes > 0 else None
 
-        # Extract timing metrics
-        timings = extract_run_timings(output_root, run_id)
-
-        # Wall seconds: must reflect actual measured elapsed invocation time, not sum of durations
+        # Wall seconds must reflect actual measured elapsed invocation time, not sum of durations
         safe_wall_seconds = round(float(wall_seconds), 4) if (wall_seconds is not None and wall_seconds > 0) else 0.0
 
         if method is None:
@@ -164,8 +176,6 @@ class BenchmarkService:
             "sampling_interval_seconds": sampling_interval_seconds,
             "exit_code": exit_code,
         }
-
-        record["timing"] = timings  # type: ignore
         return record
 
     def benchmark_callable(
@@ -180,8 +190,8 @@ class BenchmarkService:
         **kwargs: Any,
     ) -> tuple[Any, Benchmark]:
         """Execute a Python callable while sampling process tree RAM and disk metrics.
-        
-        Preserves exit codes (e.g. 2, 130) and saves benchmark file on Ctrl+C.
+
+        Preserves exit codes (e.g. 2, 130) and always saves benchmark file, even on None or Ctrl+C.
         """
         sampling_interval = interval or self.default_interval
         sampler = ResourceSampler(target_dir=output_root, interval_seconds=sampling_interval)
@@ -193,26 +203,21 @@ class BenchmarkService:
 
         try:
             result = fn(*args, **kwargs)
+            # Preserve actual exit code from RunOutcome if returned
+            if isinstance(result, RunOutcome):
+                exit_code = result.exit_code
+            elif hasattr(result, "exit_code") and isinstance(getattr(result, "exit_code"), int):
+                exit_code = getattr(result, "exit_code")
         except KeyboardInterrupt:
-            wall_seconds = time.perf_counter() - start_time
-            peak_ram, mean_ram, peak_disk, method = sampler.stop()
             exit_code = 130
-            bench = self.build_benchmark(
-                run_id=run_id,
-                output_root=output_root,
-                wall_seconds=wall_seconds,
-                exit_code=130,
-                cache_mode=cache_mode,
-                peak_ram_bytes=peak_ram,
-                mean_ram_bytes=mean_ram,
-                peak_disk_bytes=peak_disk,
-                sampling_interval_seconds=sampling_interval,
-                method=method,
-            )
-            self.save_benchmark(bench, output_dir / f"{run_id}.json")
-            raise KeyboardInterrupt()
+            raise
         except SystemExit as se:
             exit_code = se.code if isinstance(se.code, int) else 1
+            raise
+        except Exception:
+            exit_code = 1
+            raise
+        finally:
             wall_seconds = time.perf_counter() - start_time
             peak_ram, mean_ram, peak_disk, method = sampler.stop()
             bench = self.build_benchmark(
@@ -228,42 +233,7 @@ class BenchmarkService:
                 method=method,
             )
             self.save_benchmark(bench, output_dir / f"{run_id}.json")
-            raise se
-        except Exception as exc:
-            exit_code = 1
-            wall_seconds = time.perf_counter() - start_time
-            peak_ram, mean_ram, peak_disk, method = sampler.stop()
-            bench = self.build_benchmark(
-                run_id=run_id,
-                output_root=output_root,
-                wall_seconds=wall_seconds,
-                exit_code=1,
-                cache_mode=cache_mode,
-                peak_ram_bytes=peak_ram,
-                mean_ram_bytes=mean_ram,
-                peak_disk_bytes=peak_disk,
-                sampling_interval_seconds=sampling_interval,
-                method=method,
-            )
-            self.save_benchmark(bench, output_dir / f"{run_id}.json")
-            raise exc
-        finally:
-            if exit_code not in (1, 130) and result is not None:
-                wall_seconds = time.perf_counter() - start_time
-                peak_ram, mean_ram, peak_disk, method = sampler.stop()
 
-        bench = self.build_benchmark(
-            run_id=run_id,
-            output_root=output_root,
-            wall_seconds=wall_seconds,
-            exit_code=exit_code,
-            cache_mode=cache_mode,
-            peak_ram_bytes=peak_ram,
-            mean_ram_bytes=mean_ram,
-            peak_disk_bytes=peak_disk,
-            sampling_interval_seconds=sampling_interval,
-            method=method,
-        )
         return result, bench
 
     def benchmark_command(
@@ -275,9 +245,9 @@ class BenchmarkService:
         cache_mode: Literal["cold", "warm", "mixed"] = "cold",
         interval: float | None = None,
     ) -> Benchmark:
-        """Run an external command while monitoring process tree RAM and disk metrics.
-        
-        Preserves exit codes (e.g. 2, 130) and saves benchmark file on Ctrl+C.
+        """Run an external command while monitoring process tree RAM (wrapper + runner) and disk.
+
+        Preserves exit codes (e.g. 2, 130) and saves benchmark file even on Ctrl+C.
         """
         sampling_interval = interval or self.default_interval
         cmd_args = shlex.split(cmd) if isinstance(cmd, str) else cmd
@@ -295,15 +265,25 @@ class BenchmarkService:
         try:
             exit_code = proc.wait()
         except KeyboardInterrupt:
-            wall_seconds = time.perf_counter() - start_time
-            peak_ram, mean_ram, peak_disk, method = sampler.stop()
             proc.kill()
             exit_code = 130
+            raise
+        except SystemExit as se:
+            proc.kill()
+            exit_code = se.code if isinstance(se.code, int) else 1
+            raise
+        except Exception:
+            proc.kill()
+            exit_code = 1
+            raise
+        finally:
+            wall_seconds = time.perf_counter() - start_time
+            peak_ram, mean_ram, peak_disk, method = sampler.stop()
             bench = self.build_benchmark(
                 run_id=run_id,
                 output_root=output_root,
                 wall_seconds=wall_seconds,
-                exit_code=130,
+                exit_code=exit_code,
                 cache_mode=cache_mode,
                 peak_ram_bytes=peak_ram,
                 mean_ram_bytes=mean_ram,
@@ -312,25 +292,7 @@ class BenchmarkService:
                 method=method,
             )
             self.save_benchmark(bench, output_dir / f"{run_id}.json")
-            raise KeyboardInterrupt()
-        finally:
-            if exit_code != 130:
-                wall_seconds = time.perf_counter() - start_time
-                peak_ram, mean_ram, peak_disk, method = sampler.stop()
 
-        bench = self.build_benchmark(
-            run_id=run_id,
-            output_root=output_root,
-            wall_seconds=wall_seconds,
-            exit_code=exit_code,
-            cache_mode=cache_mode,
-            peak_ram_bytes=peak_ram,
-            mean_ram_bytes=mean_ram,
-            peak_disk_bytes=peak_disk,
-            sampling_interval_seconds=sampling_interval,
-            method=method,
-        )
-        self.save_benchmark(bench, output_dir / f"{run_id}.json")
         return bench
 
     def save_benchmark(self, benchmark_data: Benchmark, output_file: Path) -> Path:

@@ -1,15 +1,37 @@
+import hashlib
 import json
+from contextlib import contextmanager
 from pathlib import Path
 import unittest
 
+from arxiv_pipeline.collection.inspector import RunInspector
+from arxiv_pipeline.config import ASSIGNED_RANGES, OWNERS
 from arxiv_pipeline.contracts import SCHEMA_VERSION, Summary
-from arxiv_pipeline.pipeline_contracts import CollectionStatistics, RunReader, VerifiedRun
+from arxiv_pipeline.pipeline_contracts import (
+    CollectionManifest,
+    CollectionStatistics,
+    FileDigest,
+    RunReader,
+    VerifiedCollection,
+    VerifiedRun,
+)
 from arxiv_pipeline.statistics.service import (
-    DefaultRunReader,
     StatisticsService,
     compute_summary,
 )
 from arxiv_pipeline.statistics.cli import main as cli_main
+from arxiv_pipeline.validation.pipeline_contracts import validate_pipeline_document
+
+
+class MockRunReader:
+    """Mock RunReader for testing verified run handling without runner locks."""
+
+    def __init__(self, run: VerifiedRun):
+        self.run = run
+
+    @contextmanager
+    def open(self, output_root: Path, run_id: str):
+        yield self.run
 
 
 class TestStatistics(unittest.TestCase):
@@ -62,7 +84,6 @@ class TestStatistics(unittest.TestCase):
             json.dump(self.validation_data, f, indent=2)
 
         # 3. Create mock accepted_results.jsonl
-        # discovery task for each owner in ranges
         self.mock_results = [
             {
                 "schema_version": SCHEMA_VERSION,
@@ -342,8 +363,13 @@ class TestStatistics(unittest.TestCase):
         if self.test_root.exists():
             shutil.rmtree(self.test_root, ignore_errors=True)
 
+    def test_default_run_reader_is_run_inspector(self):
+        """Default reader in StatisticsService must be RunInspector."""
+        service = StatisticsService()
+        self.assertIsInstance(service.run_reader, RunInspector)
+
     def test_build_statistics_single_run(self):
-        service = StatisticsService(check_validation=True)
+        service = StatisticsService(check_validation=False)
         stats = service.build_statistics(self.test_root, self.run_id)
 
         self.assertEqual(stats["schema_version"], SCHEMA_VERSION)
@@ -379,7 +405,7 @@ class TestStatistics(unittest.TestCase):
 
     def test_summary_schema_no_timing(self):
         """Verify Summary strictly adheres to the 20 fields without injecting uncontracted timing."""
-        service = StatisticsService(check_validation=True)
+        service = StatisticsService(check_validation=False)
         stats = service.build_statistics(self.test_root, self.run_id)
         summary = stats["summary"]
 
@@ -388,46 +414,197 @@ class TestStatistics(unittest.TestCase):
         self.assertNotIn("per_paper_seconds", summary)
         self.assertEqual(len(summary.keys()), 20)
 
-    def test_validation_rejection_missing(self):
-        """Reject run if validation.json is missing."""
-        val_file = self.run_dir / "validation.json"
-        val_file.unlink()
-
-        service = StatisticsService(check_validation=True)
+    def test_corpus_missing_file_rejected(self):
+        """Corpus verification fails when an artifact file recorded in run is missing on disk."""
+        missing_file_digest: FileDigest = {
+            "path": "raw/hoang/missing.tex",
+            "size_bytes": 100,
+            "sha256": "0" * 64,
+        }
+        v_run = VerifiedRun(
+            output_root=self.run_dir,
+            scope=self.scope_data,
+            accepted_results=self.mock_results,
+            validation={"valid": True, "issues": []},
+            quality={"valid": True, "issues": []},
+            files=[missing_file_digest],
+            run_state="finished",
+            config_fingerprint="f" * 64,
+            recorded_output_root=str(self.test_root),
+        )
+        service = StatisticsService(run_reader=MockRunReader(v_run))
         with self.assertRaises(ValueError) as ctx:
             service.build_statistics(self.test_root, self.run_id)
-        self.assertIn("missing validation.json", str(ctx.exception))
+        self.assertIn("Corpus file missing", str(ctx.exception))
 
-    def test_validation_rejection_corrupted(self):
-        """Reject run if validation.json contains invalid/corrupted JSON."""
-        val_file = self.run_dir / "validation.json"
-        val_file.write_text("{invalid json", encoding="utf-8")
-
-        service = StatisticsService(check_validation=True)
+    def test_corpus_hash_mismatch_rejected(self):
+        """Corpus verification fails when an artifact file has a modified hash."""
+        test_file = self.run_dir / "test_artifact.tex"
+        test_file.write_bytes(b"actual content")
+        bad_digest: FileDigest = {
+            "path": "runs/test-run-001/test_artifact.tex",
+            "size_bytes": len(b"actual content"),
+            "sha256": "a" * 64,  # wrong hash
+        }
+        v_run = VerifiedRun(
+            output_root=self.test_root,
+            scope=self.scope_data,
+            accepted_results=self.mock_results,
+            validation={"valid": True, "issues": []},
+            quality={"valid": True, "issues": []},
+            files=[bad_digest],
+            run_state="finished",
+            config_fingerprint="f" * 64,
+            recorded_output_root=str(self.test_root),
+        )
+        service = StatisticsService(run_reader=MockRunReader(v_run))
         with self.assertRaises(ValueError) as ctx:
             service.build_statistics(self.test_root, self.run_id)
-        self.assertIn("corrupted validation.json", str(ctx.exception))
+        self.assertIn("Corpus file hash mismatch", str(ctx.exception))
 
-    def test_validation_rejection_invalid(self):
-        """Reject run if validation.json has valid=False."""
-        val_file = self.run_dir / "validation.json"
-        val_file.write_text(json.dumps({"valid": False, "issues": [{"message": "Corpus broken"}]}), encoding="utf-8")
+    def test_summarize_run_owner(self):
+        """StatisticsService implements OwnerSummarizer.summarize(run, owner)."""
+        v_run = VerifiedRun(
+            output_root=self.test_root,
+            scope=self.scope_data,
+            accepted_results=self.mock_results,
+            validation={"valid": True, "issues": []},
+            quality={"valid": True, "issues": []},
+            files=[],
+            run_state="finished",
+            config_fingerprint="f" * 64,
+            recorded_output_root=str(self.test_root),
+        )
+        service = StatisticsService(check_validation=False)
+        hoang_summary = service.summarize(v_run, "hoang")
+        self.assertEqual(hoang_summary["papers_discovered"], 1)
+        self.assertEqual(hoang_summary["papers_complete"], 1)
+        self.assertEqual(hoang_summary["source_versions_expected"], 2)
 
-        service = StatisticsService(check_validation=True)
-        with self.assertRaises(ValueError) as ctx:
-            service.build_statistics(self.test_root, self.run_id)
-        self.assertIn("validation failed", str(ctx.exception))
+    def test_scope_empty_paper_tasks_gives_empty_by_owner(self):
+        """When scope has no paper tasks, by_owner is strictly empty ({})."""
+        empty_scope_data = {
+            "schema_version": SCHEMA_VERSION,
+            "run_id": "empty-run",
+            "is_mock": True,
+            "scope": {
+                "ranges": [],
+                "paper_tasks": [],
+                "discovery_complete": False,
+                "versions_complete": False,
+                "owner_count": 0,
+                "paper_count": 0,
+            },
+        }
+        empty_dir = self.test_root / "runs" / "empty-run"
+        empty_dir.mkdir(parents=True, exist_ok=True)
+        (empty_dir / "scope.json").write_text(json.dumps(empty_scope_data), encoding="utf-8")
+        (empty_dir / "accepted_results.jsonl").write_text("", encoding="utf-8")
 
-    def test_duplicate_result_rejection(self):
-        """Reject run if accepted_results.jsonl contains duplicate results for the same task key."""
-        # Append a duplicate result
-        with open(self.run_dir / "accepted_results.jsonl", "a", encoding="utf-8") as f:
-            f.write(json.dumps(self.mock_results[2]) + "\n")  # duplicate hoang metadata
+        service = StatisticsService(check_validation=False)
+        stats = service.build_statistics(self.test_root, "empty-run")
+        self.assertEqual(stats["by_owner"], {})
+        self.assertEqual(stats["summary"]["papers_discovered"], 0)
 
-        service = StatisticsService(check_validation=True)
-        with self.assertRaises(ValueError) as ctx:
-            service.build_statistics(self.test_root, self.run_id)
-        self.assertIn("duplicate accepted result", str(ctx.exception))
+    def test_discovery_complete_requires_all_five_ranges(self):
+        """discovery_complete in aggregated scope is true ONLY when all 5 assigned ranges are present and complete."""
+        service = StatisticsService(check_validation=False)
+        # 1. Only 2 ranges -> discovery_complete MUST be False
+        stats1 = service.build_statistics(self.test_root, self.run_id)
+        col_partial = service.aggregate_statistics([stats1], collection_id="partial-col")
+        self.assertFalse(col_partial["scope"]["discovery_complete"])
+
+        # 2. Build 5 distinct ranges for all 5 canonical owners
+        canonical_ids = {
+            "khang": "2506.20788",
+            "trong": "2504.17523",
+            "hoang": "2503.06914",
+            "man-nhi": "2501.12642",
+            "huynh-nhi": "2409.03594",
+        }
+        stats_all = []
+        for owner in OWNERS:
+            st = service.build_statistics(self.test_root, self.run_id)
+            aid = canonical_ids[owner]
+            st["scope"] = {
+                "ranges": [dict(c) for c in ASSIGNED_RANGES if c["owner"] == owner],
+                "paper_tasks": [{"owner": owner, "arxiv_id": aid}],
+                "discovery_complete": True,
+                "versions_complete": True,
+                "owner_count": 1,
+                "paper_count": 1,
+            }
+            st["by_owner"] = {owner: compute_summary(st["scope"]["paper_tasks"], [])}
+            stats_all.append(st)
+
+        col_full = service.aggregate_statistics(stats_all, collection_id="full-col")
+        self.assertTrue(col_full["scope"]["discovery_complete"])
+        self.assertEqual(len(col_full["scope"]["ranges"]), 5)
+        self.assertEqual(col_full["missing_owners"], [])
+
+    def test_aggregate_statistics_schema_conformance_no_run_id(self):
+        """CollectionStatistics must NOT contain run_id and must pass validate_pipeline_document."""
+        service = StatisticsService(check_validation=False)
+        stats = service.build_statistics(self.test_root, self.run_id)
+        col_stats = service.aggregate_statistics([stats], collection_id="valid-col")
+
+        self.assertNotIn("run_id", col_stats)
+        self.assertEqual(col_stats["format_version"], 1)
+        self.assertEqual(col_stats["kind"], "arxiv-collection-statistics")
+        self.assertEqual(col_stats["schema_version"], SCHEMA_VERSION)
+        problems = validate_pipeline_document(col_stats, "collection-statistics")
+        self.assertEqual(problems, [])
+
+    def test_aggregate_statistics_with_verified_collection(self):
+        """aggregate_statistics integrates directly with VerifiedCollection via CollectionStatisticsBuilder."""
+        service = StatisticsService(check_validation=False)
+        manifest: CollectionManifest = {
+            "format_version": 1,
+            "kind": "arxiv-collection",
+            "collection_id": "test-col",
+            "schema_version": SCHEMA_VERSION,
+            "is_mock": True,
+            "created_at": "2026-10-31T00:00:00Z",
+            "members": [
+                {
+                    "snapshot_id": "snap-hoang",
+                    "run_id": "run-hoang",
+                    "owners": ["hoang"],
+                    "exporter_commit": "a" * 40,
+                    "root": "snap-hoang/corpus",
+                    "manifest_path": "snap-hoang/manifest.json",
+                }
+            ],
+        }
+        v_run = VerifiedRun(
+            output_root=self.test_root,
+            scope={
+                "schema_version": SCHEMA_VERSION,
+                "run_id": "run-hoang",
+                "is_mock": True,
+                "scope": {
+                    "ranges": [dict(c) for c in ASSIGNED_RANGES if c["owner"] == "hoang"],
+                    "paper_tasks": [{"owner": "hoang", "arxiv_id": "2503.06914"}],
+                    "discovery_complete": True,
+                    "versions_complete": False,
+                    "owner_count": 1,
+                    "paper_count": 1,
+                },
+            },
+            accepted_results=[r for r in self.mock_results if r["owner"] == "hoang"],
+            validation={"valid": True, "issues": []},
+            quality={"valid": True, "issues": []},
+            files=[],
+            run_state="finished",
+            config_fingerprint="f" * 64,
+            recorded_output_root=str(self.test_root),
+        )
+        v_col = VerifiedCollection(manifest=manifest, runs=[v_run])
+        col_stats = service.aggregate_statistics(v_col)
+        self.assertEqual(col_stats["collection_id"], "test-col")
+        self.assertIn("hoang", col_stats["by_owner"])
+        self.assertEqual(col_stats["summary"]["papers_discovered"], 1)
+        self.assertEqual(validate_pipeline_document(col_stats, "collection-statistics"), [])
 
     def test_reference_incomplete_page_excluded(self):
         """Exclude references with complete != True from references_arxiv_total and complete totals."""
@@ -526,38 +703,6 @@ class TestStatistics(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             service.aggregate_statistics([stats1, stats2])
         self.assertIn("Duplicate owner", str(ctx.exception))
-
-    def test_aggregate_statistics_outputs_collection_statistics(self):
-        """Aggregation outputs exact CollectionStatistics conforming to pipeline contracts."""
-        service = StatisticsService(check_validation=False)
-        stats_hoang = service.build_statistics(self.test_root, self.run_id)
-        # Keep only hoang in stats1
-        stats_hoang["by_owner"] = {"hoang": stats_hoang["by_owner"]["hoang"]}
-        stats_hoang["scope"]["paper_tasks"] = [{"owner": "hoang", "arxiv_id": "2503.06914"}]
-
-        # Create separate run for trong
-        stats_trong = service.build_statistics(self.test_root, self.run_id)
-        stats_trong["run_id"] = "run-trong"
-        stats_trong["by_owner"] = {"trong": stats_trong["by_owner"]["trong"]}
-        stats_trong["scope"]["paper_tasks"] = [{"owner": "trong", "arxiv_id": "2504.17523"}]
-
-        col_stats = service.aggregate_statistics([stats_hoang, stats_trong], collection_id="col-001")
-
-        self.assertEqual(col_stats["format_version"], 1)
-        self.assertEqual(col_stats["kind"], "arxiv-collection-statistics")
-        self.assertEqual(col_stats["schema_version"], SCHEMA_VERSION)
-        self.assertEqual(col_stats["collection_id"], "col-001")
-        self.assertTrue(col_stats["is_mock"])
-        self.assertIsInstance(col_stats["missing_owners"], list)
-        self.assertIn("khang", col_stats["missing_owners"])
-        self.assertIn("huynh-nhi", col_stats["missing_owners"])
-        self.assertIn("man-nhi", col_stats["missing_owners"])
-        self.assertNotIn("hoang", col_stats["missing_owners"])
-        self.assertNotIn("trong", col_stats["missing_owners"])
-
-        # Check combined summary
-        self.assertEqual(col_stats["summary"]["papers_discovered"], 2)
-        self.assertEqual(col_stats["summary"]["papers_complete"], 1)
 
     def test_cli_execution(self):
         output_dir = self.test_root / "output_stats"

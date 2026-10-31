@@ -40,13 +40,5 @@
   "method": "process_tree_rss (psutil)",
   "mean_ram_bytes": null,
   "sampling_interval_seconds": 0.1,
-  "exit_code": 0,
-  "timing": {
-    "discovery_seconds": null,
-    "mean_paper_seconds": null,
-    "min_paper_seconds": null,
-    "max_paper_seconds": null,
-    "per_paper_seconds": {},
-    "total_paper_task_seconds": null
-  }
+  "exit_code": 0
 }

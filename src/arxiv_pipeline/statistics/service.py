@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-from contextlib import contextmanager
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any
 
+from ..config import ASSIGNED_RANGES, OWNERS
 from ..contracts import (
     Owner,
     PaperTask,
@@ -18,13 +18,24 @@ from ..contracts import (
     Summary,
     SCHEMA_VERSION,
 )
+from ..collection.inspector import RunInspector
+from ..collection.statistics import (
+    CollectionStatisticsBuilder,
+    OwnerSummarizer,
+    combine_summaries,
+)
 from ..pipeline_contracts import (
     CollectionMember,
     CollectionStatistics,
     RunReader,
+    VerifiedCollection,
     VerifiedRun,
 )
+from ..runner.writer import digest
 from ..validation.corpus import paper_issues, validate_corpus, validate_handoff
+from ..validation.pipeline_contracts import validate_pipeline_document
+
+ASSIGNED = {c["owner"]: c for c in ASSIGNED_RANGES}
 
 
 def _safe_div(numerator: int | float, denominator: int | float) -> float | None:
@@ -44,8 +55,6 @@ OWNER_ALIAS_MAP: dict[str, Owner] = {
     "hoang": "hoang",
     "huy-hoang": "hoang",
 }
-
-ALL_CANONICAL_OWNERS: list[Owner] = ["trong", "huynh-nhi", "khang", "man-nhi", "hoang"]
 
 
 def normalize_owner(raw_owner: Any) -> Owner:
@@ -108,7 +117,7 @@ def normalize_result(raw: dict[str, Any]) -> Result:
 
 def compute_summary(tasks: list[PaperTask], results: list[Result]) -> Summary:
     """Compute Summary metrics for a given subset of paper tasks and accepted results.
-    
+
     Adheres strictly to the 20 fields of Schema 1.2 Summary contract.
     No extra timing fields are injected here.
     """
@@ -168,7 +177,6 @@ def compute_summary(tasks: list[PaperTask], results: list[Result]) -> Summary:
         extracted = metrics.get("extracted_bytes_before_filter")
         retained = metrics.get("retained_source_bytes")
 
-        # Must have both measurements as valid non-negative numbers
         if (
             isinstance(extracted, (int, float)) and not isinstance(extracted, bool) and extracted >= 0
             and isinstance(retained, (int, float)) and not isinstance(retained, bool) and retained >= 0
@@ -251,109 +259,7 @@ def compute_summary(tasks: list[PaperTask], results: list[Result]) -> Summary:
     return summary_dict
 
 
-class DefaultRunReader:
-    """Production implementation of RunReader protocol.
-    
-    Verifies corpus, ensures validation.json is present and valid,
-    and rejects duplicate accepted results.
-    """
-
-    @contextmanager
-    def open(self, output_root: Path, run_id: str) -> Generator[VerifiedRun, None, None]:
-        output_root = Path(output_root)
-        run_dir = output_root / "runs" / run_id
-        if not run_dir.exists():
-            if (output_root / "scope.json").exists() and (run_id == "standalone" or run_id in str(output_root)):
-                run_dir = output_root
-            else:
-                raise FileNotFoundError(f"Run directory not found: {run_dir}")
-
-        val_file = run_dir / "validation.json"
-        if not val_file.exists():
-            raise ValueError(f"Run {run_id} rejected: missing validation.json")
-        try:
-            val_data = json.loads(val_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as e:
-            raise ValueError(f"Run {run_id} rejected: corrupted validation.json: {e}") from e
-
-        if not isinstance(val_data, dict) or not val_data.get("valid", False):
-            raise ValueError(f"Run {run_id} rejected: validation failed: {val_data.get('issues') if isinstance(val_data, dict) else 'invalid structure'}")
-
-        scope_file = run_dir / "scope.json"
-        if not scope_file.exists():
-            raise FileNotFoundError(f"scope.json not found in {run_dir}")
-        try:
-            scope_raw = json.loads(scope_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as e:
-            raise ValueError(f"Run {run_id} rejected: corrupted scope.json: {e}") from e
-
-        if "scope" not in scope_raw:
-            run_scope: RunScope = {
-                "schema_version": scope_raw.get("schema_version", SCHEMA_VERSION),
-                "run_id": run_id,
-                "is_mock": scope_raw.get("is_mock", True),
-                "scope": scope_raw,
-            }
-        else:
-            run_scope = scope_raw
-
-        results_file = run_dir / "accepted_results.jsonl"
-        if not results_file.exists():
-            raise FileNotFoundError(f"accepted_results.jsonl not found in {run_dir}")
-
-        results: list[Result] = []
-        seen_keys: set[tuple[str, str, str | None, int | None]] = set()
-
-        with open(results_file, "r", encoding="utf-8") as f:
-            for line_no, line in enumerate(f, 1):
-                line_str = line.strip()
-                if not line_str:
-                    continue
-                try:
-                    r = json.loads(line_str)
-                except json.JSONDecodeError as e:
-                    raise ValueError(f"Corrupted result line {line_no} in {results_file}: {e}") from e
-
-                key = (r.get("owner"), r.get("step"), r.get("arxiv_id"), r.get("version"))
-                if key in seen_keys:
-                    raise ValueError(f"Run {run_id} rejected: duplicate accepted result for {key}")
-                seen_keys.add(key)
-                results.append(r)
-
-        # Check handoff consistency using canonical handoff validator
-        handoff_errors = validate_handoff(run_scope, results)
-        if handoff_errors:
-            raise ValueError(
-                f"Run {run_id} handoff validation failed with {len(handoff_errors)} issues: {handoff_errors}"
-            )
-
-        # Compute corpus quality
-        corpus_issues = validate_corpus(run_scope, results)
-        quality_file = run_dir / "quality.json"
-        quality_data: dict[str, Any] = {"valid": not bool(corpus_issues), "issues": corpus_issues}
-        if quality_file.exists():
-            try:
-                loaded_q = json.loads(quality_file.read_text(encoding="utf-8"))
-                if isinstance(loaded_q, dict):
-                    quality_data = loaded_q
-            except Exception:
-                pass
-
-        verified_run = VerifiedRun(
-            output_root=run_dir,
-            scope=run_scope,
-            accepted_results=results,
-            validation=val_data,
-            quality=quality_data,  # type: ignore
-            files=[],
-            run_state="finished",
-            config_fingerprint="",
-            recorded_output_root=str(output_root),
-        )
-        yield verified_run
-
-
-class StatisticsService:
+class StatisticsService(OwnerSummarizer):
     """Service to compute, aggregate and persist Schema 1.2 statistics and CollectionStatistics."""
 
     def __init__(self, run_reader: RunReader | None = None, check_validation: bool = True):
@@ -361,14 +267,31 @@ class StatisticsService:
         if run_reader is not None:
             self.run_reader: RunReader | None = run_reader
         elif check_validation:
-            self.run_reader = DefaultRunReader()
+            self.run_reader = RunInspector()
         else:
             self.run_reader = None
 
+    def summarize(self, run: VerifiedRun, owner: Owner) -> Summary:
+        """Summarize a single owner's tasks and results from a verified run. Implements OwnerSummarizer."""
+        owner_tasks = [t for t in run.scope["scope"]["paper_tasks"] if t["owner"] == owner]
+        owner_results = [r for r in run.accepted_results if r["owner"] == owner]
+        return compute_summary(owner_tasks, owner_results)
+
     def load_run_data(self, output_root: Path, run_id: str) -> tuple[RunScope, list[Result]]:
-        """Load and verify run data via RunReader or direct fallback."""
+        """Load and verify run data via RunReader or direct fallback.
+
+        Rejects missing or corrupted corpus files, and verifies file hashes.
+        """
         if self.run_reader is not None:
             with self.run_reader.open(output_root, run_id) as v_run:
+                # Corpus check: verify that all recorded files exist and match sha256
+                if v_run.files:
+                    for f in v_run.files:
+                        p = Path(v_run.output_root) / f["path"]
+                        if not p.is_file():
+                            raise ValueError(f"Corpus file missing: {f['path']}")
+                        if p.stat().st_size != f["size_bytes"] or digest(p) != f["sha256"]:
+                            raise ValueError(f"Corpus file hash mismatch: {f['path']}")
                 return v_run.scope, v_run.accepted_results
 
         # Fallback when check_validation=False
@@ -409,7 +332,10 @@ class StatisticsService:
         return scope_data, results
 
     def build_statistics(self, output_root: Path, run_id: str) -> Statistics:
-        """Compute complete Schema 1.2 Statistics for a single run."""
+        """Compute complete Schema 1.2 Statistics for a single run.
+
+        If scope has no papers, by_owner is strictly empty ({}).
+        """
         scope_data, results = self.load_run_data(output_root, run_id)
 
         raw_scope = scope_data["scope"]
@@ -426,16 +352,10 @@ class StatisticsService:
         # Overall summary
         summary = compute_summary(paper_tasks, norm_results)
 
-        # Per-owner breakdown
+        # by_owner holds strictly the owners that appear in paper_tasks (empty if no papers)
         by_owner: dict[Owner, Summary] = {}
-        all_owners: set[Owner] = {t["owner"] for t in paper_tasks}
-        for r_cfg in raw_scope.get("ranges", []):
-            if "owner" in r_cfg:
-                all_owners.add(normalize_owner(r_cfg["owner"]))
-        for r in norm_results:
-            all_owners.add(r["owner"])
-
-        for owner in sorted(all_owners):
+        task_owners = sorted({t["owner"] for t in paper_tasks})
+        for owner in task_owners:
             owner_tasks = [t for t in paper_tasks if t["owner"] == owner]
             owner_results = [r for r in norm_results if r["owner"] == owner]
             by_owner[owner] = compute_summary(owner_tasks, owner_results)
@@ -451,17 +371,22 @@ class StatisticsService:
 
     def aggregate_statistics(
         self,
-        stats_list: list[Statistics],
+        stats_or_collection: list[Statistics] | VerifiedCollection,
         collection_id: str = "team-collection",
         sources: list[CollectionMember] | None = None,
         aggregated_run_id: str | None = None,
     ) -> CollectionStatistics:
         """Aggregate multiple single-run statistics across team members into a unified CollectionStatistics.
-        
+
+        Supports VerifiedCollection directly via CollectionStatisticsBuilder.
         Rejects mixing mock and real runs.
         Rejects duplicate owners across runs.
-        Outputs exact CollectionStatistics conforming to pipeline contracts.
+        Outputs exact CollectionStatistics conforming to pipeline contracts (without fake run_id).
         """
+        if isinstance(stats_or_collection, VerifiedCollection):
+            return CollectionStatisticsBuilder(self).build(stats_or_collection)
+
+        stats_list = stats_or_collection
         if not stats_list:
             raise ValueError("stats_list cannot be empty for aggregation")
 
@@ -482,108 +407,117 @@ class StatisticsService:
                 raise ValueError(f"Duplicate owner(s) detected across aggregated runs: {sorted(overlap)}")
             seen_owners.update(run_owners)
 
-        # 3. Missing owners
-        missing_owners = [o for o in ALL_CANONICAL_OWNERS if o not in seen_owners]
-
-        # Combine scope paper tasks and ranges
-        combined_tasks: list[PaperTask] = []
+        # 3. Combine ranges and paper tasks
         combined_ranges: list[Any] = []
-        seen_ranges: set[str] = set()
-        seen_tasks: set[tuple[str, str]] = set()
-
-        by_owner: dict[Owner, Summary] = {}
-
+        seen_range_owners: set[str] = set()
         for s in stats_list:
             sc = s.get("scope", {})
             for r in sc.get("ranges", []):
-                r_key = f"{r.get('owner')}_{r.get('start_month')}_{r.get('start_id')}"
-                if r_key not in seen_ranges:
-                    seen_ranges.add(r_key)
+                o = r.get("owner")
+                if o and o not in seen_range_owners:
+                    seen_range_owners.add(o)
                     combined_ranges.append(r)
 
+        combined_tasks: list[PaperTask] = []
+        seen_tasks: set[tuple[str, str]] = set()
+        for s in stats_list:
+            sc = s.get("scope", {})
             for t in sc.get("paper_tasks", []):
                 t_key = (t["owner"], t["arxiv_id"])
                 if t_key not in seen_tasks:
                     seen_tasks.add(t_key)
                     combined_tasks.append(t)
 
+        task_owners = sorted({t["owner"] for t in combined_tasks})
+
+        # by_owner: only owners appearing in paper_tasks (if no papers, by_owner = {})
+        by_owner: dict[Owner, Summary] = {}
+        for s in stats_list:
             for owner, owner_summary in s.get("by_owner", {}).items():
-                by_owner[owner] = deepcopy(owner_summary)
+                if owner in task_owners:
+                    by_owner[owner] = deepcopy(owner_summary)
 
-        # Aggregate overall summary by summing raw counts across all owners
-        total_discovered = sum(s["papers_discovered"] for s in by_owner.values())
-        total_meta_complete = sum(s["metadata_complete_papers"] for s in by_owner.values())
-        total_complete = sum(s["papers_complete"] for s in by_owner.values())
+        # 4. Discovery complete requires all 5 assigned ranges present and finished
+        covers_all = sorted({c["owner"] for c in combined_ranges}) == sorted(OWNERS)
+        discovery_complete = covers_all and all(s.get("scope", {}).get("discovery_complete", False) for s in stats_list)
 
-        total_src_expected = sum(s["source_versions_expected"] for s in by_owner.values())
-        total_src_success = sum(s["source_versions_success"] for s in by_owner.values())
-        total_src_unsupported = sum(s["source_versions_unsupported"] for s in by_owner.values())
-        total_src_unresolved = sum(s["source_versions_unresolved"] for s in by_owner.values())
-
-        total_ref_fully_fetched = sum(s["references_fully_fetched_papers"] for s in by_owner.values())
-        total_ref_meta_complete = sum(s["references_metadata_complete_papers"] for s in by_owner.values())
-        total_ref_arxiv = sum(s["references_arxiv_total"] for s in by_owner.values())
-        total_ref_complete = sum(s["references_complete_total"] for s in by_owner.values())
-
-        # Weighted byte means using source_size_sample_count as weight
-        total_size_samples = sum(s["source_size_sample_count"] for s in by_owner.values())
-        weighted_extracted_sum = sum(
-            (s["mean_extracted_bytes_before_filter"] or 0.0) * s["source_size_sample_count"]
-            for s in by_owner.values()
-            if s["mean_extracted_bytes_before_filter"] is not None
-        )
-        weighted_retained_sum = sum(
-            (s["mean_retained_source_bytes"] or 0.0) * s["source_size_sample_count"]
-            for s in by_owner.values()
-            if s["mean_retained_source_bytes"] is not None
-        )
-
-        overall_summary: Summary = {
-            "papers_discovered": total_discovered,
-            "metadata_complete_papers": total_meta_complete,
-            "papers_complete": total_complete,
-            "paper_success_rate": _safe_div(total_complete, total_discovered),
-            "source_versions_expected": total_src_expected,
-            "source_versions_success": total_src_success,
-            "source_versions_unsupported": total_src_unsupported,
-            "source_versions_unresolved": total_src_unresolved,
-            "references_fully_fetched_papers": total_ref_fully_fetched,
-            "references_query_success_rate": _safe_div(total_ref_fully_fetched, total_discovered),
-            "references_metadata_complete_papers": total_ref_meta_complete,
-            "metadata_success_rate": _safe_div(total_meta_complete, total_discovered),
-            "source_success_rate": _safe_div(total_src_success, total_src_expected),
-            "references_arxiv_total": total_ref_arxiv,
-            "references_complete_total": total_ref_complete,
-            "reference_metadata_success_rate": _safe_div(total_ref_complete, total_ref_arxiv),
-            "mean_arxiv_references_per_paper": _safe_div(total_ref_arxiv, total_ref_fully_fetched),
-            "source_size_sample_count": total_size_samples,
-            "mean_extracted_bytes_before_filter": _safe_div(weighted_extracted_sum, total_size_samples),
-            "mean_retained_source_bytes": _safe_div(weighted_retained_sum, total_size_samples),
-        }
+        # versions_complete: must be false when there are no papers
+        versions_complete = bool(combined_tasks) and all(s.get("scope", {}).get("versions_complete", False) for s in stats_list)
 
         aggregated_scope: Scope = {
             "ranges": combined_ranges,
             "paper_tasks": combined_tasks,
-            "discovery_complete": all(s.get("scope", {}).get("discovery_complete", False) for s in stats_list),
-            "versions_complete": all(s.get("scope", {}).get("versions_complete", False) for s in stats_list),
-            "owner_count": len(seen_owners),
+            "discovery_complete": discovery_complete,
+            "versions_complete": versions_complete,
+            "owner_count": len(task_owners),
             "paper_count": len(combined_tasks),
         }
+
+        # 5. Combined summary
+        if by_owner:
+            overall_summary = combine_summaries(list(by_owner.values()))
+        else:
+            overall_summary = {
+                "papers_discovered": 0,
+                "metadata_complete_papers": 0,
+                "papers_complete": 0,
+                "paper_success_rate": None,
+                "source_versions_expected": 0,
+                "source_versions_success": 0,
+                "source_versions_unsupported": 0,
+                "source_versions_unresolved": 0,
+                "references_fully_fetched_papers": 0,
+                "references_query_success_rate": None,
+                "references_metadata_complete_papers": 0,
+                "metadata_success_rate": None,
+                "source_success_rate": None,
+                "references_arxiv_total": 0,
+                "references_complete_total": 0,
+                "reference_metadata_success_rate": None,
+                "mean_arxiv_references_per_paper": None,
+                "source_size_sample_count": 0,
+                "mean_extracted_bytes_before_filter": None,
+                "mean_retained_source_bytes": None,
+            }
+
+        # 6. Sources and missing owners
+        if sources is not None:
+            col_sources = sources
+            present_owners = {o for m in col_sources for o in m.get("owners", [])}
+        else:
+            col_sources = []
+            present_owners = set()
+            for r in combined_ranges:
+                o = r["owner"]
+                present_owners.add(o)
+                col_sources.append({
+                    "snapshot_id": f"snap-{o}",
+                    "run_id": f"run-{o}",
+                    "owners": [o],
+                    "exporter_commit": "0" * 40,
+                    "root": f"snap-{o}/corpus",
+                    "manifest_path": f"snap-{o}/manifest.json",
+                })
+
+        missing = [o for o in ASSIGNED if o not in present_owners]
 
         col_stats: CollectionStatistics = {
             "format_version": 1,
             "kind": "arxiv-collection-statistics",
-            "schema_version": "1.2",
+            "schema_version": SCHEMA_VERSION,
             "collection_id": cid,
             "is_mock": is_mock,
-            "sources": sources or [],
+            "sources": col_sources,
             "scope": aggregated_scope,
-            "missing_owners": missing_owners,
+            "missing_owners": missing,
             "summary": overall_summary,
             "by_owner": by_owner,
         }
-        # Keep run_id for backward compatibility
-        col_stats["run_id"] = cid  # type: ignore
+
+        # Check against schema validator
+        problems = validate_pipeline_document(col_stats, "collection-statistics")
+        if problems:
+            raise ValueError("Collection statistics are inconsistent: " + problems[0])
 
         return col_stats
 

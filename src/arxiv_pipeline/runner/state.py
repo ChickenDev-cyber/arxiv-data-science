@@ -2,7 +2,10 @@
 from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # type: ignore
 import json
 from pathlib import Path
 import sqlite3
@@ -26,11 +29,12 @@ class OutputLock:
         self.root.mkdir(parents=True, exist_ok=True)
         path = safe_path(self.root, ".runner.lock")
         self.stream = path.open("a+")
-        try:
-            fcntl.flock(self.stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            self.stream.close(); self.stream = None
-            raise ValueError("Another runner holds this output root") from None
+        if fcntl is not None:
+            try:
+                fcntl.flock(self.stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                self.stream.close(); self.stream = None
+                raise ValueError('Another runner holds this output root') from None
         return self
 
     def __exit__(self, *args):
