@@ -1,0 +1,13 @@
+{
+  "run_id": "baseline-001",
+  "wall_seconds": 12.45,
+  "discovery_seconds": 1.25,
+  "mean_paper_seconds": 2.35,
+  "min_paper_seconds": 1.82,
+  "max_paper_seconds": 2.88,
+  "total_paper_seconds": 4.7,
+  "per_paper_seconds": {
+    "2301.00001": 2.88,
+    "2301.00002": 1.82
+  }
+}

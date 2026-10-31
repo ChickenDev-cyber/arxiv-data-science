@@ -511,7 +511,18 @@ class TestStatistics(unittest.TestCase):
         service = StatisticsService(check_validation=False)
         # 1. Only 2 ranges -> discovery_complete MUST be False
         stats1 = service.build_statistics(self.test_root, self.run_id)
-        col_partial = service.aggregate_statistics([stats1], collection_id="partial-col")
+        mock_sources = [
+            {
+                "snapshot_id": f"snap-{o}",
+                "run_id": f"run-{o}",
+                "owners": [o],
+                "exporter_commit": "a" * 40,
+                "root": f"snap-{o}/corpus",
+                "manifest_path": f"snap-{o}/manifest.json",
+            }
+            for o in ("hoang", "trong")
+        ]
+        col_partial = service.aggregate_statistics([stats1], collection_id="partial-col", sources=mock_sources)
         self.assertFalse(col_partial["scope"]["discovery_complete"])
 
         # 2. Build 5 distinct ranges for all 5 canonical owners
@@ -523,6 +534,7 @@ class TestStatistics(unittest.TestCase):
             "huynh-nhi": "2409.03594",
         }
         stats_all = []
+        full_sources = []
         for owner in OWNERS:
             st = service.build_statistics(self.test_root, self.run_id)
             aid = canonical_ids[owner]
@@ -536,17 +548,51 @@ class TestStatistics(unittest.TestCase):
             }
             st["by_owner"] = {owner: compute_summary(st["scope"]["paper_tasks"], [])}
             stats_all.append(st)
+            full_sources.append({
+                "snapshot_id": f"snap-{owner}",
+                "run_id": f"run-{owner}",
+                "owners": [owner],
+                "exporter_commit": "b" * 40,
+                "root": f"snap-{owner}/corpus",
+                "manifest_path": f"snap-{owner}/manifest.json",
+            })
 
-        col_full = service.aggregate_statistics(stats_all, collection_id="full-col")
+        col_full = service.aggregate_statistics(stats_all, collection_id="full-col", sources=full_sources)
         self.assertTrue(col_full["scope"]["discovery_complete"])
         self.assertEqual(len(col_full["scope"]["ranges"]), 5)
         self.assertEqual(col_full["missing_owners"], [])
+
+    def test_aggregate_statistics_rejects_missing_sources_without_collection(self):
+        """Aggregate must reject calls without verified sources and never synthesize fake IDs or zero commits."""
+        service = StatisticsService(check_validation=False)
+        stats = service.build_statistics(self.test_root, self.run_id)
+        with self.assertRaises(ValueError) as ctx:
+            service.aggregate_statistics([stats])
+        self.assertIn("requires verified sources", str(ctx.exception))
 
     def test_aggregate_statistics_schema_conformance_no_run_id(self):
         """CollectionStatistics must NOT contain run_id and must pass validate_pipeline_document."""
         service = StatisticsService(check_validation=False)
         stats = service.build_statistics(self.test_root, self.run_id)
-        col_stats = service.aggregate_statistics([stats], collection_id="valid-col")
+        valid_sources = [
+            {
+                "snapshot_id": "snap-hoang",
+                "run_id": "run-hoang",
+                "owners": ["hoang"],
+                "exporter_commit": "c" * 40,
+                "root": "snap-hoang/corpus",
+                "manifest_path": "snap-hoang/manifest.json",
+            },
+            {
+                "snapshot_id": "snap-trong",
+                "run_id": "run-trong",
+                "owners": ["trong"],
+                "exporter_commit": "d" * 40,
+                "root": "snap-trong/corpus",
+                "manifest_path": "snap-trong/manifest.json",
+            },
+        ]
+        col_stats = service.aggregate_statistics([stats], collection_id="valid-col", sources=valid_sources)
 
         self.assertNotIn("run_id", col_stats)
         self.assertEqual(col_stats["format_version"], 1)
@@ -715,6 +761,22 @@ class TestStatistics(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         stat_file = output_dir / f"{self.run_id}.json"
         self.assertTrue(stat_file.exists())
+
+    def test_cli_execution_with_multiple_output_roots(self):
+        """CLI must support multiple individual output roots separately."""
+        output_dir = self.test_root / "multi_stats_out"
+        root2 = self.test_root / "second_root"
+        (root2 / "runs" / "run-two").mkdir(parents=True, exist_ok=True)
+        (root2 / "runs" / "run-two" / "scope.json").write_text(json.dumps(self.scope_data), encoding="utf-8")
+        (root2 / "runs" / "run-two" / "accepted_results.jsonl").write_text("", encoding="utf-8")
+        (root2 / "runs" / "run-two" / "validation.json").write_text(json.dumps({"valid": True, "issues": []}), encoding="utf-8")
+
+        exit_code = cli_main([
+            "--output-roots", str(self.test_root), str(root2),
+            "--output-dir", str(output_dir),
+            "--no-validation",
+        ])
+        self.assertEqual(exit_code, 0)
 
 
 if __name__ == "__main__":

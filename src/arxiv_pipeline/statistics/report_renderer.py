@@ -223,3 +223,21 @@ def render_report_markdown(
     lines.append("")
 
     return "\n".join(lines)
+
+
+def render_report_from_files(
+    stats_file: Path,
+    bench_file: Path | None = None,
+    timing_file: Path | None = None,
+) -> str:
+    """Load stats, benchmark and sidecar timing files, returning formatted markdown report."""
+    stats = json.loads(stats_file.read_text(encoding="utf-8"))
+    bench = json.loads(bench_file.read_text(encoding="utf-8")) if bench_file and bench_file.exists() else None
+
+    if timing_file is None and bench_file is not None:
+        candidate = bench_file.with_name(bench_file.stem + "-timing.json")
+        if candidate.exists():
+            timing_file = candidate
+
+    timings = json.loads(timing_file.read_text(encoding="utf-8")) if timing_file and timing_file.exists() else None
+    return render_report_markdown(stats, bench, timings)

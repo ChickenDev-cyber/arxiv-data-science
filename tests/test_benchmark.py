@@ -264,5 +264,97 @@ class TestBenchmark(unittest.TestCase):
         self.assertTrue(bench_file.exists())
 
 
+    def test_paper_timing_measures_elapsed_time_not_sum_of_durations(self):
+        """Paper timing must be measured by elapsed time (max(finish) - min(start)), not sum of durations."""
+        logs_dir = self.test_root / "logs" / "elapsed-test"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        events = [
+            {
+                "step": "metadata",
+                "arxiv_id": "2501.99999",
+                "duration_seconds": 1.0,
+                "status": "success",
+                "started_at": "2026-10-31T12:00:00Z",
+                "finished_at": "2026-10-31T12:00:02Z",
+            },
+            {
+                "step": "sources",
+                "arxiv_id": "2501.99999",
+                "duration_seconds": 2.0,
+                "status": "success",
+                "started_at": "2026-10-31T12:00:03Z",
+                "finished_at": "2026-10-31T12:00:08Z",
+            },
+            {
+                "step": "references",
+                "arxiv_id": "2501.99999",
+                "duration_seconds": 1.5,
+                "status": "success",
+                "started_at": "2026-10-31T12:00:09Z",
+                "finished_at": "2026-10-31T12:00:15Z",
+            },
+        ]
+        with open(logs_dir / "events.jsonl", "w", encoding="utf-8") as f:
+            for item in events:
+                f.write(json.dumps(item) + "\n")
+
+        timings = extract_run_timings(self.test_root, "elapsed-test")
+        # Elapsed time: 12:00:15 - 12:00:00 = 15.0s, NOT sum of durations (4.5s)
+        self.assertEqual(timings["per_paper_seconds"]["2501.99999"], 15.0)
+        self.assertEqual(timings["mean_paper_seconds"], 15.0)
+
+    def test_terminate_process_tree_kills_children_and_grandchildren(self):
+        """terminate_process_tree must terminate the entire tree (children + grandchildren) and wait for them."""
+        from arxiv_pipeline.benchmark.runner import terminate_process_tree
+        import subprocess, sys
+        # Script spawns a grandchild sleeping
+        child_code = (
+            "import subprocess, sys, time\n"
+            "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+            "print(p.pid, flush=True)\n"
+            "time.sleep(60)\n"
+        )
+        proc = subprocess.Popen([sys.executable, "-c", child_code], stdout=subprocess.PIPE, text=True)
+        try:
+            grandchild_pid_str = proc.stdout.readline().strip()
+            grandchild_pid = int(grandchild_pid_str)
+        except Exception:
+            proc.kill()
+            if proc.stdout: proc.stdout.close()
+            return
+        finally:
+            if proc.stdout: proc.stdout.close()
+
+        # Now terminate the entire tree
+        terminate_process_tree(proc, timeout=3.0)
+
+        # Check that parent is terminated
+        self.assertIsNotNone(proc.poll())
+
+        # Check that grandchild is also terminated
+        import psutil
+        try:
+            gp = psutil.Process(grandchild_pid)
+            self.assertFalse(gp.is_running() and gp.status() != psutil.STATUS_ZOMBIE)
+        except (psutil.NoSuchProcess, Exception):
+            pass
+
+    def test_timing_sidecar_file_created(self):
+        """Benchmark runner saves a sidecar timing JSON file alongside the benchmark JSON."""
+        service = BenchmarkService()
+        out_dir = self.test_root / "sidecar_out"
+        _, bench = service.benchmark_callable(
+            lambda: 0,
+            run_id="sidecar-test",
+            output_root=self.test_root,
+            output_dir=out_dir,
+        )
+        timing_file = out_dir / "sidecar-test-timing.json"
+        self.assertTrue(timing_file.exists())
+        timing_data = json.loads(timing_file.read_text(encoding="utf-8"))
+        self.assertIn("wall_seconds", timing_data)
+        self.assertIn("per_paper_seconds", timing_data)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -6,6 +6,11 @@ try:
     import fcntl
 except ImportError:
     fcntl = None  # type: ignore
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None  # type: ignore
 import json
 from pathlib import Path
 import sqlite3
@@ -35,10 +40,26 @@ class OutputLock:
             except OSError:
                 self.stream.close(); self.stream = None
                 raise ValueError('Another runner holds this output root') from None
+        elif msvcrt is not None:
+            try:
+                self.stream.seek(0)
+                msvcrt.locking(self.stream.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError:
+                self.stream.close(); self.stream = None
+                raise ValueError('Another runner holds this output root') from None
+        else:
+            self.stream.close(); self.stream = None
+            raise OSError("Environment does not support file locking (fcntl and msvcrt are unavailable)")
         return self
 
     def __exit__(self, *args):
         if self.stream is not None:
+            if msvcrt is not None and fcntl is None:
+                try:
+                    self.stream.seek(0)
+                    msvcrt.locking(self.stream.fileno(), msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
             self.stream.close(); self.stream = None
 
 

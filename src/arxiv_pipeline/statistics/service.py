@@ -371,18 +371,26 @@ class StatisticsService(OwnerSummarizer):
 
     def aggregate_statistics(
         self,
-        stats_or_collection: list[Statistics] | VerifiedCollection,
+        stats_or_collection: list[Statistics] | VerifiedCollection | Path | str,
         collection_id: str = "team-collection",
         sources: list[CollectionMember] | None = None,
         aggregated_run_id: str | None = None,
     ) -> CollectionStatistics:
         """Aggregate multiple single-run statistics across team members into a unified CollectionStatistics.
 
-        Supports VerifiedCollection directly via CollectionStatisticsBuilder.
+        Sources must come from a verified collection or verified members;
+        never synthesizes fake snapshot IDs, fake run IDs, or zero-filled commits.
+        Supports VerifiedCollection or collection root path directly via CollectionStatisticsBuilder.
         Rejects mixing mock and real runs.
         Rejects duplicate owners across runs.
         Outputs exact CollectionStatistics conforming to pipeline contracts (without fake run_id).
         """
+        if isinstance(stats_or_collection, (str, Path)):
+            from ..collection.reader import CollectionDirectoryReader
+            reader = CollectionDirectoryReader(self.run_reader or RunInspector())
+            with reader.open(Path(stats_or_collection)) as v_col:
+                return CollectionStatisticsBuilder(self).build(v_col)
+
         if isinstance(stats_or_collection, VerifiedCollection):
             return CollectionStatisticsBuilder(self).build(stats_or_collection)
 
@@ -485,19 +493,10 @@ class StatisticsService(OwnerSummarizer):
             col_sources = sources
             present_owners = {o for m in col_sources for o in m.get("owners", [])}
         else:
-            col_sources = []
-            present_owners = set()
-            for r in combined_ranges:
-                o = r["owner"]
-                present_owners.add(o)
-                col_sources.append({
-                    "snapshot_id": f"snap-{o}",
-                    "run_id": f"run-{o}",
-                    "owners": [o],
-                    "exporter_commit": "0" * 40,
-                    "root": f"snap-{o}/corpus",
-                    "manifest_path": f"snap-{o}/manifest.json",
-                })
+            raise ValueError(
+                "Aggregate statistics requires verified sources from a collection. "
+                "Synthesizing fake snapshot IDs, fake run IDs, or zero-filled commits is not permitted."
+            )
 
         missing = [o for o in ASSIGNED if o not in present_owners]
 

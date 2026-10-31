@@ -23,22 +23,22 @@
     ]
   },
   "environment": {
-    "os": "Windows 10",
-    "os_version": "10.0.19045",
-    "architecture": "AMD64",
-    "processor": "Intel64 Family 6 Model 78 Stepping 3, GenuineIntel",
-    "cpu_count": "4",
-    "python_version": "3.14.1",
+    "os": "Linux 6.1.85+",
+    "os_version": "Ubuntu 22.04 LTS",
+    "architecture": "x86_64",
+    "processor": "Intel(R) Xeon(R) CPU @ 2.20GHz",
+    "cpu_count": "2",
+    "python_version": "3.10.12",
     "python_implementation": "CPython",
-    "total_ram_bytes": "4179533824"
+    "total_ram_bytes": "13612879872"
   },
   "cache_mode": "cold",
-  "wall_seconds": 0.0,
-  "peak_ram_bytes": null,
-  "peak_disk_bytes": 1012,
-  "final_output_bytes": 1012,
+  "wall_seconds": 12.45,
+  "peak_ram_bytes": 45088768,
+  "peak_disk_bytes": 153600,
+  "final_output_bytes": 148480,
   "method": "process_tree_rss (psutil)",
-  "mean_ram_bytes": null,
+  "mean_ram_bytes": 38273024,
   "sampling_interval_seconds": 0.1,
   "exit_code": 0
 }

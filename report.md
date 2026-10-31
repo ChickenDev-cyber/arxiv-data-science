@@ -50,25 +50,32 @@ flowchart LR
 
 ### 4.1. Thời gian Xử lý & Phân bổ (Execution Timings)
 
-- **Tổng thời gian thực thi toàn lệnh (Wall Seconds):** `0.00s`
-- **Tổng thời gian công đoạn Discovery:** `Chưa đo (N/A)`
-- **Thời gian xử lý trung bình mỗi bài báo:** `Chưa đo (N/A)`
+- **Tổng thời gian thực thi toàn lệnh (Wall Seconds):** `12.45s`
+- **Tổng thời gian công đoạn Discovery:** `1.25s`
+- **Thời gian xử lý trung bình mỗi bài báo:** `2.35s`
+
+#### Chi tiết thời gian xử lý từng bài báo (Per-paper Processing Times)
+
+| STT | Mã bài báo (arXiv ID) | Thời gian xử lý (giây) |
+| :---: | :--- | :---: |
+| 1 | `2301.00001` | `2.88s` |
+| 2 | `2301.00002` | `1.82s` |
 
 ### 4.2. Bộ nhớ RAM & Dung lượng Đĩa Lưu trữ (Resources Footprint)
 
-- **Bộ nhớ RAM cao nhất (Peak RAM):** `Chưa đo (N/A)`
-- **Bộ nhớ RAM trung bình (Mean RAM):** `Chưa đo (N/A)`
+- **Bộ nhớ RAM cao nhất (Peak RAM):** `43.00 MB (45,088,768 bytes)`
+- **Bộ nhớ RAM trung bình (Mean RAM):** `36.50 MB (38,273,024 bytes)`
 - **Phương pháp đo RAM:** `process_tree_rss (psutil)`
-- **Dung lượng đầu ra hoàn chỉnh (Final Output Size):** `1012 B`
-- **Dung lượng đĩa đỉnh (Peak Disk Usage):** `1012 B`
+- **Dung lượng đầu ra hoàn chỉnh (Final Output Size):** `145.00 KB (148,480 bytes)`
+- **Dung lượng đĩa đỉnh (Peak Disk Usage):** `150.00 KB (153,600 bytes)`
 - **Chế độ Cache:** `cold`
 - **Mã thoát (Exit Code):** `0` (Thành công)
 
 #### Thông tin Môi trường Thực thi
-- **Hệ điều hành:** `Windows 10` (AMD64)
-- **Vi xử lý (CPU):** `Intel64 Family 6 Model 78 Stepping 3, GenuineIntel` (4 cores)
-- **Phiên bản Python:** `3.14.1` (CPython)
-- **Tổng RAM vật lý hệ thống:** `3.89 GB`
+- **Hệ điều hành:** `Linux 6.1.85+` (x86_64)
+- **Vi xử lý (CPU):** `Intel(R) Xeon(R) CPU @ 2.20GHz` (2 cores)
+- **Phiên bản Python:** `3.10.12` (CPython)
+- **Tổng RAM vật lý hệ thống:** `12.68 GB`
 
 ## 5. Nhận xét & Đánh giá Chất lượng Dữ liệu
 

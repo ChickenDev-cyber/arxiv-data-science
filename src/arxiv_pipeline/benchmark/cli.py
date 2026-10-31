@@ -56,12 +56,14 @@ def main(argv: list[str] | None = None) -> int:
     service = BenchmarkService(default_interval=args.interval)
 
     try:
+        timing_file = args.output_dir / f"{args.run_id}-timing.json"
         if args.cmd:
             print(f"Benchmarking command: {args.cmd}")
             bench = service.benchmark_command(
                 cmd=args.cmd,
                 run_id=args.run_id,
                 output_root=args.output_root,
+                output_dir=args.output_dir,
                 cache_mode=args.cache_mode,
                 interval=args.interval,
             )
@@ -75,9 +77,31 @@ def main(argv: list[str] | None = None) -> int:
                 cache_mode=args.cache_mode,
                 sampling_interval_seconds=args.interval,
             )
+            out_file = args.output_dir / f"{args.run_id}.json"
+            service.save_benchmark(bench, out_file)
+            from .runner import extract_run_timings
+            timings = extract_run_timings(args.output_root, args.run_id)
+            timings_payload = {
+                "run_id": args.run_id,
+                "wall_seconds": None,
+                "discovery_seconds": timings.get("discovery_seconds"),
+                "mean_paper_seconds": timings.get("mean_paper_seconds"),
+                "min_paper_seconds": timings.get("min_paper_seconds"),
+                "max_paper_seconds": timings.get("max_paper_seconds"),
+                "total_paper_seconds": timings.get("total_paper_elapsed_seconds"),
+                "per_paper_seconds": timings.get("per_paper_seconds", {}),
+            }
+            service.save_timing(timings_payload, timing_file)
 
         out_file = args.output_dir / f"{args.run_id}.json"
-        service.save_benchmark(bench, out_file)
+
+        # Load sidecar timing file to print real timings
+        timings: dict[str, Any] = {}
+        if timing_file.exists():
+            try:
+                timings = json.loads(timing_file.read_text(encoding="utf-8"))
+            except Exception:
+                pass
 
         wall_sec = bench.get("wall_seconds")
         wall_str = f"{wall_sec:.2f}s" if wall_sec and wall_sec > 0 else "N/A (Not measured)"
@@ -94,11 +118,14 @@ def main(argv: list[str] | None = None) -> int:
         peak_disk = bench.get("peak_disk_bytes")
         disk_str = f"{peak_disk / 1024:.2f} KB" if peak_disk and peak_disk > 0 else "N/A (Not measured)"
 
-        timings = bench.get("timing") or {}
-        disc_str = f"{timings.get('discovery_seconds'):.2f}s" if timings.get('discovery_seconds') else "N/A (Not measured)"
-        mean_p_str = f"{timings.get('mean_paper_seconds'):.2f}s" if timings.get('mean_paper_seconds') else "N/A (Not measured)"
+        disc_sec = timings.get("discovery_seconds")
+        disc_str = f"{disc_sec:.2f}s" if disc_sec is not None else "N/A (Not measured)"
+        mean_p_sec = timings.get("mean_paper_seconds")
+        mean_p_str = f"{mean_p_sec:.2f}s" if mean_p_sec is not None else "N/A (Not measured)"
 
         print(f"[SUCCESS] Benchmark report saved to: {out_file}")
+        if timing_file.exists():
+            print(f"[SUCCESS] Timing sidecar report saved to: {timing_file}")
         print(f"   - Wall Time: {wall_str}")
         print(f"   - Discovery Time: {disc_str}")
         print(f"   - Mean Paper Time: {mean_p_str}")

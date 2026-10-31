@@ -92,24 +92,51 @@ def get_pipeline_process_ram(pids: int | Iterable[int] | None = None) -> tuple[i
         except Exception:
             pass
 
-    # 2. Linux /proc/<pid>/status: VmRSS
-    total_proc_rss = 0
-    found_any = False
-    for r_pid in root_pids:
-        status_file = Path(f"/proc/{r_pid}/status")
-        if status_file.exists():
-            try:
-                for line in status_file.read_text().splitlines():
-                    if line.startswith("VmRSS:"):
-                        parts = line.split()
-                        total_proc_rss += int(parts[1]) * 1024
-                        found_any = True
-                        break
-            except Exception:
-                pass
+    # 2. Linux /proc: Discover full process tree under root_pids via /proc/<pid>/stat PPID
+    proc_dir = Path("/proc")
+    if proc_dir.exists():
+        try:
+            all_tree_pids = set(root_pids)
+            ppid_map: dict[int, list[int]] = {}
+            for entry in proc_dir.iterdir():
+                if entry.name.isdigit():
+                    try:
+                        stat_text = (entry / "stat").read_text()
+                        r_paren = stat_text.rfind(")")
+                        if r_paren != -1:
+                            tokens = stat_text[r_paren + 2:].split()
+                            ppid = int(tokens[1])
+                            pid = int(entry.name)
+                            ppid_map.setdefault(ppid, []).append(pid)
+                    except (OSError, IndexError, ValueError):
+                        pass
 
-    if found_any:
-        return total_proc_rss, "process_rss (/proc)"
+            queue = list(root_pids)
+            while queue:
+                curr = queue.pop(0)
+                for child_pid in ppid_map.get(curr, []):
+                    if child_pid not in all_tree_pids:
+                        all_tree_pids.add(child_pid)
+                        queue.append(child_pid)
+
+            total_proc_rss = 0
+            found_any = False
+            for p in all_tree_pids:
+                status_file = proc_dir / str(p) / "status"
+                if status_file.exists():
+                    try:
+                        for line in status_file.read_text().splitlines():
+                            if line.startswith("VmRSS:"):
+                                parts = line.split()
+                                total_proc_rss += int(parts[1]) * 1024
+                                found_any = True
+                                break
+                    except Exception:
+                        pass
+            if found_any:
+                return total_proc_rss, "process_tree_rss (/proc)"
+        except Exception:
+            pass
 
     return None, "unsupported"
 

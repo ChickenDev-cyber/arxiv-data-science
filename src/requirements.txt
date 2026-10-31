@@ -1,1 +1,3 @@
 # T1 and its offline tests use only the Python standard library (Python >= 3.10).
+# T6 resource profiling and benchmark require psutil for full process tree RAM monitoring:
+psutil>=5.9.0
