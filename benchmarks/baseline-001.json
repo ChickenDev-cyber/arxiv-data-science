@@ -1,0 +1,52 @@
+{
+  "schema_version": "1.2",
+  "is_mock": true,
+  "run_id": "baseline-001",
+  "scope": {
+    "run_id": "baseline-001",
+    "is_mock": true,
+    "ranges": [
+      {
+        "start": "2301.00001",
+        "end": "2301.00003"
+      }
+    ],
+    "paper_tasks": [
+      {
+        "arxiv_id": "2301.00001",
+        "owner": "Khang"
+      },
+      {
+        "arxiv_id": "2301.00002",
+        "owner": "ManhNhi"
+      }
+    ]
+  },
+  "environment": {
+    "os": "Windows 10",
+    "os_version": "10.0.19045",
+    "architecture": "AMD64",
+    "processor": "Intel64 Family 6 Model 78 Stepping 3, GenuineIntel",
+    "cpu_count": "4",
+    "python_version": "3.14.1",
+    "python_implementation": "CPython",
+    "total_ram_bytes": "4179533824"
+  },
+  "cache_mode": "cold",
+  "wall_seconds": 0.0,
+  "peak_ram_bytes": null,
+  "peak_disk_bytes": 1012,
+  "final_output_bytes": 1012,
+  "method": "process_tree_rss (psutil)",
+  "mean_ram_bytes": null,
+  "sampling_interval_seconds": 0.1,
+  "exit_code": 0,
+  "timing": {
+    "discovery_seconds": null,
+    "mean_paper_seconds": null,
+    "min_paper_seconds": null,
+    "max_paper_seconds": null,
+    "per_paper_seconds": {},
+    "total_paper_task_seconds": null
+  }
+}

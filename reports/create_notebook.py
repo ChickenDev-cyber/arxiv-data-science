@@ -1,0 +1,119 @@
+"""Generate report.ipynb notebook for Jupyter Book.
+
+Follows strict guidelines:
+- Never coerce None/null to 0 or 0.00. Unmeasured values display as 'N/A'.
+- Official benchmarks run on Google Colab CPU (Linux); Windows/mock used for testing.
+"""
+
+import json
+from pathlib import Path
+import nbformat as nbf
+
+nb = nbf.v4.new_notebook()
+
+cells = [
+    nbf.v4.new_markdown_cell(
+        "# 📊 Báo cáo Khoa học & Benchmark Pipeline (Milestone 1)\n\n"
+        "Notebook này phân tích dữ liệu trực tiếp từ hệ thống pipeline thu thập bài báo arXiv theo chuẩn Schema 1.2.\n\n"
+        "> **Lưu ý quy chuẩn:** Benchmark chính thức chạy trên môi trường **Google Colab CPU** (Linux). Các số liệu chưa đo được biểu diễn là `N/A`, không quy đổi về `0`."
+    ),
+    nbf.v4.new_code_cell(
+        "import json\n"
+        "from pathlib import Path\n"
+        "import matplotlib.pyplot as plt\n"
+        "import sys\n\n"
+        "sys.path.insert(0, 'src')\n\n"
+        "stats_path = Path('statistics/baseline-001.json')\n"
+        "bench_path = Path('benchmarks/baseline-001.json')\n\n"
+        "with open(stats_path, 'r', encoding='utf-8') as f:\n"
+        "    stats = json.load(f)\n"
+        "with open(bench_path, 'r', encoding='utf-8') as f:\n"
+        "    bench = json.load(f)\n\n"
+        "summary = stats.get('summary', {})\n"
+        "paper_sr = summary.get('paper_success_rate')\n"
+        "paper_sr_str = f\"{paper_sr:.1%}\" if paper_sr is not None else \"N/A\"\n"
+        "ref_sr = summary.get('reference_metadata_success_rate')\n"
+        "ref_sr_str = f\"{ref_sr:.1%}\" if ref_sr is not None else \"N/A\"\n"
+        "mean_refs = summary.get('mean_arxiv_references_per_paper')\n"
+        "mean_refs_str = f\"{mean_refs:.1f}\" if mean_refs is not None else \"N/A\"\n\n"
+        "print(f\"Tổng số bài phát hiện: {summary.get('papers_discovered', 0):,}\")\n"
+        "print(f\"Số bài hoàn thành toàn diện: {summary.get('papers_complete', 0):,} ({paper_sr_str})\")\n"
+        "print(f\"Trích dẫn arXiv: {summary.get('references_arxiv_total', 0):,} (Tỷ lệ đủ metadata: {ref_sr_str}, TB: {mean_refs_str} ref/bài)\")"
+    ),
+    nbf.v4.new_markdown_cell(
+        "## 1. Trực quan hóa Tiến độ Thu thập theo Thành viên"
+    ),
+    nbf.v4.new_code_cell(
+        "by_owner = stats.get('by_owner', {})\n"
+        "owners = sorted(by_owner.keys())\n"
+        "owner_labels = [o.capitalize() for o in owners]\n\n"
+        "fig, ax = plt.subplots(figsize=(8, 4.5), dpi=120)\n"
+        "discovered = [by_owner[o].get('papers_discovered', 0) for o in owners]\n"
+        "complete = [by_owner[o].get('papers_complete', 0) for o in owners]\n\n"
+        "x = range(len(owners))\n"
+        "width = 0.35\n"
+        "ax.bar([i - width/2 for i in x], discovered, width, label='Phát hiện', color='#3498db')\n"
+        "ax.bar([i + width/2 for i in x], complete, width, label='Hoàn tất', color='#2ecc71')\n\n"
+        "ax.set_ylabel('Số lượng bài báo')\n"
+        "ax.set_title('Tiến độ Thu thập & Hoàn thiện theo Thành viên', fontweight='bold')\n"
+        "ax.set_xticks(list(x))\n"
+        "ax.set_xticklabels(owner_labels)\n"
+        "ax.legend()\n"
+        "plt.tight_layout()\n"
+        "plt.show()"
+    ),
+    nbf.v4.new_markdown_cell(
+        "## 2. Tối ưu hóa Dung lượng Nguồn TeX/BibTeX"
+    ),
+    nbf.v4.new_code_cell(
+        "# Dung lượng chỉ tính khi có số đo; hiển thị N/A nếu chưa đo\n"
+        "extracted_raw = [by_owner[o].get('mean_extracted_bytes_before_filter') for o in owners]\n"
+        "retained_raw = [by_owner[o].get('mean_retained_source_bytes') for o in owners]\n\n"
+        "extracted_kb = [(e / 1024) if e is not None else 0.0 for e in extracted_raw]\n"
+        "retained_kb = [(r / 1024) if r is not None else 0.0 for r in retained_raw]\n\n"
+        "fig, ax = plt.subplots(figsize=(7, 4), dpi=120)\n"
+        "bars1 = ax.bar([i - 0.15 for i in x], extracted_kb, 0.3, label='Trước lọc (Tổng giải nén)', color='#e74c3c')\n"
+        "bars2 = ax.bar([i + 0.15 for i in x], retained_kb, 0.3, label='Sau lọc (Chỉ TeX/BibTeX)', color='#27ae60')\n\n"
+        "for i, (e_val, r_val) in enumerate(zip(extracted_raw, retained_raw)):\n"
+        "    if e_val is None:\n"
+        "        ax.text(i, 5, 'N/A', ha='center', va='bottom', fontsize=9, color='#888888', fontweight='bold')\n\n"
+        "ax.set_ylabel('Dung lượng trung bình (KB)')\n"
+        "ax.set_title('Dung lượng Nguồn Trước vs. Sau khi Lọc File Phụ trợ', fontweight='bold')\n"
+        "ax.set_xticks(list(x))\n"
+        "ax.set_xticklabels(owner_labels)\n"
+        "ax.legend()\n"
+        "plt.tight_layout()\n"
+        "plt.show()"
+    ),
+    nbf.v4.new_markdown_cell(
+        "## 3. Hiệu năng & Tài nguyên Hệ thống"
+    ),
+    nbf.v4.new_code_cell(
+        "peak_ram = bench.get('peak_ram_bytes')\n"
+        "mean_ram = bench.get('mean_ram_bytes')\n"
+        "peak_disk = bench.get('peak_disk_bytes')\n"
+        "final_output = bench.get('final_output_bytes')\n"
+        "wall_sec = bench.get('wall_seconds')\n\n"
+        "peak_ram_str = f\"{peak_ram / (1024 * 1024):.2f} MB\" if peak_ram is not None else \"N/A\"\n"
+        "mean_ram_str = f\"{mean_ram / (1024 * 1024):.2f} MB\" if mean_ram is not None else \"N/A\"\n"
+        "peak_disk_str = f\"{peak_disk / 1024:.2f} KB\" if peak_disk is not None else \"N/A\"\n"
+        "final_output_str = f\"{final_output / 1024:.2f} KB\" if final_output is not None else \"N/A\"\n"
+        "wall_str = f\"{wall_sec:.2f}s\" if wall_sec is not None else \"N/A\"\n\n"
+        "print(f\"Thời gian thực thi toàn lệnh (Wall time): {wall_str}\")\n"
+        "print(f\"Bộ nhớ RAM cao nhất (Peak RSS): {peak_ram_str}\")\n"
+        "print(f\"Bộ nhớ RAM trung bình: {mean_ram_str}\")\n"
+        "print(f\"Phương pháp đo RAM: {bench.get('method', 'N/A')}\")\n"
+        "print(f\"Dung lượng đầu ra hoàn chỉnh: {final_output_str}\")\n"
+        "print(f\"Dung lượng đĩa đỉnh (Peak disk): {peak_disk_str}\")\n"
+        "print(f\"Mã thoát (Exit code): {bench.get('exit_code', 'N/A')}\")\n"
+        "print(f\"Hệ điều hành: {bench.get('environment', {}).get('os', 'Unknown')}\")\n"
+        "print(f\"CPU: {bench.get('environment', {}).get('processor', 'Unknown')}\")"
+    ),
+]
+
+nb.cells = cells
+
+with open("report.ipynb", "w", encoding="utf-8") as f:
+    nbf.write(nb, f)
+
+print("Generated report.ipynb successfully.")

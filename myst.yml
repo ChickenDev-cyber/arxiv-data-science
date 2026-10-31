@@ -1,0 +1,22 @@
+# See docs at: https://mystmd.org/guide/frontmatter
+version: 1
+project:
+  id: 3a0cfa53-9df3-4f60-b1c2-1a0a420bb4f8
+  title: "arXiv Data Science — Milestone 1"
+  description: "Báo cáo thống kê thu thập bài báo arXiv, phân tích chất lượng dữ liệu và đo lường tài nguyên hệ thống (Milestone 1 - HCMUS Nhập môn Khoa học Dữ liệu)."
+  authors:
+    - name: "Huy Hoàng"
+    - name: "Trọng"
+    - name: "Huỳnh Nhi"
+    - name: "Khang"
+    - name: "Mẫn Nhi"
+  github: https://github.com/ChickenDev-cyber/arxiv-data-science
+site:
+  template: book-theme
+toc:
+  - file: report.md
+    title: "Báo cáo Thống kê & Benchmark M1"
+  - file: report.ipynb
+    title: "Phân tích Trực quan (Notebook)"
+  - file: README.md
+    title: "Kiến trúc & Hướng dẫn Pipeline"

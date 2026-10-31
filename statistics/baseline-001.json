@@ -1,0 +1,137 @@
+{
+  "schema_version": "1.2",
+  "run_id": "baseline-001",
+  "is_mock": true,
+  "scope": {
+    "run_id": "baseline-001",
+    "is_mock": true,
+    "ranges": [
+      {
+        "start": "2301.00001",
+        "end": "2301.00003"
+      }
+    ],
+    "paper_tasks": [
+      {
+        "arxiv_id": "2301.00001",
+        "owner": "Khang"
+      },
+      {
+        "arxiv_id": "2301.00002",
+        "owner": "ManhNhi"
+      }
+    ]
+  },
+  "summary": {
+    "papers_discovered": 2,
+    "metadata_complete_papers": 0,
+    "papers_complete": 0,
+    "paper_success_rate": 0.0,
+    "source_versions_expected": 2,
+    "source_versions_success": 1,
+    "source_versions_unsupported": 0,
+    "source_versions_unresolved": 1,
+    "references_fully_fetched_papers": 1,
+    "references_query_success_rate": 0.5,
+    "references_metadata_complete_papers": 1,
+    "metadata_success_rate": 0.0,
+    "source_success_rate": 0.5,
+    "references_arxiv_total": 10,
+    "references_complete_total": 10,
+    "reference_metadata_success_rate": 1.0,
+    "mean_arxiv_references_per_paper": 10.0,
+    "source_size_sample_count": 1,
+    "mean_extracted_bytes_before_filter": 500000.0,
+    "mean_retained_source_bytes": 80000.0
+  },
+  "by_owner": {
+    "huynh-nhi": {
+      "papers_discovered": 0,
+      "metadata_complete_papers": 0,
+      "papers_complete": 0,
+      "paper_success_rate": null,
+      "source_versions_expected": 2,
+      "source_versions_success": 0,
+      "source_versions_unsupported": 0,
+      "source_versions_unresolved": 2,
+      "references_fully_fetched_papers": 0,
+      "references_query_success_rate": null,
+      "references_metadata_complete_papers": 0,
+      "metadata_success_rate": null,
+      "source_success_rate": 0.0,
+      "references_arxiv_total": 0,
+      "references_complete_total": 0,
+      "reference_metadata_success_rate": null,
+      "mean_arxiv_references_per_paper": null,
+      "source_size_sample_count": 0,
+      "mean_extracted_bytes_before_filter": null,
+      "mean_retained_source_bytes": null
+    },
+    "khang": {
+      "papers_discovered": 1,
+      "metadata_complete_papers": 0,
+      "papers_complete": 0,
+      "paper_success_rate": 0.0,
+      "source_versions_expected": 1,
+      "source_versions_success": 1,
+      "source_versions_unsupported": 0,
+      "source_versions_unresolved": 0,
+      "references_fully_fetched_papers": 0,
+      "references_query_success_rate": 0.0,
+      "references_metadata_complete_papers": 0,
+      "metadata_success_rate": 0.0,
+      "source_success_rate": 1.0,
+      "references_arxiv_total": 0,
+      "references_complete_total": 0,
+      "reference_metadata_success_rate": null,
+      "mean_arxiv_references_per_paper": null,
+      "source_size_sample_count": 1,
+      "mean_extracted_bytes_before_filter": 500000.0,
+      "mean_retained_source_bytes": 80000.0
+    },
+    "man-nhi": {
+      "papers_discovered": 1,
+      "metadata_complete_papers": 0,
+      "papers_complete": 0,
+      "paper_success_rate": 0.0,
+      "source_versions_expected": 0,
+      "source_versions_success": 0,
+      "source_versions_unsupported": 0,
+      "source_versions_unresolved": 0,
+      "references_fully_fetched_papers": 1,
+      "references_query_success_rate": 1.0,
+      "references_metadata_complete_papers": 1,
+      "metadata_success_rate": 0.0,
+      "source_success_rate": null,
+      "references_arxiv_total": 10,
+      "references_complete_total": 10,
+      "reference_metadata_success_rate": 1.0,
+      "mean_arxiv_references_per_paper": 10.0,
+      "source_size_sample_count": 0,
+      "mean_extracted_bytes_before_filter": null,
+      "mean_retained_source_bytes": null
+    },
+    "trong": {
+      "papers_discovered": 0,
+      "metadata_complete_papers": 0,
+      "papers_complete": 0,
+      "paper_success_rate": null,
+      "source_versions_expected": 0,
+      "source_versions_success": 0,
+      "source_versions_unsupported": 0,
+      "source_versions_unresolved": 0,
+      "references_fully_fetched_papers": 0,
+      "references_query_success_rate": null,
+      "references_metadata_complete_papers": 0,
+      "metadata_success_rate": null,
+      "source_success_rate": null,
+      "references_arxiv_total": 0,
+      "references_complete_total": 0,
+      "reference_metadata_success_rate": null,
+      "mean_arxiv_references_per_paper": null,
+      "source_size_sample_count": 0,
+      "mean_extracted_bytes_before_filter": null,
+      "mean_retained_source_bytes": null
+    }
+  }
+}
