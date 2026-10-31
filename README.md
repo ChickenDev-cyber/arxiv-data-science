@@ -387,6 +387,8 @@ Khi mở DB để ghi, T5 tự migration cấu trúc v1→v2 để thêm bảng 
 
 **Validator tài liệu vận hành** (`validation/pipeline_contracts.py`, Huỳnh Nhi): `validate_pipeline_document(document, kind)` với `kind` là `checkpoint`, `snapshot`, `collection` hoặc `collection-statistics`, trả `list[str]` (rỗng là hợp lệ). Kiểm tra cấu trúc theo `pipeline_contracts.py` rồi quy tắc giữa các trường: key checkpoint khớp payload (references là `[owner, arxiv_id, page_size, fields]`), ID của batch discovery đúng dải được giao tại offset đó, trang references liền nhau, hash/đường dẫn của snapshot, member trỏ `<snapshot>/corpus` cạnh `<snapshot>/manifest.json`, mỗi owner một snapshot, `missing_owners` đúng, `discovery_complete` chỉ khi đủ năm dải, số đếm cộng đúng theo owner, số đếm con không vượt số đếm cha (ví dụ references đủ metadata ≤ bài lấy hết trang, số mẫu dung lượng ≤ phiên bản nguồn thành công) và trung bình chung có trọng số theo số mẫu. Key checkpoint được so theo văn bản JSON nên `true` khác `1`. Input sai (kể cả `kind` lạ) được trả về trong danh sách lỗi, không ném exception.
 
+**Kiểm tra run và tập hợp snapshot** (`collection/`, Huỳnh Nhi): `RunInspector().open(output_root, run_id)` giữ khóa `.runner.lock` của output root như runner, mở một run đã dừng ở chế độ chỉ đọc và trả `VerifiedRun` sau khi kiểm tra SQLite, file/hash, events và bộ file bàn giao; `files` là inventory đủ để chép sang nơi khác rồi mở lại. `CollectionAssembler(run_reader)` mở và kiểm tra mọi run bằng `RunReader` rồi mới ghi `collection.json` cho các snapshot đã giải nén, báo lỗi nếu một owner có hơn một snapshot và không ghi đè collection đã có; `CollectionService(snapshot_reader, run_reader)` có `assemble(archives, destination, *, collection_id)` (giải nén qua `SnapshotReader`, kiểm tra rồi mới ghi) và `open(collection_root)` (`CollectionReader`); `CollectionDirectoryReader(RunInspector()).open(root)` kiểm tra lại từng snapshot và run. `CollectionStatisticsBuilder(summarizer)` cộng số đếm theo owner rồi tính lại tỷ lệ chung từ tổng số đếm; thống kê từng owner do T6 cung cấp qua `OwnerSummarizer`. Test inspector cần Linux/macOS (runner dùng `fcntl`).
+
 CLI ghi `provenance.producer_commit` cho Result mới chỉ khi nhận diện được code pipeline sạch trong Git. Code đang sửa hoặc không có Git để trống thông tin đó; không gán HEAD cho artifacts cũ.
 
 ### Chạy thử offline
@@ -477,6 +479,131 @@ Upload [src/colab_baseline_smoke.ipynb](src/colab_baseline_smoke.ipynb) lên Col
 Runner đặt `validation.valid=false` trước khi bắt đầu/resume hoặc cập nhật handoff, rồi chỉ ghi `valid=true` sau khi cả scope và accepted results đã được xuất thành công. Khi Ctrl+C giữa một publication, runner phục hồi journal trước khi kiểm tra và xuất lại; một bộ file dở không làm mất liên kết tới kết quả tốt trước đó.
 
 Mã thoát: `0` khi mẫu được xử lý không còn issue chất lượng; `2` khi còn task thiếu hoặc dừng theo giới hạn số task; `1` khi lỗi cấu trúc/cấu hình/lưu trữ; `130` khi Ctrl+C. Argparse dùng mã 2 cho lỗi cú pháp lệnh. Chạy hết chương trình không có nghĩa đã thu thập đủ toàn dải.
+
+## Kiểm tra run và tập hợp snapshot (collection)
+
+`collection/` đọc các lượt chạy đã dừng và các snapshot đã giải nén, **không ghi gì vào corpus hay SQLite**; chỉ lệnh `assemble` ghi đúng một file `collection.json`. Cả ba lệnh `inspect`/`assemble`/`check` đều mở run bằng runner state nên cần Linux/macOS/Colab (runner dùng `fcntl`).
+
+### 1. Kiểm tra một run đã dừng
+
+Input: thư mục output của runner (có `.runner.lock`, `state.sqlite`, `logs/<run-id>/events.jsonl` và `runs/<run-id>/`), run đã `paused` hoặc `finished`. Trong lúc kiểm tra, lệnh giữ khóa output root nên không runner nào chạy song song trên thư mục đó.
+
+```bash
+PYTHONPATH=src python -m arxiv_pipeline.runner --mock --owner huynh-nhi --run-id nhi-demo --output-root data/nhi-demo
+PYTHONPATH=src python -m arxiv_pipeline.collection inspect --output-root data/nhi-demo --run-id nhi-demo
+```
+
+Output (stdout, JSON):
+
+| Trường | Ý nghĩa |
+|---|---|
+| `run_id`, `run_state`, `is_mock` | Lượt chạy và trạng thái (`paused`/`finished`) |
+| `owners`, `papers`, `accepted_results` | Owner của run, số bài trong scope, số Result được công nhận |
+| `files` | Số file của inventory đã kiểm tra kích thước và SHA-256: dữ liệu được công nhận, 4 file bàn giao, `logs/<run-id>/events.jsonl`, `state.sqlite`, `.runner.lock` |
+| `quality_valid` | `true` khi mọi bài đã đủ metadata, nguồn và references (`false` vẫn đọc được, việc còn thiếu nằm trong `issues`) |
+| `issues` | **Danh sách vấn đề**: mỗi mục `{owner, arxiv_id, version, step, message}` lấy từ `quality.json` |
+
+Run có cấu trúc sai (đang chạy, runner khác đang giữ khóa, file bị đổi/mất, `validation.json` không hợp lệ, `scope.json`/`accepted_results.jsonl`/events khác SQLite, `quality.json` sai cấu trúc hoặc thiếu vấn đề SQLite phát hiện) không được đọc: lệnh báo lỗi ở stderr, exit 1.
+
+### 2. Tập hợp snapshot thành collection
+
+Input: một thư mục chứa các snapshot **đã giải nén** theo cấu trúc đã thống nhất: `manifest.json` (SnapshotManifest) nằm cạnh `corpus/`, và `corpus/` là output root của run chứa đúng các file trong `files` của manifest (đường dẫn tính từ `corpus/`):
+
+```text
+nhom5/
+└── snapshots/
+    ├── nhi-1027/
+    │   ├── manifest.json
+    │   └── corpus/      .runner.lock, state.sqlite, logs/, raw/, runs/, ...
+    └── trong-1027/
+```
+
+```bash
+PYTHONPATH=src python -m arxiv_pipeline.collection assemble --root nhom5 --collection-id nhom5-demo \
+  snapshots/nhi-1027 snapshots/trong-1027
+```
+
+Output: mỗi owner chỉ được có **một** snapshot; nếu hai snapshot cùng chứa một owner thì lệnh báo lỗi, không tự chọn bản nào. Snapshot được giữ nguyên cả cụm, không tách owner.
+
+```json
+{
+  "collection_id": "nhom5-demo",
+  "is_mock": true,
+  "members": [
+    {"snapshot_id": "nhi-1027", "owners": ["huynh-nhi"]},
+    {"snapshot_id": "trong-1027", "owners": ["trong"]}
+  ],
+  "manifest": "nhom5/collection.json"
+}
+```
+
+`nhom5/collection.json` được ghi nguyên tử và chỉ ghi một lần; nếu file đã có, lệnh báo lỗi thay vì ghi đè:
+
+```json
+{
+  "format_version": 1,
+  "kind": "arxiv-collection",
+  "collection_id": "nhom5-demo",
+  "schema_version": "1.2",
+  "is_mock": true,
+  "created_at": "2026-10-27T15:21:44Z",
+  "members": [
+    {"snapshot_id": "nhi-1027", "run_id": "nhi-1027-run", "owners": ["huynh-nhi"],
+     "exporter_commit": "<40 ký tự hex>", "root": "snapshots/nhi-1027/corpus",
+     "manifest_path": "snapshots/nhi-1027/manifest.json"},
+    {"snapshot_id": "trong-1027", "run_id": "trong-1027-run", "owners": ["trong"],
+     "exporter_commit": "<40 ký tự hex>", "root": "snapshots/trong-1027/corpus",
+     "manifest_path": "snapshots/trong-1027/manifest.json"}
+  ]
+}
+```
+
+Trước khi ghi, lệnh mở từng `corpus/` như `inspect` và đối chiếu manifest với run (như `check` ở mục 3); các run được giữ khóa cho đến khi ghi xong.
+
+Bị từ chối (exit 1): `collection.json` đã có, hai snapshot cùng owner, manifest sai schema, thiếu `corpus/` hoặc file trong `corpus/` sai kích thước/hash, manifest khác run (ví dụ snapshot thiếu `state.sqlite`/`.runner.lock` mà run có), cùng `snapshot_id` hai lần, trộn mock với dữ liệu thật, đường dẫn ra ngoài `--root`.
+
+### 3. Kiểm tra lại toàn bộ collection
+
+```bash
+PYTHONPATH=src python -m arxiv_pipeline.collection check --root nhom5
+```
+
+Lệnh đọc `collection.json`, kiểm tra lại hash từng snapshot, mở từng `corpus/` như `inspect`, rồi đối chiếu manifest với run: `run_id`, owner, fingerprint, `origin_output_root` bằng `recorded_output_root` của run, `producer_commits`/`unknown_provenance_tasks` khớp `provenance.producer_commit` của các Result được công nhận và `files` bằng đúng inventory của run. Sau đó in:
+
+| Trường | Ý nghĩa |
+|---|---|
+| `collection_id`, `is_mock` | Collection được kiểm tra |
+| `members` | Mỗi snapshot: `snapshot_id` cùng các trường của `inspect` (trừ `issues`) |
+| `missing_owners` | Owner chưa có snapshot nào, theo thứ tự `ASSIGNED_RANGES` |
+| `issues` | Danh sách vấn đề của mọi run, thêm `snapshot_id` |
+
+### Exit code
+
+| Exit code | Kết quả |
+|---|---|
+| 0 | Hợp lệ và đầy đủ (`inspect`: không còn issue; `check`: không issue, đủ 5 owner; `assemble`: đã ghi collection.json) |
+| 2 | Hợp lệ nhưng chưa đầy đủ: còn issue chất lượng hoặc còn owner thiếu |
+| 1 | Run/snapshot/collection sai cấu trúc, không đọc được, hoặc chạy trên Windows |
+
+### Dùng từ Python
+
+```python
+from pathlib import Path
+from arxiv_pipeline.collection import CollectionService, CollectionStatisticsBuilder
+from arxiv_pipeline.collection.inspector import RunInspector
+from arxiv_pipeline.snapshots import SnapshotService
+
+service = CollectionService(SnapshotService(), RunInspector())
+manifest = service.assemble([Path("exports/nhi-1027.tar.gz"), Path("exports/trong-1027.tar.gz")],
+                            Path("nhom5"), collection_id="nhom5-demo")
+
+with service.open(Path("nhom5")) as collection:
+    stats = CollectionStatisticsBuilder(summarizer).build(collection)
+```
+
+`assemble` nhận thư mục đích mới hoặc rỗng, giải nén từng archive vào `snapshots/<snapshot_id>/` (manifest cạnh `corpus/`), báo lỗi khi trùng snapshot hoặc trùng owner, mở và kiểm tra mọi run, rồi mới ghi `collection.json`; lỗi ở bất kỳ bước nào thì không có `collection.json`. `open` là `CollectionReader.open`, kiểm tra lại mọi snapshot và run. `create(archives, collection_root, collection_id)` vẫn giữ để tương thích và gọi `assemble`.
+
+`summarizer` là đối tượng có `summarize(run, owner) -> Summary` (thống kê từng owner của T6). `build` cộng số đếm theo owner và tính lại tỷ lệ theo công thức mục 11 tài liệu schema; `by_owner` chỉ gồm owner có bài trong `paper_tasks`. `scope.versions_complete` được tính lại từ metadata đã công nhận của mọi bài trong scope hợp nhất, không lấy cờ của từng run.
 
 ## Kiểm thử offline
 
