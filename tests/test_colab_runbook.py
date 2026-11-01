@@ -17,7 +17,7 @@ class ColabRunbookTests(unittest.TestCase):
         notebook = json.loads((REPO / 'src/colab_baseline_smoke.ipynb').read_text())
         helper = next((c for c in notebook['cells'] if c.get('id') == 'runbook-helpers'), None)
         self.assertIsNotNone(helper, 'Notebook must provide its real runbook helpers for offline execution')
-        self.ns = {'REPO_DIR': REPO, 'PIPELINE_ENV': {**os.environ, 'PYTHONPATH': str(REPO / 'src')}}
+        self.ns = {'REPO_DIR': REPO, 'PIPELINE_ENV': {**os.environ, 'PYTHONPATH': str(REPO / 'src')}, 'SNAPSHOT_MAX_FILES': 500_000}
         exec(''.join(helper['source']), self.ns)
 
     def tearDown(self):
@@ -76,6 +76,12 @@ class ColabRunbookTests(unittest.TestCase):
             self.ns['run_cli'](command)
             self.ns['run_cli']([sys.executable, '-m', 'arxiv_pipeline.statistics', '--run-id', rid, '--output-root', str(corpus), '--output-dir', str(statdir)])
         self.ns.update(sys=sys, json=json, importlib=importlib, OUTPUT_ROOT=corpus, RUN_ID=rid, OWNER='trong', MEASUREMENT_ID='cold-01', BENCHMARK_DIR=benchdir, STATISTICS_DIR=statdir, HANDOFF_DIR=self.root / 'handoffs' / rid / 'cold-01', TEAM_PATH=self.root / 'team', stats=json.loads((statdir / (rid + '.json')).read_text()), bench=json.loads((benchdir / (rid + '.json')).read_text()), command=command, CACHE_MODE='cold', ensure_release=lambda: 'f' * 40)
+        handoff = self.ns['HANDOFF_DIR']
+        self.ns.update(SNAPSHOT_MAX_FILES=1, HANDOFF_DIR=handoff.with_name('rejected'))
+        with redirect_stdout(io.StringIO()), self.assertRaises(RuntimeError):
+            self.execute_cell('export-handoff')
+        self.assertFalse(self.ns['SNAPSHOT'].exists(), 'Export must reject the cap before publishing an archive')
+        self.ns.update(SNAPSHOT_MAX_FILES=500_000, HANDOFF_DIR=handoff)
         with redirect_stdout(io.StringIO()):
             self.execute_cell('export-handoff')
         bundle, checksum = (self.ns['BUNDLE'], self.ns['CHECKSUM'])
@@ -89,6 +95,34 @@ class ColabRunbookTests(unittest.TestCase):
             self.assertEqual(metadata['scope']['paper_count'], 1)
             self.assertIn('snapshot.tar.gz', archive.namelist())
             self.assertIn(f'benchmark/{rid}-timing.json', archive.namelist())
+            self.assertEqual(metadata.get('snapshot_limits'), {'max_files': 500_000})
+
+        # A real small archive exercises the configured limit without creating
+        # 100,001 files: both readers must reject it when the cap is one.
+        snapshot = self.ns['SNAPSHOT']
+        restored = self.root / 'restored'
+        snapshot_cli = self.ns['run_snapshot_cli']
+        self.ns['SNAPSHOT_MAX_FILES'] = 1
+        with redirect_stdout(io.StringIO()):
+            with self.assertRaises(RuntimeError):
+                snapshot_cli(['verify', '--archive', str(snapshot)])
+            with self.assertRaises(RuntimeError):
+                snapshot_cli(['restore', '--archive', str(snapshot), '--destination', str(restored)])
+        self.assertFalse(restored.exists())
+        self.ns['SNAPSHOT_MAX_FILES'] = 500_000
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(snapshot_cli(['verify', '--archive', str(snapshot)]), 0)
+            self.assertEqual(snapshot_cli(['restore', '--archive', str(snapshot), '--destination', str(restored)]), 0)
+        self.assertTrue((restored / 'restore_receipt.json').is_file())
+
+    def test_snapshot_file_limit_rejects_invalid_configuration(self):
+        snapshot_cli = self.ns.get('run_snapshot_cli')
+        self.assertIsNotNone(snapshot_cli, 'Notebook needs a shared snapshot CLI adapter')
+        for value in (True, False, 0, -1, 1.5, '500000', None):
+            with self.subTest(value=value):
+                self.ns['SNAPSHOT_MAX_FILES'] = value
+                with self.assertRaises(ValueError):
+                    snapshot_cli(['verify', '--archive', str(self.root / 'missing.tar.gz')])
 
     def test_real_runbook_rejects_mock_restore_bundle(self):
         bundle = self.root / 'mock.zip'

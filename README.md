@@ -1,6 +1,6 @@
 # arXiv Data Science — Milestone 1
 
-Repo mã nguồn cho đồ án Nhập môn Khoa học Dữ liệu: thu thập bài báo arXiv, phân tích nội dung và đối sánh tài liệu tham khảo. Đã có T1 discovery, T2 metadata/lịch sử phiên bản, T3 nguồn TeX/BibTeX, T4 references và **T5 runner theo công đoạn, có SQLite và checkpoint discovery theo lô**. Độ phủ và hiệu năng toàn dải phải được đo bằng lượt chạy thật; các phần tích hợp còn chờ được nêu ở mục T5.
+Repo mã nguồn cho đồ án Nhập môn Khoa học Dữ liệu: thu thập bài báo arXiv, phân tích nội dung và đối sánh tài liệu tham khảo. Đã có T1 discovery, T2 metadata/lịch sử phiên bản, T3 nguồn TeX/BibTeX, T4 references và **T5 runner theo công đoạn, có SQLite và checkpoint discovery theo lô**. Đã tích hợp validator, snapshot/restore, collection, thống kê và benchmark. Xem [hướng dẫn crawl Colab](#chay-chinh-thuc); độ phủ và hiệu năng toàn dải vẫn phải được xác nhận bằng lượt chạy thật.
 
 ## Cấu trúc code
 
@@ -383,7 +383,7 @@ PYTHONPATH=src python -m arxiv_pipeline.runner \
 
 Khi mở DB để ghi, T5 tự migration cấu trúc v1→v2 để thêm bảng run_checkpoints. Accepted data, run_id, fingerprint và schema crawl 1.2 được giữ. DB v2 cần runner mới; code baseline cũ chỉ đọc DB v1. Giữ nguyên đường dẫn cho resume thông thường; khôi phục sang nơi khác đi qua cơ chế snapshot/relocator. Relocator đối chiếu scope với cấu hình đã fingerprint và các giới hạn mẫu trước khi cập nhật root.
 
-**Phần đã có và còn chờ:** checkpoint discovery và adapter lưu trữ đã triển khai. `validation/pipeline_contracts.py`, inspector/collection và snapshot thuộc phần các thành viên đang phát triển. T4 đã tích hợp checkpoint trang references, cache ngày và cooldown qua restart theo hợp đồng chung: `LiveModuleFactory` truyền cùng store cho `ReferencesModule` và `RequestScheduler` qua keyword `checkpoints`; constructor vẫn chấp nhận `store` như bí danh tương thích ngược. Các payload T4 tuân thủ TypedDict trong `pipeline_contracts.py`, với key JSON chuẩn tắc và thời gian ISO 8601. Khi validator chung có mặt, CLI dùng `validate_pipeline_document(..., kind="checkpoint")`; kiểm tra envelope không thay thế kiểm tra đầy đủ payload. Lỗi từ constructor/validator được báo, không âm thầm hạ cấp. Chưa có CLI snapshot/collection hoặc HTTP Range trong đợt T1/T5 này.
+**Trạng thái tích hợp:** đã có checkpoint discovery, adapter lưu trữ, validator document, inspector/collection và snapshot CLI. T4 dùng checkpoint trang references, cache ngày và cooldown qua restart: `LiveModuleFactory` truyền cùng store cho `ReferencesModule` và `RequestScheduler` qua keyword `checkpoints`; constructor vẫn chấp nhận `store` như bí danh tương thích ngược. Payload T4 tuân thủ TypedDict trong `pipeline_contracts.py`, key JSON chuẩn tắc và thời gian ISO 8601. CLI kiểm tra bằng `validate_pipeline_document(..., kind="checkpoint")`; lỗi constructor/validator được báo rõ. HTTP Range chưa được triển khai.
 
 **Validator tài liệu vận hành** (`validation/pipeline_contracts.py`, Huỳnh Nhi): `validate_pipeline_document(document, kind)` với `kind` là `checkpoint`, `snapshot`, `collection` hoặc `collection-statistics`, trả `list[str]` (rỗng là hợp lệ). Kiểm tra cấu trúc theo `pipeline_contracts.py` rồi quy tắc giữa các trường: key checkpoint khớp payload (references là `[owner, arxiv_id, page_size, fields]`), ID của batch discovery đúng dải được giao tại offset đó, trang references liền nhau, hash/đường dẫn của snapshot, member trỏ `<snapshot>/corpus` cạnh `<snapshot>/manifest.json`, mỗi owner một snapshot, `missing_owners` đúng, `discovery_complete` chỉ khi đủ năm dải, số đếm cộng đúng theo owner, số đếm con không vượt số đếm cha (ví dụ references đủ metadata ≤ bài lấy hết trang, số mẫu dung lượng ≤ phiên bản nguồn thành công) và trung bình chung có trọng số theo số mẫu. Key checkpoint được so theo văn bản JSON nên `true` khác `1`. Input sai (kể cả `kind` lạ) được trả về trong danh sách lỗi, không ném exception.
 
@@ -636,13 +636,12 @@ Archive `.tar.gz` chứa `manifest.json` cạnh `corpus/`; manifest ghi inventor
 SHA-256, phạm vi, nguồn code đã biết và số Result chưa biết nguồn code.
 Snapshot giữ nguyên schema dữ liệu 1.2 và không biến lượt mẫu thành toàn dải.
 
-CLI dùng validator document chung; `export`/`restore` cần thêm `RunInspector`
-của module collection. Khi hai thành phần này chưa được tích hợp, CLI báo rõ
-dependency còn thiếu. Lớp `SnapshotService` nhận `RunReader`, `StateRelocator`
+CLI dùng validator document chung và `RunInspector` của module collection;
+các dependency này đã được tích hợp và kiểm tra qua snapshot/restore thật. Lớp `SnapshotService` nhận `RunReader`, `StateRelocator`
 và validator qua constructor để kiểm thử độc lập, không viết lại phần của
 thành viên khác.
 
-Sau khi các dependency trên đã có, xuất một corpus đã dừng vào đường dẫn mới
+Xuất một corpus đã dừng vào đường dẫn mới
 **bên ngoài output root**:
 
 ```bash
@@ -690,76 +689,111 @@ Nếu filesystem đích không hỗ trợ công bố archive mà không ghi đè
 Mã nguồn không tự commit, push hoặc xuất bản dữ liệu.
 
 <a id="chay-chinh-thuc"></a>
-## Chạy chính thức cho từng thành viên
+## Crawl chính thức trên Colab CPU
 
-Mỗi người dùng **cùng commit pipeline do leader cung cấp**, chạy toàn bộ các công đoạn cho owner của mình. Phân công viết module không có nghĩa là chỉ crawl công đoạn đó. Owner: Trọng `trong`, Khang `khang`, Hoàng `hoang`, Mẫn Nhi `man-nhi`, Huỳnh Nhi `huynh-nhi`; dải ID lấy từ `config.py`.
+Mỗi thành viên chạy **toàn bộ pipeline cho owner của mình**, vừa crawl vừa đo benchmark trong cùng lượt. Cả nhóm dùng commit pipeline `af99d119a3dcc0f8f25bfa2c9d5a6b6d9d7bb218` đã kiểm chứng và [notebook hiện tại](src/colab_baseline_smoke.ipynb). Dữ liệu local đã có giữ làm dự phòng; không ghép trùng với corpus Colab.
 
-### Trước khi bắt đầu
+| Thành viên | OWNER |
+|---|---|
+| Trọng | `trong` |
+| Khang | `khang` |
+| Hoàng | `hoang` |
+| Mẫn Nhi | `man-nhi` |
+| Huỳnh Nhi | `huynh-nhi` |
 
-- Dùng checkout sạch ở đúng commit đã review; kiểm tra `git rev-parse HEAD` và không sửa source trong lúc thu thập. Các bản sửa còn local chưa phải phiên bản đã chia sẻ cho nhóm.
-- Cài `python -m pip install -r src/requirements.txt`. Chạy bằng Linux hoặc Colab CPU; benchmark nộp báo cáo thực hiện trên Colab CPU, không gán số đo local thành số đo Colab.
-- Mỗi owner có corpus/SQLite và run ID riêng. Benchmark từng invocation có thư mục riêng; không ghi đè cold bằng resume.
-- Mỗi người thử 10–20 bài, kiểm tra ngắt/chạy tiếp, snapshot/restore và bàn giao trước khi leader thông qua full-range. PDF-only có bản ghi rỗng; tỷ lệ đủ TeX không bắt buộc 100%.
+### 1. Chuẩn bị một lần
 
-### Máy cá nhân: vừa crawl vừa đo
+Drive chung đã được tạo: `/content/drive/MyDrive/arXiv-data`. Leader chia sẻ quyền chỉnh sửa cho các thành viên; mỗi người thêm shortcut vào My Drive nếu cần và xác nhận đường dẫn trên tài khoản của mình. Đây phải là cùng thư mục đã chia sẻ, không phải các thư mục riêng cùng tên. [Hướng dẫn shortcut](https://support.google.com/drive/answer/9700156).
 
-Ví dụ sau là **toàn dải**; chỉ dùng sau khi pilot đạt. Đổi ba biến theo người chạy; giữ nguyên trong các lệnh tiếp theo:
+Mở notebook trên Colab, chọn **Hardware accelerator: None (CPU)**. Cell cấu hình đã có commit và Drive, đổi `OWNER` theo bảng; `RUN_ID` được tạo theo owner. Cấu hình khởi đầu:
+
+```python
+OWNER = "trong"
+RUN_ID = f"m1-colab-{OWNER}-01"
+RUN_MODE = "full"
+MEASUREMENT_ID = "cold-01"
+STOP_AFTER_TASKS = 500
+SNAPSHOT_MAX_FILES = 500_000
+TEAM_DRIVE_DIR = "/content/drive/MyDrive/arXiv-data"
+CORPUS_PATH = ""
+RESTORE_BUNDLE = ""
+```
+
+`full` chọn toàn dải, không dùng hai giới hạn mẫu `MAX_CANDIDATES`/`MAX_PAPERS`. `STOP_AFTER_TASKS` là số task mới trong một invocation, không phải số bài; discovery cả dải là một task nên có thể lâu. Phần cứng được đọc thực tế; không mặc định mọi phiên Colab có cùng CPU/RAM.
+
+### 2. Chạy đợt đầu và sao lưu
+
+Chạy các cell theo thứ tự: cấu hình → lấy đúng code/cài dependencies → hàm hỗ trợ → mount và kiểm tra quyền ghi Drive → cell restore (bỏ qua khi đường dẫn rỗng) → crawl kèm benchmark.
+
+Sau khi runner dừng, chạy cell kiểm tra/thống kê rồi cell đóng gói/sao lưu. Phải thấy `Đã chép và đối chiếu SHA-256 tại: ...` và kiểm tra gói trên Drive:
+
+```text
+arXiv-data/<owner>/<run_id>/<measurement_id>/
+  <run_id>-<measurement_id>.zip
+  <run_id>-<measurement_id>.zip.sha256
+```
+
+Gói chứa snapshot corpus, benchmark, timing sidecar, statistics và run.json (commit, lệnh, phạm vi, môi trường và giới hạn snapshot). Corpus/SQLite ở `WORK_ROOT` trên ổ VM, không đặt trực tiếp trong Drive. Hiện chưa có backup nền trong lúc runner đang chạy. Nếu ngắt bằng Stop/Ctrl+C, đợi runner dừng rồi chạy các cell kiểm tra và sao lưu thủ công.
+
+Dừng theo mốc 500 task là một đợt chưa hoàn thành toàn dải. `validation.valid=true` xác nhận cấu trúc/artifact nhất quán; `quality.valid=false` cần đọc từng issue. PDF-only giữ bản ghi rỗng; lỗi tải không đổi thành PDF-only hay success. Mã thoát 2 có thể phản ánh đợt đang dừng hoặc vấn đề chất lượng, không tự chứng minh hỏng cấu trúc.
+
+### 3. Resume trong cùng phiên
+
+Giữ `OWNER`, `RUN_ID`, corpus và commit. Trong cell cấu hình đổi:
+
+```python
+RUN_MODE = "resume"
+MEASUREMENT_ID = "resume-01"
+```
+
+Chạy lại các cell theo thứ tự, rồi kiểm tra và sao lưu đợt mới. Dùng `resume-02`, `resume-03`… cho các đợt sau, giữ mọi cặp benchmark/timing cũ. Runner đọc owner/dải/giới hạn từ SQLite; không biến một run pilot thành toàn dải bằng resume.
+
+### 4. Khôi phục trong phiên Colab mới
+
+Sau khi mount cùng Drive và lấy đúng code, giữ owner/run ID, chọn `resume`, đặt measurement ID mới. Điền `RESTORE_BUNDLE` là đường dẫn ZIP của snapshot mới nhất đã verify của **run đang tiếp tục**; không chọn gói pilot cho run toàn dải. Cell khôi phục kiểm tra checksum, verify snapshot và restore sang đường dẫn mới, rồi tự điền `CORPUS_PATH`. Không di chuyển SQLite bằng tay. Trước đợt resume tiếp theo trong cùng phiên, **sửa trực tiếp cell cấu hình**: dán đường dẫn corpus mà cell restore vừa in vào dòng `CORPUS_PATH`, đặt `RESTORE_BUNDLE = ""`, rồi đổi measurement ID. Không chỉ giữ giá trị trong bộ nhớ: chạy lại cell cấu hình có thể gán lại đường dẫn rỗng hoặc đường dẫn ZIP cũ. Giữ nguyên đường dẫn corpus đã restore khi đổi measurement ID để tiếp tục đúng dữ liệu mới nhất, thay vì khôi phục lại ZIP cũ.
+
+### 5. Leader nhận và tổng hợp
+
+Giữ mọi measurement để có đủ lịch sử đo, chọn một snapshot phù hợp cho mỗi owner khi ghép. Kiểm tra checksum ZIP, giải nén vào local, dùng snapshot CLI với giới hạn file đã ghi trong run.json. Notebook mặc định 500.000 file; ví dụ:
+
+```bash
+PYTHONPATH=src python -m arxiv_pipeline.snapshots verify \
+  --archive handoff/snapshot.tar.gz --max-files 500000
+
+PYTHONPATH=src python -m arxiv_pipeline.snapshots unpack \
+  --archive handoff/snapshot.tar.gz \
+  --destination team/snapshots/trong --max-files 500000
+```
+
+Dùng `collection assemble`/`collection check` như mục collection phía trên; mỗi owner một snapshot, xử lý rõ thiếu/trùng. Xuất `statistics --collection <thư mục team> --output-dir <thư mục thống kê>`, chuyển JSON cần thiết sang repo `arvix-report`. Không đưa corpus/SQLite/archive lên GitHub, không cộng thủ công tỷ lệ năm người.
+
+CLI snapshot mặc định vẫn là 100.000 file, 2 GiB/file và 20 GiB tổng byte giải nén. Notebook truyền `SNAPSHOT_MAX_FILES` nhất quán cho export/verify/restore; giới hạn byte và kiểm tra đường dẫn/hash giữ nguyên. 500.000 là trần cấu hình, chưa phải bằng chứng một archive cỡ đó đã chạy thành công.
+
+### 6. Cách trình bày benchmark
+
+Giữ riêng cold/mixed và từng invocation, kèm phạm vi và bằng chứng Colab CPU. Mẫu 10–20 bài chỉ là pilot, chưa mặc định đủ phạm vi benchmark cuối theo đề. Chạy theo đợt phải báo cáo từng đợt và giới hạn đo; không gọi một invocation dừng sớm là wall time toàn dải. Không cộng thời gian năm máy thành wall time của một lượt chạy toàn nhóm.
+
+Thời gian từng bài là khoảng elapsed từ task đầu đến cuối trong invocation, có cả chờ giữa công đoạn. Tổng các khoảng từng bài có thể vượt wall time. Resume chỉ đo task mới; discovery không chạy lại là null, không là 0 hay số của lượt trước. [Yêu cầu đề bài](context/crawling_new.md) và [Colab FAQ](https://research.google.com/colaboratory/faq.html).
+
+### Local khi cần
+
+Code Python vẫn hỗ trợ Linux/WSL2 và Python >=3.10; cài `python -m pip install -r src/requirements.txt`. Ví dụ crawl local kèm đo bằng thư mục mới:
 
 ```bash
 CRAWL_OWNER=trong
-CRAWL_RUN_ID=m1-trong-01
+CRAWL_RUN_ID="m1-local-$CRAWL_OWNER-01"
 CRAWL_OUTPUT_ROOT="data/$CRAWL_RUN_ID"
 
 PYTHONPATH=src python -m arxiv_pipeline.benchmark \
   --run-id "$CRAWL_RUN_ID" --output-root "$CRAWL_OUTPUT_ROOT" \
   --output-dir "benchmarks/$CRAWL_RUN_ID/cold-01" --cache-mode cold \
-  --cmd "python -m arxiv_pipeline.runner --owner \"$CRAWL_OWNER\" --run-id \"$CRAWL_RUN_ID\" --output-root \"$CRAWL_OUTPUT_ROOT\" --full-range"
+  --cmd "python -m arxiv_pipeline.runner --owner $CRAWL_OWNER --run-id $CRAWL_RUN_ID --output-root $CRAWL_OUTPUT_ROOT --full-range"
 ```
 
-Với pilot, dùng run ID mới như `pilot-trong-01` và thay `--full-range` **bên trong `--cmd`** bằng `--max-candidates 40 --max-papers 10`. Không dùng cả full-range và các giới hạn mẫu.
+Khi dừng, giữ dữ liệu; chạy tiếp qua benchmark với measurement mới, `--cache-mode mixed` và runner `--resume` cùng run ID/output root. Không truyền lại owner hay giới hạn cho runner resume. Số đo local là đối chiếu, không gán thành số đo Colab. Nếu đã chuyển cùng owner sang Colab, giữ corpus local dự phòng thay vì ghép trùng.
 
-Khi chạy tiếp, giữ corpus và run ID. Không truyền lại owner, mock hoặc giới hạn; runner lấy cấu hình từ SQLite:
+### Nguồn thiếu và ngoại lệ
 
-```bash
-PYTHONPATH=src python -m arxiv_pipeline.benchmark \
-  --run-id "$CRAWL_RUN_ID" --output-root "$CRAWL_OUTPUT_ROOT" \
-  --output-dir "benchmarks/$CRAWL_RUN_ID/resume-01" --cache-mode mixed \
-  --cmd "python -m arxiv_pipeline.runner --run-id \"$CRAWL_RUN_ID\" --output-root \"$CRAWL_OUTPUT_ROOT\" --resume"
+Nếu tải bị cắt, giữ log và để task còn thiếu để chạy tiếp; không bỏ kiểm tra Content-Length hay tăng retry vô hạn. Pilot `2504.17525v1` từng bị cắt ở cả Python/curl nhưng các lượt sau tải đủ; chưa có bằng chứng cần sửa transport hay thêm HTTP Range.
 
-PYTHONPATH=src python -m arxiv_pipeline.collection inspect \
-  --run-id "$CRAWL_RUN_ID" --output-root "$CRAWL_OUTPUT_ROOT"
-
-PYTHONPATH=src python -m arxiv_pipeline.statistics \
-  --run-id "$CRAWL_RUN_ID" --output-root "$CRAWL_OUTPUT_ROOT" \
-  --output-dir "statistics/$CRAWL_RUN_ID/resume-01"
-```
-
-Đổi `resume-01` thành `resume-02`, ... cho các lượt sau. `inspect` có thể trả `2` vì corpus nhất quán nhưng còn thiếu TeX/references; phải xem từng issue. Lỗi mạng không được đổi thành PDF-only. Thời gian benchmark chỉ thuộc invocation đó: per-paper elapsed có thể gồm chờ giữa công đoạn, tổng các khoảng có thể lớn hơn wall time. Không cộng thời gian năm máy thành wall time end-to-end của một lượt chạy.
-
-### Colab và Drive chung
-
-Mở [notebook](src/colab_baseline_smoke.ipynb), chọn **Hardware accelerator: None (CPU)** và điền `COMMIT_SHA`, `OWNER`, `RUN_ID`, `RUN_MODE`, `MEASUREMENT_ID`. Chế độ `pilot` có giới hạn; `full` bỏ giới hạn; `resume` giữ cấu hình đã lưu. Không giả định Colab luôn có 2 vCPU/12 GB RAM: xem môi trường thực tế trong JSON. [Colab FAQ](https://research.google.com/colaboratory/faq.html) mô tả vòng đời VM và tài nguyên thay đổi theo phiên.
-
-Leader chia sẻ **một thư mục Drive chung có quyền ghi** cho cả nhóm. Mỗi người thêm shortcut vào My Drive nếu cần, mount Drive trong notebook rồi điền `TEAM_DRIVE_DIR` bằng đường dẫn thật của thư mục đó. [Hướng dẫn shortcut của Google](https://support.google.com/drive/answer/9700156). Notebook không tạo một thư mục riêng rồi tự coi là đã chia sẻ.
-
-`WORK_ROOT` chứa corpus/SQLite trên ổ local của VM. Sau khi runner dừng, notebook inspect, xuất/verify snapshot, tạo zip bàn giao và chép qua file tạm lên:
-
-```text
-<thư mục Drive chung>/<owner>/<run_id>/<measurement_id>/
-  <run_id>-<measurement_id>.zip
-  <run_id>-<measurement_id>.zip.sha256
-```
-
-Gói chứa `snapshot.tar.gz`, `benchmark/`, `statistics/`, `run.json` (commit, lệnh, phạm vi đo và môi trường). Chỉ công bố bản sao khi checksum khớp. Nếu chưa chạy cell Drive hoặc chưa có thông báo hoàn tất sao lưu thì dữ liệu vẫn chỉ ở VM. Dùng `STOP_AFTER_TASKS` hoặc ngắt rồi inspect/export để sao lưu theo đợt; chưa có backup nền tự động khi runner đang chạy.
-
-Trong phiên mới, điền `RESTORE_BUNDLE` trỏ tới zip đã lưu, chọn `resume`, giữ owner/run ID và đặt measurement ID mới. Notebook đối chiếu checksum, verify snapshot rồi restore sang đường dẫn mới. Nếu đã restore bằng CLI, để `RESTORE_BUNDLE` rỗng và điền `CORPUS_PATH`; không tự di chuyển SQLite rồi chạy tiếp.
-
-### Leader nhận dữ liệu
-
-1. Giữ từng cặp zip/checksum theo owner; kiểm tra checksum trước khi dùng. Không chọn một snapshot còn thiếu làm thay cho bản mới hơn đã đủ dữ liệu chỉ vì tên file.
-2. Giải nén gói vào local, `snapshots verify` rồi `unpack` từng snapshot vào `team/snapshots/<owner>`. Dùng `restore` chỉ khi cần tiếp tục crawl; không sửa bản đã unpack dùng để ghép.
-3. Dùng `collection assemble` và `collection check` như mục collection phía trên; mỗi owner một snapshot, thiếu/trùng phải được xử lý rõ.
-4. Xuất thống kê bằng `statistics --collection <thư mục team> --output-dir <thư mục thống kê>`. Không cộng thủ công tỷ lệ của năm người hay dùng `--aggregate-runs` cũ.
-5. Chuyển JSON tổng hợp sang repo `arvix-report`, rồi build Jupyter Book. Không đưa corpus, SQLite hoặc archive lên GitHub.
-
-Nếu bài bị cắt nguồn sau các lần retry, giữ log và để task còn thiếu để chạy tiếp. Pilot `2504.17525v1` đã được đối chiếu: cả Python/curl từng bị cắt, các lượt GET thường về sau nhận đủ 18.552.439 byte và gzip hợp lệ. Chưa có bằng chứng cần sửa transport hoặc thêm HTTP Range; không bỏ kiểm tra byte để ép task thành công.
+`2504.17532v5` đã xác minh withdrawn trên arXiv, `/src/` của cả hai host trả 404. Giữ `not_found` và metadata đủ năm phiên bản; không đổi thành PDF-only/success hay bỏ khỏi mẫu số. Kèm bằng chứng ngoài corpus, không lặp resume chỉ để thử phiên bản đã xác nhận withdrawn. Không suy rộng rằng mọi 404 đều là withdrawn. References từng bị HTTP429 có thể thử lại bằng resume; giữ riêng số đo mỗi lượt.
