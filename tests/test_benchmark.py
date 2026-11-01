@@ -252,11 +252,15 @@ class TestBenchmark(unittest.TestCase):
         self.assertIsNone(bench["mean_ram_bytes"])
 
     def test_cli_execution(self):
+        import shlex
+        import sys
         out_dir = self.test_root / "bench_out"
+        cmd = f"{shlex.quote(sys.executable)} -c 'pass'"
         exit_code = cli_main([
             "--run-id", "test-bench-cli",
             "--output-root", str(self.test_root),
             "--output-dir", str(out_dir),
+            "--cmd", cmd,
             "--interval", "0.05",
         ])
         self.assertEqual(exit_code, 0)
@@ -302,6 +306,104 @@ class TestBenchmark(unittest.TestCase):
         # Elapsed time: 12:00:15 - 12:00:00 = 15.0s, NOT sum of durations (4.5s)
         self.assertEqual(timings["per_paper_seconds"]["2501.99999"], 15.0)
         self.assertEqual(timings["mean_paper_seconds"], 15.0)
+
+    def test_interleaved_two_paper_timings_pin_elapsed_exceeding_wall_time(self):
+        """Interleaved two-paper fixture: A (0-10s) and B (2-12s) each 10s, mean 10s, total elapsed 20s, wall 12s."""
+        logs_dir = self.test_root / "logs" / "interleaved-test"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        # Paper A: tasks between 12:00:00 and 12:00:10 (elapsed = 10s)
+        # Paper B: tasks between 12:00:02 and 12:00:12 (elapsed = 10s)
+        # Interleaved execution causes sum of elapsed (20s) to exceed wall time (12s)
+        events = [
+            {
+                "step": "metadata",
+                "arxiv_id": "paper_A",
+                "duration_seconds": 3.0,
+                "status": "success",
+                "started_at": "2026-11-01T12:00:00Z",
+                "finished_at": "2026-11-01T12:00:04Z",
+            },
+            {
+                "step": "metadata",
+                "arxiv_id": "paper_B",
+                "duration_seconds": 3.0,
+                "status": "success",
+                "started_at": "2026-11-01T12:00:02Z",
+                "finished_at": "2026-11-01T12:00:06Z",
+            },
+            {
+                "step": "sources",
+                "arxiv_id": "paper_A",
+                "duration_seconds": 4.0,
+                "status": "success",
+                "started_at": "2026-11-01T12:00:06Z",
+                "finished_at": "2026-11-01T12:00:10Z",
+            },
+            {
+                "step": "sources",
+                "arxiv_id": "paper_B",
+                "duration_seconds": 4.0,
+                "status": "success",
+                "started_at": "2026-11-01T12:00:08Z",
+                "finished_at": "2026-11-01T12:00:12Z",
+            },
+        ]
+        with open(logs_dir / "events.jsonl", "w", encoding="utf-8") as f:
+            for item in events:
+                f.write(json.dumps(item) + "\n")
+
+        timings = extract_run_timings(self.test_root, "interleaved-test")
+        self.assertEqual(timings["per_paper_seconds"]["paper_A"], 10.0)
+        self.assertEqual(timings["per_paper_seconds"]["paper_B"], 10.0)
+        self.assertEqual(timings["mean_paper_seconds"], 10.0)
+        self.assertEqual(timings["total_paper_elapsed_seconds"], 20.0)
+
+        # Build benchmark with real end-to-end wall time of 12.0s
+        service = BenchmarkService()
+        bench = service.build_benchmark(
+            run_id="interleaved-test",
+            output_root=self.test_root,
+            wall_seconds=12.0,
+        )
+        self.assertEqual(bench["wall_seconds"], 12.0)
+        # Total paper elapsed (20.0s) strictly exceeds wall_seconds (12.0s)
+        self.assertGreater(timings["total_paper_elapsed_seconds"], bench["wall_seconds"])
+
+    def test_resume_without_rerunning_discovery_records_null_discovery_not_zero(self):
+        """When resuming a run and discovery does not run again, discovery_seconds must be None (not 0.0 or old)."""
+        logs_dir = self.test_root / "logs" / "resume-discovery-test"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        events = [
+            # Prior invocation: discovery completed yesterday
+            {
+                "step": "discovery",
+                "duration_seconds": 8.0,
+                "status": "success",
+                "started_at": "2026-10-31T09:00:00Z",
+                "finished_at": "2026-10-31T09:00:08Z",
+            },
+            # Current invocation: resume only runs paper tasks
+            {
+                "step": "sources",
+                "arxiv_id": "2501.00002",
+                "duration_seconds": 2.0,
+                "status": "success",
+                "started_at": "2026-11-01T10:00:00Z",
+                "finished_at": "2026-11-01T10:00:05Z",
+            },
+        ]
+        with open(logs_dir / "events.jsonl", "w", encoding="utf-8") as f:
+            for item in events:
+                f.write(json.dumps(item) + "\n")
+
+        timings = extract_run_timings(
+            self.test_root,
+            "resume-discovery-test",
+            since_timestamp="2026-11-01T09:50:00Z",
+        )
+        # Discovery must be None, NOT 0.0 and NOT 8.0
+        self.assertIsNone(timings["discovery_seconds"])
+        self.assertEqual(timings["per_paper_seconds"]["2501.00002"], 5.0)
 
     def test_terminate_process_tree_kills_children_and_grandchildren(self):
         """terminate_process_tree must terminate the entire tree (children + grandchildren) and wait for them."""

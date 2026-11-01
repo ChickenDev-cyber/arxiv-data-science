@@ -449,9 +449,7 @@ Sau khi runner dừng, đọc validation.json, quality.json và scope.json trong
 
 ### Thử trên Google Colab CPU
 
-Upload [src/colab_baseline_smoke.ipynb](src/colab_baseline_smoke.ipynb) lên Colab, chọn runtime CPU rồi chạy lần lượt các cell. Notebook tải đúng commit baseline `5db78b0`, chạy tối đa 5 bài trong 10 ID ứng viên của Trọng, hiện tiến độ, đo thời gian runner và tạo gói `.tar.gz` kèm SHA-256 để tải về. Lượt chạy dùng dữ liệu thật; mã thoát 2 có thể do PDF-only hoặc API chưa trả đủ dữ liệu, cần đối chiếu các báo cáo.
-
-Đây là phép thử môi trường, chưa phải benchmark chính thức. Dữ liệu làm việc nằm trong `/content/`; notebook chưa tự sao lưu lên Drive hoặc khôi phục sau khi máy ảo bị xóa. Chạy tiếp trong cùng phiên bằng `run_sample(resume=True)` rồi xuất lại gói kết quả. Muốn so tốc độ với máy cá nhân, dùng cùng commit, mẫu, cấu hình API key và output mới cho mỗi lượt đầu.
+Dùng [src/colab_baseline_smoke.ipynb](src/colab_baseline_smoke.ipynb) và làm theo [hướng dẫn chạy chung](#chay-chinh-thuc). Notebook lấy commit cụ thể do leader cung cấp, hỗ trợ từng owner, đo cùng lúc với crawl và xuất snapshot để bàn giao qua Drive chung. Lượt mẫu vẫn phải ghi rõ phạm vi; chỉ kết quả chạy thật trên Colab CPU mới được mô tả là phép đo trên môi trường đó.
 
 ### Đọc kết quả
 
@@ -690,3 +688,78 @@ Nếu filesystem đích không hỗ trợ công bố archive mà không ghi đè
 ổ cục bộ trước rồi sao chép gói đã hoàn tất sang nơi lưu trữ.
 
 Mã nguồn không tự commit, push hoặc xuất bản dữ liệu.
+
+<a id="chay-chinh-thuc"></a>
+## Chạy chính thức cho từng thành viên
+
+Mỗi người dùng **cùng commit pipeline do leader cung cấp**, chạy toàn bộ các công đoạn cho owner của mình. Phân công viết module không có nghĩa là chỉ crawl công đoạn đó. Owner: Trọng `trong`, Khang `khang`, Hoàng `hoang`, Mẫn Nhi `man-nhi`, Huỳnh Nhi `huynh-nhi`; dải ID lấy từ `config.py`.
+
+### Trước khi bắt đầu
+
+- Dùng checkout sạch ở đúng commit đã review; kiểm tra `git rev-parse HEAD` và không sửa source trong lúc thu thập. Các bản sửa còn local chưa phải phiên bản đã chia sẻ cho nhóm.
+- Cài `python -m pip install -r src/requirements.txt`. Chạy bằng Linux hoặc Colab CPU; benchmark nộp báo cáo thực hiện trên Colab CPU, không gán số đo local thành số đo Colab.
+- Mỗi owner có corpus/SQLite và run ID riêng. Benchmark từng invocation có thư mục riêng; không ghi đè cold bằng resume.
+- Mỗi người thử 10–20 bài, kiểm tra ngắt/chạy tiếp, snapshot/restore và bàn giao trước khi leader thông qua full-range. PDF-only có bản ghi rỗng; tỷ lệ đủ TeX không bắt buộc 100%.
+
+### Máy cá nhân: vừa crawl vừa đo
+
+Ví dụ sau là **toàn dải**; chỉ dùng sau khi pilot đạt. Đổi ba biến theo người chạy; giữ nguyên trong các lệnh tiếp theo:
+
+```bash
+CRAWL_OWNER=trong
+CRAWL_RUN_ID=m1-trong-01
+CRAWL_OUTPUT_ROOT="data/$CRAWL_RUN_ID"
+
+PYTHONPATH=src python -m arxiv_pipeline.benchmark \
+  --run-id "$CRAWL_RUN_ID" --output-root "$CRAWL_OUTPUT_ROOT" \
+  --output-dir "benchmarks/$CRAWL_RUN_ID/cold-01" --cache-mode cold \
+  --cmd "python -m arxiv_pipeline.runner --owner \"$CRAWL_OWNER\" --run-id \"$CRAWL_RUN_ID\" --output-root \"$CRAWL_OUTPUT_ROOT\" --full-range"
+```
+
+Với pilot, dùng run ID mới như `pilot-trong-01` và thay `--full-range` **bên trong `--cmd`** bằng `--max-candidates 40 --max-papers 10`. Không dùng cả full-range và các giới hạn mẫu.
+
+Khi chạy tiếp, giữ corpus và run ID. Không truyền lại owner, mock hoặc giới hạn; runner lấy cấu hình từ SQLite:
+
+```bash
+PYTHONPATH=src python -m arxiv_pipeline.benchmark \
+  --run-id "$CRAWL_RUN_ID" --output-root "$CRAWL_OUTPUT_ROOT" \
+  --output-dir "benchmarks/$CRAWL_RUN_ID/resume-01" --cache-mode mixed \
+  --cmd "python -m arxiv_pipeline.runner --run-id \"$CRAWL_RUN_ID\" --output-root \"$CRAWL_OUTPUT_ROOT\" --resume"
+
+PYTHONPATH=src python -m arxiv_pipeline.collection inspect \
+  --run-id "$CRAWL_RUN_ID" --output-root "$CRAWL_OUTPUT_ROOT"
+
+PYTHONPATH=src python -m arxiv_pipeline.statistics \
+  --run-id "$CRAWL_RUN_ID" --output-root "$CRAWL_OUTPUT_ROOT" \
+  --output-dir "statistics/$CRAWL_RUN_ID/resume-01"
+```
+
+Đổi `resume-01` thành `resume-02`, ... cho các lượt sau. `inspect` có thể trả `2` vì corpus nhất quán nhưng còn thiếu TeX/references; phải xem từng issue. Lỗi mạng không được đổi thành PDF-only. Thời gian benchmark chỉ thuộc invocation đó: per-paper elapsed có thể gồm chờ giữa công đoạn, tổng các khoảng có thể lớn hơn wall time. Không cộng thời gian năm máy thành wall time end-to-end của một lượt chạy.
+
+### Colab và Drive chung
+
+Mở [notebook](src/colab_baseline_smoke.ipynb), chọn **Hardware accelerator: None (CPU)** và điền `COMMIT_SHA`, `OWNER`, `RUN_ID`, `RUN_MODE`, `MEASUREMENT_ID`. Chế độ `pilot` có giới hạn; `full` bỏ giới hạn; `resume` giữ cấu hình đã lưu. Không giả định Colab luôn có 2 vCPU/12 GB RAM: xem môi trường thực tế trong JSON. [Colab FAQ](https://research.google.com/colaboratory/faq.html) mô tả vòng đời VM và tài nguyên thay đổi theo phiên.
+
+Leader chia sẻ **một thư mục Drive chung có quyền ghi** cho cả nhóm. Mỗi người thêm shortcut vào My Drive nếu cần, mount Drive trong notebook rồi điền `TEAM_DRIVE_DIR` bằng đường dẫn thật của thư mục đó. [Hướng dẫn shortcut của Google](https://support.google.com/drive/answer/9700156). Notebook không tạo một thư mục riêng rồi tự coi là đã chia sẻ.
+
+`WORK_ROOT` chứa corpus/SQLite trên ổ local của VM. Sau khi runner dừng, notebook inspect, xuất/verify snapshot, tạo zip bàn giao và chép qua file tạm lên:
+
+```text
+<thư mục Drive chung>/<owner>/<run_id>/<measurement_id>/
+  <run_id>-<measurement_id>.zip
+  <run_id>-<measurement_id>.zip.sha256
+```
+
+Gói chứa `snapshot.tar.gz`, `benchmark/`, `statistics/`, `run.json` (commit, lệnh, phạm vi đo và môi trường). Chỉ công bố bản sao khi checksum khớp. Nếu chưa chạy cell Drive hoặc chưa có thông báo hoàn tất sao lưu thì dữ liệu vẫn chỉ ở VM. Dùng `STOP_AFTER_TASKS` hoặc ngắt rồi inspect/export để sao lưu theo đợt; chưa có backup nền tự động khi runner đang chạy.
+
+Trong phiên mới, điền `RESTORE_BUNDLE` trỏ tới zip đã lưu, chọn `resume`, giữ owner/run ID và đặt measurement ID mới. Notebook đối chiếu checksum, verify snapshot rồi restore sang đường dẫn mới. Nếu đã restore bằng CLI, để `RESTORE_BUNDLE` rỗng và điền `CORPUS_PATH`; không tự di chuyển SQLite rồi chạy tiếp.
+
+### Leader nhận dữ liệu
+
+1. Giữ từng cặp zip/checksum theo owner; kiểm tra checksum trước khi dùng. Không chọn một snapshot còn thiếu làm thay cho bản mới hơn đã đủ dữ liệu chỉ vì tên file.
+2. Giải nén gói vào local, `snapshots verify` rồi `unpack` từng snapshot vào `team/snapshots/<owner>`. Dùng `restore` chỉ khi cần tiếp tục crawl; không sửa bản đã unpack dùng để ghép.
+3. Dùng `collection assemble` và `collection check` như mục collection phía trên; mỗi owner một snapshot, thiếu/trùng phải được xử lý rõ.
+4. Xuất thống kê bằng `statistics --collection <thư mục team> --output-dir <thư mục thống kê>`. Không cộng thủ công tỷ lệ của năm người hay dùng `--aggregate-runs` cũ.
+5. Chuyển JSON tổng hợp sang repo `arvix-report`, rồi build Jupyter Book. Không đưa corpus, SQLite hoặc archive lên GitHub.
+
+Nếu bài bị cắt nguồn sau các lần retry, giữ log và để task còn thiếu để chạy tiếp. Pilot `2504.17525v1` đã được đối chiếu: cả Python/curl từng bị cắt, các lượt GET thường về sau nhận đủ 18.552.439 byte và gzip hợp lệ. Chưa có bằng chứng cần sửa transport hoặc thêm HTTP Range; không bỏ kiểm tra byte để ép task thành công.

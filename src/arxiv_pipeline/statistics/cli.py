@@ -44,7 +44,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--aggregate-runs",
         nargs="+",
         type=str,
-        help="List of run_ids to aggregate together into a team summary.",
+        help="DEPRECATED: Use --collection <path> to aggregate verified collections.",
     )
     parser.add_argument(
         "--aggregate-id",
@@ -83,6 +83,13 @@ def _discover_run_id(output_root: Path) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.aggregate_runs is not None:
+        print(
+            "[ERROR] --aggregate-runs is deprecated; use --collection <path> to aggregate verified collections.",
+            file=sys.stderr,
+        )
+        return 1
+
     service = StatisticsService(check_validation=not args.no_validation)
 
     try:
@@ -109,16 +116,25 @@ def main(argv: list[str] | None = None) -> int:
         # Case 2: Multiple individual output roots
         if args.output_roots and len(args.output_roots) > 1:
             print(f"Generating statistics for {len(args.output_roots)} distinct output roots...")
+            runs = [(root, args.run_id or _discover_run_id(root)) for root in args.output_roots]
+            seen_ids = set()
+            for _, run_id in runs:
+                if run_id in seen_ids:
+                    raise ValueError(
+                        f"Duplicate run ID {run_id!r}: multiple roots would write "
+                        f"{args.output_dir / (run_id + '.json')}. "
+                        "Use separate output directories or aggregate a verified collection."
+                    )
+                seen_ids.add(run_id)
             stats_list = []
-            for root in args.output_roots:
-                r_id = args.run_id or _discover_run_id(root)
+            for root, r_id in runs:
                 st = service.build_statistics(root, r_id)
                 stats_list.append(st)
                 out_file = args.output_dir / f"{r_id}.json"
                 service.save_statistics(st, out_file)
                 print(f"[SUCCESS] Generated run statistics for {r_id} at: {out_file}")
 
-            if args.aggregate_runs or args.aggregate_id:
+            if args.aggregate_id:
                 print(
                     "[INFO] To aggregate multiple runs into CollectionStatistics, "
                     "use --collection <path> with an assembled collection."
@@ -131,30 +147,18 @@ def main(argv: list[str] | None = None) -> int:
         if not r_id or r_id == ".":
             r_id = "baseline-001"
 
-        if args.aggregate_runs:
-            print(f"Aggregating statistics across {len(args.aggregate_runs)} runs...")
-            stats_list = []
-            for run_name in args.aggregate_runs:
-                st = service.build_statistics(target_root, run_name)
-                stats_list.append(st)
-
-            aggregated_stats = service.aggregate_statistics(stats_list, aggregated_run_id=args.aggregate_id)
-            out_file = args.output_dir / f"{args.aggregate_id}.json"
-            service.save_statistics(aggregated_stats, out_file)
-            print(f"[SUCCESS] Successfully created team aggregated statistics at: {out_file}")
-        else:
-            print(f"Generating statistics for run: {r_id} at {target_root}...")
-            stats = service.build_statistics(target_root, r_id)
-            out_file = args.output_dir / f"{r_id}.json"
-            service.save_statistics(stats, out_file)
-            print(f"[SUCCESS] Successfully generated Schema 1.2 statistics at: {out_file}")
-            print(
-                f"   - Papers discovered: {stats['summary']['papers_discovered']}\n"
-                f"   - Metadata complete: {stats['summary']['metadata_complete_papers']}\n"
-                f"   - Papers complete: {stats['summary']['papers_complete']} ({stats['summary']['paper_success_rate'] or 0:.1%})\n"
-                f"   - Source success rate: {stats['summary']['source_success_rate'] or 0:.1%}\n"
-                f"   - Ref complete rate: {stats['summary']['reference_metadata_success_rate'] or 0:.1%}"
-            )
+        print(f"Generating statistics for run: {r_id} at {target_root}...")
+        stats = service.build_statistics(target_root, r_id)
+        out_file = args.output_dir / f"{r_id}.json"
+        service.save_statistics(stats, out_file)
+        print(f"[SUCCESS] Successfully generated Schema 1.2 statistics at: {out_file}")
+        print(
+            f"   - Papers discovered: {stats['summary']['papers_discovered']}\n"
+            f"   - Metadata complete: {stats['summary']['metadata_complete_papers']}\n"
+            f"   - Papers complete: {stats['summary']['papers_complete']} ({stats['summary']['paper_success_rate'] or 0:.1%})\n"
+            f"   - Source success rate: {stats['summary']['source_success_rate'] or 0:.1%}\n"
+            f"   - Ref complete rate: {stats['summary']['reference_metadata_success_rate'] or 0:.1%}"
+        )
         return 0
 
     except Exception as exc:

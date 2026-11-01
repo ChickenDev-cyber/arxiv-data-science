@@ -49,3 +49,27 @@ def truncated_chunked_response():
     response = HTTPResponse(ByteSocket())
     response.begin()
     return response
+
+
+def wire_http_response(
+    body: bytes,
+    *,
+    content_length: int | None = None,
+    status: int = 200,
+    headers: dict[str, str] | None = None,
+) -> HTTPResponse:
+    """Real in-memory HTTP wire response with native HTTPResponse framing and EOF semantics."""
+    length = content_length if content_length is not None else len(body)
+    hdr_lines = [f"HTTP/1.1 {status} OK", f"Content-Length: {length}"]
+    if headers:
+        for k, v in headers.items():
+            hdr_lines.append(f"{k}: {v}")
+    wire = ("\r\n".join(hdr_lines) + "\r\n\r\n").encode("latin1") + body
+
+    class ByteSocket:
+        def makefile(self, *args, **kwargs):
+            return io.BytesIO(wire)
+
+    response = HTTPResponse(ByteSocket())
+    response.begin()
+    return response
