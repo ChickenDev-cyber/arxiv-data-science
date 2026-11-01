@@ -8,6 +8,7 @@ import unittest
 
 from arxiv_pipeline.discovery.api import RemoteError
 from arxiv_pipeline.sources.api import ArxivSourceClient
+from .helpers import wire_http_response
 
 
 class Response(io.BytesIO):
@@ -135,3 +136,62 @@ class DownloadIntegrityTests(unittest.TestCase):
                 client, _ = self.client([response])
                 with tempfile.TemporaryDirectory() as tmp:
                     self.assertEqual(client.download('2504.17526', 1, Path(tmp)/'source'), 3)
+
+    def test_real_http_response_short_content_length_retries_and_discards_partial(self):
+        """Native HTTPResponse EOF semantics: truncated wire body retries, cleans partial, and gets exact payload."""
+        bad = wire_http_response(b'short', content_length=12)
+        good = wire_http_response(b'exact_twelve', content_length=12)
+        client, sent = self.client([bad, good])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'source'
+            self.assertEqual(client.download('2504.17526', 1, path), 12)
+            self.assertEqual(path.read_bytes(), b'exact_twelve')
+        self.assertEqual(len(sent), 2)
+        self.assertTrue(bad.isclosed())
+        self.assertTrue(good.isclosed())
+        provenance = client.provenance('2504.17526', 1)
+        self.assertEqual(provenance['http_status'], '200')
+        self.assertEqual(provenance['content_length'], '12')
+        self.assertEqual(provenance['received_bytes'], '12')
+
+    def test_real_http_response_repeated_truncation_exhausts_budget_and_cleans_destination(self):
+        """Native HTTPResponse EOF semantics: repeated wire truncation exhausts attempts and deletes destination."""
+        responses = [
+            wire_http_response(b'part1', content_length=15),
+            wire_http_response(b'part22', content_length=15),
+            wire_http_response(b'part333', content_length=15),
+        ]
+        client, sent = self.client(responses, max_attempts=3)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'source'
+            with self.assertRaises(RemoteError) as ctx:
+                client.download('2504.17526', 1, path)
+            self.assertEqual(ctx.exception.info['code'], 'network_error')
+            self.assertFalse(path.exists())
+        self.assertEqual(len(sent), 3)
+        self.assertTrue(all(r.isclosed() for r in responses))
+        self.assertEqual(client.provenance('2504.17526', 1)['received_bytes'], '7')
+
+    def test_real_http_response_truncation_exhaustion_in_service_never_publishes_to_staging(self):
+        """End-to-end service: repeated native HTTPResponse truncation fails and leaves no staged or raw artifact."""
+        from arxiv_pipeline.sources.extractor import SourceExtractor
+        from arxiv_pipeline.sources.service import SourcesModule
+
+        responses = [
+            wire_http_response(b'prefix1', content_length=20),
+            wire_http_response(b'prefix22', content_length=20),
+            wire_http_response(b'prefix333', content_length=20),
+        ]
+        client, sent = self.client(responses, max_attempts=3)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = SourcesModule(client, SourceExtractor()).fetch_sources(
+                {'owner': 'trong', 'arxiv_id': '2504.17526'}, 1,
+                {'run_id': 'truncation-run', 'is_mock': False, 'output_root': root},
+            )
+            self.assertEqual(result['status'], 'failed')
+            self.assertEqual(result['error']['code'], 'network_error')
+            self.assertFalse((root / 'staging').exists())
+            self.assertFalse((root / 'raw').exists())
+            self.assertEqual(len(sent), 3)
+            self.assertTrue(all(r.isclosed() for r in responses))

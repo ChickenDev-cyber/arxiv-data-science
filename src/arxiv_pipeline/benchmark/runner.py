@@ -31,8 +31,70 @@ from ..runner.models import RunOutcome
 from .profiler import ResourceSampler, get_dir_size, get_environment_info, get_pipeline_process_ram
 
 
-def terminate_process_tree(proc: subprocess.Popen, timeout: float = 5.0) -> None:
+def _terminate_process_group(
+    proc: subprocess.Popen, group: int, timeout: float, interrupt: bool,
+) -> None:
+    """Stop an isolated POSIX group, even if its original leader has exited."""
+    if group == os.getpgrp():
+        raise ValueError("Refusing to terminate the benchmark's own process group")
+    members = []
+    if HAS_PSUTIL:
+        try:
+            # A descendant can start another session and leave our group.
+            members.extend(psutil.Process(proc.pid).children(recursive=True))
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+        for member in psutil.process_iter():
+            try:
+                if os.getpgid(member.pid) == group:
+                    members.append(member)
+            except (ProcessLookupError, PermissionError, psutil.NoSuchProcess):
+                continue
+        members = list({member.pid: member for member in members}.values())
+    try:
+        os.killpg(group, signal.SIGINT if interrupt else signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        # Give the runner time to publish a paused checkpoint on Ctrl+C.
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        # The saved group ID still addresses descendants after the leader dies.
+        os.killpg(group, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    proc.wait(timeout=1.0)
+    if members:
+        for member in members:
+            try:
+                member.terminate()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        _, alive = psutil.wait_procs(members, timeout=1.0)
+        for member in alive:
+            try:
+                member.kill()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        _, alive = psutil.wait_procs(alive, timeout=1.0)
+        for member in alive:
+            try:
+                if member.status() not in (psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD):
+                    raise TimeoutError(f"Benchmark descendant {member.pid} did not stop")
+            except psutil.NoSuchProcess:
+                pass
+
+
+def terminate_process_tree(
+    proc: subprocess.Popen, timeout: float = 5.0, *,
+    process_group: int | None = None, interrupt: bool = False,
+) -> None:
     """Terminate and wait for the entire process tree (children + grandchildren + parent)."""
+    if process_group is not None and os.name == "posix":
+        _terminate_process_group(proc, process_group, timeout, interrupt)
+        return
     pid = proc.pid
     if HAS_PSUTIL:
         try:
@@ -276,7 +338,7 @@ class BenchmarkService:
             "peak_disk_bytes": actual_peak_disk,
             "final_output_bytes": final_disk,
             "exit_code": exit_code,
-            "env": get_environment_info(),
+            "environment": get_environment_info(),
             "sampling_interval_seconds": sampling_interval_seconds or self.default_interval,
             "method": method or "process_tree_rss (psutil)",
         }
@@ -375,7 +437,8 @@ class BenchmarkService:
 
         start_time = time.perf_counter()
         start_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        proc = subprocess.Popen(cmd_args)
+        proc = subprocess.Popen(cmd_args, start_new_session=(os.name == "posix"))
+        process_group = proc.pid if os.name == "posix" else None
         sampler = ResourceSampler(
             target_dir=output_root,
             interval_seconds=sampling_interval,
@@ -388,18 +451,17 @@ class BenchmarkService:
             exit_code = proc.wait()
         except KeyboardInterrupt:
             exit_code = 130
-            terminate_process_tree(proc)
             raise
         except SystemExit as se:
             exit_code = se.code if isinstance(se.code, int) else 1
-            terminate_process_tree(proc)
             raise
         except Exception:
             exit_code = 1
-            terminate_process_tree(proc)
             raise
         finally:
-            terminate_process_tree(proc)
+            terminate_process_tree(
+                proc, process_group=process_group, interrupt=(exit_code == 130),
+            )
             wall_seconds = time.perf_counter() - start_time
             peak_ram, mean_ram, peak_disk, method = sampler.stop()
             bench = self.build_benchmark(

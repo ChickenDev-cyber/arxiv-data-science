@@ -3,10 +3,26 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
 from .runner import BenchmarkService
+
+
+def format_seconds(sec: float | None) -> str:
+    """Format duration in seconds. None returns 'N/A (Not measured)'."""
+    return f"{sec:.2f}s" if sec is not None else "N/A (Not measured)"
+
+
+def format_megabytes(b: int | float | None) -> str:
+    """Format bytes into MB. None returns 'N/A (Not measured)'."""
+    return f"{b / (1024 * 1024):.2f} MB" if b is not None else "N/A (Not measured)"
+
+
+def format_kilobytes(b: int | float | None) -> str:
+    """Format bytes into KB. None returns 'N/A (Not measured)'."""
+    return f"{b / 1024:.2f} KB" if b is not None else "N/A (Not measured)"
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -34,7 +50,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--cmd",
         type=str,
-        help="Optional command string to execute and profile in real-time.",
+        help="Command string to execute and profile in real-time (required for measured benchmark).",
     )
     parser.add_argument(
         "--cache-mode",
@@ -53,45 +69,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if not args.cmd or not args.cmd.strip():
+        print("[ERROR] Benchmark profiling requires --cmd specifying a command to execute.", file=sys.stderr)
+        return 1
+
     service = BenchmarkService(default_interval=args.interval)
 
     try:
         timing_file = args.output_dir / f"{args.run_id}-timing.json"
-        if args.cmd:
-            print(f"Benchmarking command: {args.cmd}")
-            bench = service.benchmark_command(
-                cmd=args.cmd,
-                run_id=args.run_id,
-                output_root=args.output_root,
-                output_dir=args.output_dir,
-                cache_mode=args.cache_mode,
-                interval=args.interval,
-            )
-        else:
-            print(f"Recording benchmark summary for existing run: {args.run_id}...")
-            bench = service.build_benchmark(
-                run_id=args.run_id,
-                output_root=args.output_root,
-                wall_seconds=None,
-                exit_code=0,
-                cache_mode=args.cache_mode,
-                sampling_interval_seconds=args.interval,
-            )
-            out_file = args.output_dir / f"{args.run_id}.json"
-            service.save_benchmark(bench, out_file)
-            from .runner import extract_run_timings
-            timings = extract_run_timings(args.output_root, args.run_id)
-            timings_payload = {
-                "run_id": args.run_id,
-                "wall_seconds": None,
-                "discovery_seconds": timings.get("discovery_seconds"),
-                "mean_paper_seconds": timings.get("mean_paper_seconds"),
-                "min_paper_seconds": timings.get("min_paper_seconds"),
-                "max_paper_seconds": timings.get("max_paper_seconds"),
-                "total_paper_seconds": timings.get("total_paper_elapsed_seconds"),
-                "per_paper_seconds": timings.get("per_paper_seconds", {}),
-            }
-            service.save_timing(timings_payload, timing_file)
+        print(f"Benchmarking command: {args.cmd}")
+        bench = service.benchmark_command(
+            cmd=args.cmd,
+            run_id=args.run_id,
+            output_root=args.output_root,
+            output_dir=args.output_dir,
+            cache_mode=args.cache_mode,
+            interval=args.interval,
+        )
 
         out_file = args.output_dir / f"{args.run_id}.json"
 
@@ -100,28 +94,28 @@ def main(argv: list[str] | None = None) -> int:
         if timing_file.exists():
             try:
                 timings = json.loads(timing_file.read_text(encoding="utf-8"))
-            except Exception:
-                pass
+            except (OSError, ValueError) as exc:
+                print(f"[WARNING] Cannot read timing report {timing_file}: {exc}", file=sys.stderr)
 
         wall_sec = bench.get("wall_seconds")
-        wall_str = f"{wall_sec:.2f}s" if wall_sec and wall_sec > 0 else "N/A (Not measured)"
+        wall_str = format_seconds(wall_sec)
 
         peak_ram = bench.get("peak_ram_bytes")
-        peak_str = f"{peak_ram / (1024 * 1024):.2f} MB" if peak_ram and peak_ram > 0 else "N/A (Not measured)"
+        peak_str = format_megabytes(peak_ram)
 
         mean_ram = bench.get("mean_ram_bytes")
-        mean_str = f"{mean_ram / (1024 * 1024):.2f} MB" if mean_ram and mean_ram > 0 else "N/A (Not measured)"
+        mean_str = format_megabytes(mean_ram)
 
-        final_bytes = bench.get("final_output_bytes") or 0
-        final_str = f"{final_bytes / 1024:.2f} KB" if final_bytes > 0 else "N/A (Not measured)"
+        final_bytes = bench.get("final_output_bytes")
+        final_str = format_kilobytes(final_bytes)
 
         peak_disk = bench.get("peak_disk_bytes")
-        disk_str = f"{peak_disk / 1024:.2f} KB" if peak_disk and peak_disk > 0 else "N/A (Not measured)"
+        disk_str = format_kilobytes(peak_disk)
 
         disc_sec = timings.get("discovery_seconds")
-        disc_str = f"{disc_sec:.2f}s" if disc_sec is not None else "N/A (Not measured)"
+        disc_str = format_seconds(disc_sec)
         mean_p_sec = timings.get("mean_paper_seconds")
-        mean_p_str = f"{mean_p_sec:.2f}s" if mean_p_sec is not None else "N/A (Not measured)"
+        mean_p_str = format_seconds(mean_p_sec)
 
         print(f"[SUCCESS] Benchmark report saved to: {out_file}")
         if timing_file.exists():
