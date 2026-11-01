@@ -2,7 +2,15 @@
 from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None  # type: ignore
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None  # type: ignore
 import json
 from pathlib import Path
 import sqlite3
@@ -26,15 +34,32 @@ class OutputLock:
         self.root.mkdir(parents=True, exist_ok=True)
         path = safe_path(self.root, ".runner.lock")
         self.stream = path.open("a+")
-        try:
-            fcntl.flock(self.stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
+        if fcntl is not None:
+            try:
+                fcntl.flock(self.stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                self.stream.close(); self.stream = None
+                raise ValueError('Another runner holds this output root') from None
+        elif msvcrt is not None:
+            try:
+                self.stream.seek(0)
+                msvcrt.locking(self.stream.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError:
+                self.stream.close(); self.stream = None
+                raise ValueError('Another runner holds this output root') from None
+        else:
             self.stream.close(); self.stream = None
-            raise ValueError("Another runner holds this output root") from None
+            raise OSError("Environment does not support file locking (fcntl and msvcrt are unavailable)")
         return self
 
     def __exit__(self, *args):
         if self.stream is not None:
+            if msvcrt is not None and fcntl is None:
+                try:
+                    self.stream.seek(0)
+                    msvcrt.locking(self.stream.fileno(), msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
             self.stream.close(); self.stream = None
 
 

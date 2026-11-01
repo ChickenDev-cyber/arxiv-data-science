@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.1",
+  "scope": {
+    "run_id": "test-mock-001",
+    "is_mock": true,
+    "total_papers": 2
+  },
+  "summary": {
+    "papers_discovered": 2,
+    "metadata_complete_papers": 1,
+    "papers_complete": 1,
+    "total_download_bytes": 1000,
+    "total_retained_source_bytes": 500,
+    "avg_references_per_paper": 10.0
+  },
+  "by_owner": {
+    "Hoang": {
+      "success_count": 2
+    },
+    "Trong": {
+      "success_count": 1
+    }
+  }
+}

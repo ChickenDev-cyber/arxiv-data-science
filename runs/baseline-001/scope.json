@@ -1,0 +1,11 @@
+{
+  "run_id": "baseline-001",
+  "is_mock": true,
+  "ranges": [
+    {"start": "2301.00001", "end": "2301.00003"}
+  ],
+  "paper_tasks": [
+    {"arxiv_id": "2301.00001", "owner": "Khang"},
+    {"arxiv_id": "2301.00002", "owner": "ManhNhi"}
+  ]
+}
