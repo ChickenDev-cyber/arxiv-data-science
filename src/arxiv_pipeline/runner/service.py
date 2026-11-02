@@ -49,20 +49,31 @@ class PipelineRunner:
         self.validate_record = validate_record
 
     def run(self, options: RunOptions, *, stage: Stage = 'all', stop_after_tasks: int | None = None,
+            retry_before_attempt: int | None = None,
             progress: Callable[[str], None] | None = None) -> RunOutcome:
         self.stage = validate_stage(stage)
         if stop_after_tasks is not None and (type(stop_after_tasks) is not int or stop_after_tasks < 1):
             raise ValueError('stop_after_tasks must be a positive integer')
+        if retry_before_attempt is not None and (type(retry_before_attempt) is not int or retry_before_attempt < 0):
+            raise ValueError('retry_before_attempt must be a nonnegative integer')
         self.options, self.context = options, options.context
         self.root = Path(options.output_root)
         self.progress, self.stop_after_tasks = progress, stop_after_tasks
         self.executed = self.reused = 0
+        self.deferred = 0
+        self.retry_before_attempt = retry_before_attempt
         self.failures: dict[str, Result] = {}
         self.metadata: dict[tuple[str, str], Result] = {}
         self.owner_counts = {owner: Counter() for owner in options.owners}
         with OutputLock(self.root), StateStore(self.root / 'state.sqlite', options.run_id) as store:
             self.store = store
             store.open_run(options)
+            if retry_before_attempt is not None:
+                latest_id = store.connection.execute(
+                    'SELECT coalesce(max(attempt_id),0) FROM attempts WHERE run_id=?',
+                    (options.run_id,)).fetchone()[0]
+                if retry_before_attempt > latest_id:
+                    raise ValueError('Retry pass boundary exceeds the latest recorded attempt')
             self.publisher = Publisher(self.context, store)
             self.exporter = Exporter(self.context, store, self.publisher)
             store.set_run_status('running')
@@ -97,7 +108,7 @@ class PipelineRunner:
                     self.exporter.checkpoint()
                 raise
             return RunOutcome(code, store.read_scope(), self.executed, self.reused,
-                              self.exporter.validation, self.exporter.quality)
+                              self.exporter.validation, self.exporter.quality, self.deferred)
 
     def _report(self, message: str) -> None:
         if self.progress is not None:
@@ -136,7 +147,8 @@ class PipelineRunner:
 
     def _perform(self, spec: TaskSpec, call: Callable[[], Result]) -> Result:
         self.store.ensure_task(spec)
-        previous = self.store.get_task(spec.key)['accepted_result']
+        task_state = self.store.get_task(spec.key)
+        previous = task_state['accepted_result']
         identity = spec.arxiv_id or 'dải ID'
         if spec.version is not None:
             identity += f'v{spec.version}'
@@ -145,6 +157,21 @@ class PipelineRunner:
             self.reused += 1
             self._report(f"{label} | dùng lại ({previous['status']})")
             return previous
+        if self.retry_before_attempt is not None:
+            latest = self.store.latest_completed_result(spec.key)
+            if latest is not None:
+                attempt_id, result = latest
+                # An unavailable accepted artifact must be repaired, even if its
+                # last result was successful/partial. Failed results own no artifacts.
+                can_defer = (task_state['state'] != 'pending' and
+                             (previous is not None or result['status'] in ('failed', 'not_found')))
+                retryable = bool(result.get('error') and result['error'].get('retryable') is True)
+                if can_defer and (attempt_id > self.retry_before_attempt or not retryable):
+                    self.deferred += 1
+                    if result['status'] in ('failed', 'not_found'):
+                        self.failures[spec.key] = result
+                    self._report(f"{label} | hoãn thử lại ({result['status']})")
+                    return previous or result
         if self.stop_after_tasks is not None and self.executed >= self.stop_after_tasks:
             raise _Pause()
         if spec.step == 'sources':
@@ -304,7 +331,9 @@ class PipelineRunner:
 
 def run_pipeline(options: RunOptions, modules: ModuleSet, *, stage: Stage = 'all',
                  stop_after_tasks: int | None = None,
+                 retry_before_attempt: int | None = None,
                  progress: Callable[[str], None] | None = None) -> RunOutcome:
     """Keep the baseline library entry point for callers supplying module instances."""
     return PipelineRunner(StaticModuleFactory(modules)).run(
-        options, stage=stage, stop_after_tasks=stop_after_tasks, progress=progress)
+        options, stage=stage, stop_after_tasks=stop_after_tasks,
+        retry_before_attempt=retry_before_attempt, progress=progress)

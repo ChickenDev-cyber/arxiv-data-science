@@ -74,6 +74,7 @@ class RunOutcome:
     reused_tasks: int
     validation: ValidationReport
     quality: ValidationReport
+    deferred_tasks: int = 0
 
 
 def discovery_spec(config: RangeConfig) -> TaskSpec:
