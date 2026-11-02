@@ -68,6 +68,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--max-papers', type=int, help='Verified papers selected per owner (default 5)')
     parser.add_argument('--full-range', action='store_true', help='Explicitly remove both sample limits')
     parser.add_argument('--stop-after-tasks', type=int, help='Pause at a task boundary for a resume check')
+    parser.add_argument('--retry-before-attempt', type=int,
+                        help='Defer completed failures newer than this pass boundary; 0 visits only new work')
     parser.add_argument('--quiet', action='store_true', help='Hide terminal progress; keep JSON summary and file logs')
     args = parser.parse_args(argv)
     if args.resume and (args.owner or args.all_owners or args.mock or args.full_range
@@ -92,8 +94,10 @@ def main(argv: list[str] | None = None) -> int:
         with TerminalProgress(enabled=not args.quiet) as progress:
             progress(f"Bắt đầu run {options.run_id} | {'mock' if options.is_mock else 'dữ liệu thật'} | "
                      f'{len(options.owners)} dải | công đoạn {args.stage}')
-            result = runner.run(options, stage=args.stage, stop_after_tasks=args.stop_after_tasks, progress=progress)
+            result = runner.run(options, stage=args.stage, stop_after_tasks=args.stop_after_tasks,
+                                retry_before_attempt=args.retry_before_attempt, progress=progress)
             progress(f'Kết thúc | {result.executed_tasks} task mới | {result.reused_tasks} task dùng lại | '
+                     f'{result.deferred_tasks} task hoãn | '
                      f'mã thoát {result.exit_code}')
     except (ValueError, OSError, sqlite3.Error) as exc:
         print(f'T5: {exc}', file=sys.stderr)
@@ -102,6 +106,7 @@ def main(argv: list[str] | None = None) -> int:
                       'papers': result.scope['scope']['paper_count'],
                       'discovery_complete': result.scope['scope']['discovery_complete'],
                       'executed_tasks': result.executed_tasks, 'reused_tasks': result.reused_tasks,
+                      'deferred_tasks': result.deferred_tasks,
                       'validation_valid': result.validation['valid'], 'quality_valid': result.quality['valid'],
                       'reports': str(options.output_root / 'runs' / options.run_id)}, ensure_ascii=False))
     return result.exit_code

@@ -691,7 +691,7 @@ Mã nguồn không tự commit, push hoặc xuất bản dữ liệu.
 <a id="chay-chinh-thuc"></a>
 ## Crawl chính thức trên Colab CPU
 
-Mỗi thành viên chạy **toàn bộ pipeline cho owner của mình**, vừa crawl vừa đo benchmark trong cùng lượt. Cả nhóm dùng commit pipeline `af99d119a3dcc0f8f25bfa2c9d5a6b6d9d7bb218` đã kiểm chứng và [notebook hiện tại](src/colab_baseline_smoke.ipynb). Dữ liệu local đã có giữ làm dự phòng; không ghép trùng với corpus Colab.
+Mỗi thành viên chạy **toàn bộ pipeline cho owner của mình**, vừa crawl vừa đo benchmark trong cùng lượt, dùng [notebook hiện tại](src/colab_baseline_smoke.ipynb). Leader commit/push runner mới rồi điền SHA 40 ký tự đó vào `COMMIT_SHA` trước khi gửi notebook. Bản `af99d119a3dcc0f8f25bfa2c9d5a6b6d9d7bb218` chưa có cơ chế hoãn lỗi theo lượt; notebook mới để trống SHA và kiểm tra capability trước khi crawl để tránh chạy nhầm hành vi cũ. Dữ liệu local đã có giữ làm dự phòng; không ghép trùng với corpus Colab.
 
 | Thành viên | OWNER |
 |---|---|
@@ -701,19 +701,28 @@ Mỗi thành viên chạy **toàn bộ pipeline cho owner của mình**, vừa c
 | Mẫn Nhi | `man-nhi` |
 | Huỳnh Nhi | `huynh-nhi` |
 
+**Lịch chạy của nhóm:** bộ điều phối request hiện chỉ dùng chung trong một runner, chưa phối hợp giữa các VM. Trước khi Run all, leader phân ca để chỉ một runner của nhóm gửi request arXiv tại một thời điểm, kể cả Colab, Kaggle và máy local. Theo [điều khoản API arXiv](https://info.arxiv.org/help/api/tou.html), giới hạn một request mỗi ba giây và một kết nối áp dụng cho các máy cộng lại; mỗi máy tự chờ ba giây chưa đủ để điều phối cả nhóm.
+
+**Bản gửi thành viên:** dùng notebook trong repo với cấu hình khởi đầu bên dưới. Không sao chép các cell phục hồi riêng của Trọng (`arxiv-recovery-01`, `RECOVERY_MEASUREMENT_ID`) sang phiên mới của thành viên khác. Log chạy thật `m1-colab-trong-01/resume-02` đã ghi nhận 500 task mới, verify snapshot, đối chiếu SHA-256 trên Drive rồi tự bắt đầu `resume-03`. Đây là bằng chứng chu kỳ sao lưu và tiếp tục; toàn dải và độ đầy đủ dữ liệu vẫn cần đánh giá khi crawl kết thúc.
+
 ### 1. Chuẩn bị một lần
 
-Drive chung đã được tạo: `/content/drive/MyDrive/arXiv-data`. Leader chia sẻ quyền chỉnh sửa cho các thành viên; mỗi người thêm shortcut vào My Drive nếu cần và xác nhận đường dẫn trên tài khoản của mình. Đây phải là cùng thư mục đã chia sẻ, không phải các thư mục riêng cùng tên. [Hướng dẫn shortcut](https://support.google.com/drive/answer/9700156).
+Drive chung đã được tạo: [mở thư mục của nhóm](https://drive.google.com/drive/folders/1w9cVHms6Q9aakHKMSJY5DGzmBRAPleeT?usp=drive_link). Notebook lưu link trong `TEAM_DRIVE_FOLDER_URL`, tìm đường dẫn lối tắt theo ID nếu có; `/content/drive/MyDrive/arXiv-data` là đường dẫn dự phòng, cần khớp thư mục thực tế sau mount. Leader chia sẻ quyền chỉnh sửa cho các thành viên; mỗi người thêm shortcut vào My Drive nếu cần và xác nhận đường dẫn trên tài khoản của mình. Đây phải là cùng thư mục đã chia sẻ, không phải các thư mục riêng cùng tên. [Hướng dẫn shortcut](https://support.google.com/drive/answer/9700156).
 
 Mở notebook trên Colab, chọn **Hardware accelerator: None (CPU)**. Cell cấu hình đã có commit và Drive, đổi `OWNER` theo bảng; `RUN_ID` được tạo theo owner. Cấu hình khởi đầu:
 
 ```python
+COMMIT_SHA = "<SHA 40 ký tự của commit runner mới do leader cung cấp>"
+PREVIOUS_PIPELINE_COMMIT = ""  # chỉ dùng khi nâng code từ snapshot cũ
 OWNER = "trong"
 RUN_ID = f"m1-colab-{OWNER}-01"
 RUN_MODE = "full"
 MEASUREMENT_ID = "cold-01"
 STOP_AFTER_TASKS = 500
+AUTO_RETRY_PASSES = 2
+AUTO_MAX_BATCHES = 200
 SNAPSHOT_MAX_FILES = 500_000
+TEAM_DRIVE_FOLDER_URL = "https://drive.google.com/drive/folders/1w9cVHms6Q9aakHKMSJY5DGzmBRAPleeT?usp=drive_link"
 TEAM_DRIVE_DIR = "/content/drive/MyDrive/arXiv-data"
 CORPUS_PATH = ""
 RESTORE_BUNDLE = ""
@@ -721,40 +730,60 @@ RESTORE_BUNDLE = ""
 
 `full` chọn toàn dải, không dùng hai giới hạn mẫu `MAX_CANDIDATES`/`MAX_PAPERS`. `STOP_AFTER_TASKS` là số task mới trong một invocation, không phải số bài; discovery cả dải là một task nên có thể lâu. Phần cứng được đọc thực tế; không mặc định mọi phiên Colab có cùng CPU/RAM.
 
-### 2. Chạy đợt đầu và sao lưu
+### 2. Run all để crawl, đo và sao lưu tự động
 
-Chạy các cell theo thứ tự: cấu hình → lấy đúng code/cài dependencies → hàm hỗ trợ → mount và kiểm tra quyền ghi Drive → cell restore (bỏ qua khi đường dẫn rỗng) → crawl kèm benchmark.
+Sau khi đổi `OWNER` và xác nhận đường dẫn Drive, chọn **Runtime → Run all** rồi cấp quyền mount Drive. Notebook lần lượt chạy:
 
-Sau khi runner dừng, chạy cell kiểm tra/thống kê rồi cell đóng gói/sao lưu. Phải thấy `Đã chép và đối chiếu SHA-256 tại: ...` và kiểm tra gói trên Drive:
+```text
+500 task mới → kiểm tra corpus → xuất thống kê → snapshot + verify
+→ chép ZIP/checksum và số liệu lên Drive → đối chiếu SHA-256 → resume
+```
+
+Không cần tự đổi measurement ID sau mỗi đợt. Notebook cấp `cold-01`, `resume-01`, `resume-02`… và in tổng kết mỗi đợt. `STOP_AFTER_TASKS=500` chỉ dừng invocation hiện tại để sao lưu; vòng điều phối tiếp tục cho đến điều kiện dừng. Discovery cả dải là một task nên đợt đầu có thể lâu.
+
+Mốc sao lưu **không mở một lượt retry mới**. Lượt đầu xử lý các task chưa có kết quả hoàn tất; task lỗi được hoãn để tiếp tục metadata/nguồn/references còn mới. Khi đã đi hết dải mới bắt đầu lượt retry, chỉ thử các lỗi được đánh dấu `retryable=true`. Mỗi task tối đa một lần thực thi trong mỗi lượt duyệt, kể cả khi lượt đó gồm nhiều đợt sao lưu. Các lần thử HTTP bên trong một task vẫn theo chính sách mạng hiện có.
+
+Runner nhận `--retry-before-attempt 0` cho lượt đầu; lượt retry dùng ID attempt lớn nhất tại lúc lượt trước kết thúc. Mốc này được giữ nguyên trong journal và continuation của snapshot khi dừng/restore. Log `task hoãn` không có request mới và không tính vào 500 task mới. Task bị ngắt trước khi có Result hợp lệ hoặc artifact đã lưu bị thiếu/hỏng vẫn được xử lý lại để phục hồi. CLI không truyền cờ này giữ hành vi resume cũ.
+
+Sau khi đi hết dải, nếu còn lỗi được module đánh dấu retryable, chương trình thực hiện tối đa **2 lượt thử bổ sung**. Một lượt retry cũng có thể gồm nhiều đợt 500 task. PDF-only hoặc withdrawn không làm lặp vô hạn. Lỗi cấu trúc, lỗi sao lưu, nhiều đợt không tiến triển hoặc trần `AUTO_MAX_BATCHES=200` làm dừng và cần đọc thông báo; dừng vì các lý do này không có nghĩa đã crawl đủ.
+
+Drive có cấu trúc:
 
 ```text
 arXiv-data/<owner>/<run_id>/<measurement_id>/
-  <run_id>-<measurement_id>.zip
+  <run_id>-<measurement_id>.zip          # chỉ giữ 2 snapshot mới nhất của run
   <run_id>-<measurement_id>.zip.sha256
+  run.json                              # giữ mọi measurement
+  benchmark/<run_id>.json
+  benchmark/<run_id>-timing.json
+  statistics/<run_id>.json
 ```
 
-Gói chứa snapshot corpus, benchmark, timing sidecar, statistics và run.json (commit, lệnh, phạm vi, môi trường và giới hạn snapshot). Corpus/SQLite ở `WORK_ROOT` trên ổ VM, không đặt trực tiếp trong Drive. Hiện chưa có backup nền trong lúc runner đang chạy. Nếu ngắt bằng Stop/Ctrl+C, đợi runner dừng rồi chạy các cell kiểm tra và sao lưu thủ công.
+ZIP chứa snapshot corpus và các JSON trên. Sau khi kiểm chứng hai bản mới nhất, notebook xóa ZIP/checksum cũ hơn của **đúng owner/run này**; mọi benchmark, timing, statistics và run.json được giữ riêng trên Drive. Bản archive tạm cũ trong VM cũng được dọn, corpus và JSON local được giữ. Drive cần đủ chỗ cho bản mới trước khi dọn bản cũ. Chỉ chạy **một phiên cho mỗi owner/run ID**.
 
-Dừng theo mốc 500 task là một đợt chưa hoàn thành toàn dải. `validation.valid=true` xác nhận cấu trúc/artifact nhất quán; `quality.valid=false` cần đọc từng issue. PDF-only giữ bản ghi rỗng; lỗi tải không đổi thành PDF-only hay success. Mã thoát 2 có thể phản ánh đợt đang dừng hoặc vấn đề chất lượng, không tự chứng minh hỏng cấu trúc.
+`finished` nghĩa là hoàn tất theo scope; `finished_with_issues` giữ lại phần thiếu, gồm PDF-only/withdrawn hoặc scope pilot có giới hạn; `retry_exhausted` nghĩa là đã dùng hết hai lượt retry. Kiểm tra `quality.json` và `statistics/<run_id>.json` để xem dữ liệu còn thiếu. `validation.valid=true` chỉ xác nhận cấu trúc/artifact nhất quán. Chương trình không đổi lỗi tải thành success.
 
-### 3. Resume trong cùng phiên
+### 3. Dừng và chạy tiếp trong cùng VM
 
-Giữ `OWNER`, `RUN_ID`, corpus và commit. Trong cell cấu hình đổi:
+Khi dùng Stop/Interrupt, notebook cố dừng runner, hoàn tất số đo rồi kiểm tra/sao lưu đợt đang dở. **Đợi thấy xác nhận sao lưu trước khi đóng VM**. Ngắt lần nữa hoặc VM bị thu hồi có thể khiến đợt cuối chưa được sao lưu; chưa có backup nền trong khi runner còn chạy.
 
-```python
-RUN_MODE = "resume"
-MEASUREMENT_ID = "resume-01"
-```
+Sau lỗi Drive, sửa kết nối/quyền/dung lượng rồi chạy lại cell tự động hoặc Run all với **cùng OWNER, RUN_ID, WORK_ROOT và commit**. Journal local giữ batch đang chờ; notebook hoàn tất backup trước khi chạy tiếp và không crawl lại batch đã đo. Measurement ID và corpus đã restore được nhớ trong VM, không cần sửa cấu hình sau từng đợt. Phiên đã dừng terminal sẽ chỉ trả tổng kết, không tự mở thêm lượt retry.
 
-Chạy lại các cell theo thứ tự, rồi kiểm tra và sao lưu đợt mới. Dùng `resume-02`, `resume-03`… cho các đợt sau, giữ mọi cặp benchmark/timing cũ. Runner đọc owner/dải/giới hạn từ SQLite; không biến một run pilot thành toàn dải bằng resume.
+Nếu chuyển từ notebook cũ, hoàn tất kiểm tra/sao lưu đợt manual cuối trước khi bật auto. Không thay notebook hay khởi chạy thêm runner trong lúc phiên cũ còn crawl.
 
-### 4. Khôi phục trong phiên Colab mới
+Nếu sau khi ngắt gặp `Corpus chưa dừng`, không chạy lặp lại hoặc tự sửa trạng thái SQLite. Cần kiểm tra tiến trình và khóa corpus; trạng thái SQLite `running` có thể còn sót sau khi tiến trình đã mất. Giữ nguyên VM và dữ liệu để kiểm tra hoặc khôi phục snapshot đã verify vào thư mục mới.
 
-Sau khi mount cùng Drive và lấy đúng code, giữ owner/run ID, chọn `resume`, đặt measurement ID mới. Điền `RESTORE_BUNDLE` là đường dẫn ZIP của snapshot mới nhất đã verify của **run đang tiếp tục**; không chọn gói pilot cho run toàn dải. Cell khôi phục kiểm tra checksum, verify snapshot và restore sang đường dẫn mới, rồi tự điền `CORPUS_PATH`. Không di chuyển SQLite bằng tay. Trước đợt resume tiếp theo trong cùng phiên, **sửa trực tiếp cell cấu hình**: dán đường dẫn corpus mà cell restore vừa in vào dòng `CORPUS_PATH`, đặt `RESTORE_BUNDLE = ""`, rồi đổi measurement ID. Không chỉ giữ giá trị trong bộ nhớ: chạy lại cell cấu hình có thể gán lại đường dẫn rỗng hoặc đường dẫn ZIP cũ. Giữ nguyên đường dẫn corpus đã restore khi đổi measurement ID để tiếp tục đúng dữ liệu mới nhất, thay vì khôi phục lại ZIP cũ.
+### 4. Khôi phục khi mất VM
+
+Run all không tự mở lại VM hoặc cấp quyền Google. Trong phiên mới, giữ `OWNER`, `RUN_ID`, commit và Drive; đặt `RUN_MODE="resume"`, điền `RESTORE_BUNDLE` là đường dẫn ZIP **mới nhất** còn trên Drive của run đang tiếp tục. Không chọn snapshot pilot để tiếp tục run toàn dải. Giữ `CORPUS_PATH=""`, rồi Run all và mount Drive.
+
+Cell restore kiểm tra checksum/snapshot và khôi phục vào ổ VM. Gói auto giữ cả số lượt retry đã dùng và measurement kế tiếp nên không đặt lại ngân sách retry. Trong cùng VM, con trỏ local tiếp tục chọn corpus hiện tại, không nạp lại ZIP cũ khi Run all. Nếu chưa có snapshot nào được lưu thành công, không có bản để khôi phục.
+
+**Nâng từ bản runner cũ:** chờ phiên cũ hoàn tất sao lưu và dừng trước khi chuyển bản. Giữ owner/run ID, dùng `WORK_ROOT` mới và restore ZIP mới nhất đã verify; đặt `COMMIT_SHA` thành SHA runner mới, `PREVIOUS_PIPELINE_COMMIT` thành SHA đã tạo gói cũ. Chỉ chấp nhận đúng revision cũ được khai báo, giữ nguyên task/provenance và JSON benchmark cũ, ghi receipt `pipeline-upgrade.json`, chuyển continuation sang code mới. Nếu snapshot đang ở lượt retry cũ mà không có mốc duyệt, notebook dừng để kiểm tra thay vì tự đoán mốc hoặc đặt lại số retry. Không chạy hai phiên cho cùng owner/run và không thay code trong phiên đang crawl.
 
 ### 5. Leader nhận và tổng hợp
 
-Giữ mọi measurement để có đủ lịch sử đo, chọn một snapshot phù hợp cho mỗi owner khi ghép. Kiểm tra checksum ZIP, giải nén vào local, dùng snapshot CLI với giới hạn file đã ghi trong run.json. Notebook mặc định 500.000 file; ví dụ:
+Giữ JSON của mọi measurement để có đủ lịch sử đo; chọn snapshot mới nhất đã kiểm tra của mỗi owner khi ghép. ZIP cũ hơn hai bản gần nhất đã được dọn theo cấu hình chung. Kiểm tra checksum ZIP, giải nén vào local, dùng snapshot CLI với giới hạn file đã ghi trong run.json. Notebook mặc định 500.000 file; ví dụ:
 
 ```bash
 PYTHONPATH=src python -m arxiv_pipeline.snapshots verify \
@@ -771,7 +800,7 @@ CLI snapshot mặc định vẫn là 100.000 file, 2 GiB/file và 20 GiB tổng 
 
 ### 6. Cách trình bày benchmark
 
-Giữ riêng cold/mixed và từng invocation, kèm phạm vi và bằng chứng Colab CPU. Mẫu 10–20 bài chỉ là pilot, chưa mặc định đủ phạm vi benchmark cuối theo đề. Chạy theo đợt phải báo cáo từng đợt và giới hạn đo; không gọi một invocation dừng sớm là wall time toàn dải. Không cộng thời gian năm máy thành wall time của một lượt chạy toàn nhóm.
+Thời gian điều phối, kiểm tra, đóng gói và sao lưu nằm ngoài phép đo benchmark của runner. Giữ riêng cold/mixed và từng invocation, kèm phạm vi và bằng chứng Colab CPU. Mẫu 10–20 bài chỉ là pilot, chưa mặc định đủ phạm vi benchmark cuối theo đề. Chạy theo đợt phải báo cáo từng đợt và giới hạn đo; không gọi một invocation dừng sớm là wall time toàn dải. Không cộng thời gian năm máy thành wall time của một lượt chạy toàn nhóm.
 
 Thời gian từng bài là khoảng elapsed từ task đầu đến cuối trong invocation, có cả chờ giữa công đoạn. Tổng các khoảng từng bài có thể vượt wall time. Resume chỉ đo task mới; discovery không chạy lại là null, không là 0 hay số của lượt trước. [Yêu cầu đề bài](context/crawling_new.md) và [Colab FAQ](https://research.google.com/colaboratory/faq.html).
 

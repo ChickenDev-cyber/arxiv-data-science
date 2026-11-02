@@ -272,6 +272,14 @@ class StateStore:
         value["artifacts"] = [Artifact(**a) for a in manifest.get("artifacts", [])]
         return value
 
+    def latest_completed_result(self, key):
+        """Return only the latest attempt if it produced a valid domain result."""
+        row = self.connection.execute('''SELECT a.attempt_id,a.result_json FROM run_tasks t
+            JOIN attempts a ON a.attempt_id=t.latest_attempt_id
+            WHERE t.run_id=? AND t.task_key=? AND a.result_valid=1''',
+            (self.run_id, key)).fetchone()
+        return (row['attempt_id'], json.loads(row['result_json'])) if row else None
+
     def pending_publications(self):
         return [dict(row) for row in self.connection.execute('''SELECT p.*,a.task_key,a.result_json FROM publications p
             JOIN attempts a USING(attempt_id) WHERE a.run_id=? AND p.state='prepared' ORDER BY attempt_id''', (self.run_id,))]

@@ -9,6 +9,17 @@ from arxiv_pipeline.runner.cli import main
 
 
 class CLITests(unittest.TestCase):
+    def test_retry_pass_cutoff_is_forwarded_and_invalid_value_creates_no_corpus(self):
+        with tempfile.TemporaryDirectory() as tmp, redirect_stdout(io.StringIO()) as out, \
+             redirect_stderr(io.StringIO()):
+            root = Path(tmp) / 'corpus'
+            args = ['--mock', '--owner', 'trong', '--run-id', 'pass-cutoff',
+                    '--output-root', str(root), '--retry-before-attempt']
+            self.assertEqual(main([*args, '-1']), 1)
+            self.assertFalse(root.exists())
+            self.assertEqual(main([*args, '0']), 0)
+            self.assertEqual(json.loads(out.getvalue())['deferred_tasks'], 0)
+
     def test_dirty_source_cannot_be_labelled_with_head_commit(self):
         from arxiv_pipeline.runner import cli
         self.assertTrue(hasattr(cli, 'producer_revision'), 'Producer revision detection is missing')
