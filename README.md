@@ -845,3 +845,9 @@ Khi dừng, giữ dữ liệu; chạy tiếp qua benchmark với measurement m�
 Nếu tải bị cắt, giữ log và để task còn thiếu để chạy tiếp; không bỏ kiểm tra Content-Length hay tăng retry vô hạn. Pilot `2504.17525v1` từng bị cắt ở cả Python/curl nhưng các lượt sau tải đủ; chưa có bằng chứng cần sửa transport hay thêm HTTP Range.
 
 `2504.17532v5` đã xác minh withdrawn trên arXiv, `/src/` của cả hai host trả 404. Giữ `not_found` và metadata đủ năm phiên bản; không đổi thành PDF-only/success hay bỏ khỏi mẫu số. Kèm bằng chứng ngoài corpus, không lặp resume chỉ để thử phiên bản đã xác nhận withdrawn. Không suy rộng rằng mọi 404 đều là withdrawn. References từng bị HTTP429 có thể thử lại bằng resume; giữ riêng số đo mỗi lượt.
+
+### Khôi phục backup bị ngắt khi đã chạy xong batch
+
+Nếu runner đã xuất benchmark/snapshot nhưng notebook lỗi ở bước dọn ZIP sau nhiều lần nâng code, giữ runtime và corpus hiện tại. Với batch `resume-31` đang pending, mở [ô phục hồi backup](src/colab_pending_backup_recovery.py), chép toàn bộ vào một ô mới trong chính notebook đang lỗi và chạy riêng ô đó. Script xác nhận journal/worker/measurement, chỉ hoàn tất backup đã thực thi, tạm giữ tất cả ZIP và chặn cả preflight lẫn task mới; mã producer, số đo, retry boundary và ngân sách được giữ nguyên. Các kiểm tra định danh batch hiện tại, revision corpus và SHA-256 khi sao lưu vẫn chạy. Nếu pending khác hoặc runtime đã mất, script dừng để kiểm tra thay vì tự crawl lại.
+
+Bản notebook hiện tại phân biệt commit của phiên đang chạy với producer của số đo lịch sử khi dọn archive: bản lịch sử vẫn phải đúng owner/run ID/mock/measurement, SHA hợp lệ và checksum ZIP, nhưng có thể thuộc nhiều thế hệ commit. Hai ZIP mới nhất được giữ sau xác minh; JSON của mọi lượt đo được giữ nguyên. Restore và batch đang chạy tiếp tục kiểm tra commit theo cấu hình đã ghim.
