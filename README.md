@@ -150,6 +150,10 @@ Hàm không tự ghi file; CLI là wrapper xuất preview. Khi tích hợp, thay
 PYTHONPATH=src python -m arxiv_pipeline.references --owner man-nhi --arxiv-id 2501.12642 --run-id t4-demo --output-root /tmp/arxiv-t4
 ```
 
+Transport mặc định của Semantic Scholar dùng `http.client.HTTPSConnection` để giữ nguyên tên header `x-api-key` khi gửi. Phép đối chiếu trên Colab với cùng key, URL và tham số đã trả 200 với tên viết thường nhưng 429 với `X-Api-Key`; vì vậy chỉ kiểm tra dictionary headers trước khi gửi là chưa đủ. Preflight và crawl dùng chung transport này. Kết quả đó không bảo đảm mọi request sau này đều tránh được 429: lịch request, retry và cooldown vẫn được giữ.
+
+Transport này kết nối HTTPS trực tiếp đến `api.semanticscholar.org`, không tự theo redirect và không đọc cấu hình proxy của `urllib`. Client vẫn nhận `transport=` tùy chỉnh cho môi trường cần proxy. Các client arXiv giữ nguyên transport cũ; số lần thử HTTP, trường dữ liệu và schema không đổi.
+
 Trên Windows (PowerShell, dùng `py` thay cho `python`; `PYTHONPATH` đặt bằng `$env:`):
 
 ```powershell

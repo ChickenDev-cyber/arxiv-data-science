@@ -9,6 +9,7 @@ Both clients satisfy the small protocols in ``service.py`` so a shared
 adapter/cache from the runner can replace them without touching the module.
 """
 
+import http.client
 import json
 import math
 import os
@@ -32,6 +33,37 @@ ARXIV_API = "https://export.arxiv.org/api/query"
 ATOM = "{http://www.w3.org/2005/Atom}"
 MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 S2_FIELDS = "title,authors,externalIds"
+
+
+def _semantic_scholar_transport(url, timeout, headers):
+    """Keep authentication header spelling; restrict credentials to the API origin.
+
+    urllib titlecases outgoing headers, including x-api-key. The Graph API has
+    rejected that spelling in controlled requests with otherwise identical inputs.
+    HTTPSConnection preserves the supplied names and verifies TLS by default.
+    Redirects are returned as statuses so credentials never follow another URL.
+    """
+    target = urlsplit(url)
+    if (target.scheme != "https" or target.hostname != "api.semanticscholar.org"
+            or target.port not in (None, 443) or target.username is not None
+            or target.password is not None):
+        raise ValueError("Semantic Scholar transport requires the HTTPS API origin")
+    connection = http.client.HTTPSConnection("api.semanticscholar.org", timeout=timeout)
+    try:
+        path = (target.path or "/") + ("?" + target.query if target.query else "")
+        connection.request("GET", path, headers=headers)
+        with connection.getresponse() as response:
+            body = b""
+            if response.status == 200:
+                body = response.read(MAX_RESPONSE_BYTES + 1)
+                if len(body) > MAX_RESPONSE_BYTES:
+                    raise RemoteError("invalid_payload", "Semantic Scholar response exceeds 16 MiB")
+            return ApiResponse(response.status, dict(response.getheaders()), body)
+    except OSError:
+        # Match urllib's network-error contract without exposing header values.
+        raise URLError("Semantic Scholar HTTPS request failed") from None
+    finally:
+        connection.close()
 
 
 class _PacedClient:
@@ -122,12 +154,16 @@ class SemanticScholarClient(_PacedClient):
     """
 
     def __init__(self, *, api_key=None, delay=1.0, user_agent="arxiv-data-science/T4 (academic course project)",
-                 **kwargs):
+                 transport=None, **kwargs):
         key = api_key if api_key is not None else os.environ.get("S2_API_KEY")
+        if key is not None and (not isinstance(key, str) or any(
+                ord(character) < 33 or ord(character) > 126 for character in key)):
+            raise ValueError("API key must be a printable ASCII value without whitespace")
         headers = {"User-Agent": user_agent, "Accept": "application/json"}
         if key:
             headers["x-api-key"] = key
-        super().__init__(delay=delay, headers=headers, group="semantic_scholar", **kwargs)
+        super().__init__(delay=delay, headers=headers, group="semantic_scholar",
+                         transport=transport or _semantic_scholar_transport, **kwargs)
 
     def references_page(self, arxiv_id, offset, limit):
         if not is_canonical_id(arxiv_id):
