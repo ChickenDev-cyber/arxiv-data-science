@@ -4,6 +4,7 @@ from typing import Callable, Protocol
 from inspect import signature
 
 from ..http import RequestScheduler
+from ..discovery.api import _positive_number
 from ..pipeline_contracts import CheckpointStore
 from .models import ModuleSet, RunOptions
 
@@ -33,8 +34,11 @@ def checkpoint_kwargs(component: Callable[..., object], checkpoints: CheckpointS
 
 
 class LiveModuleFactory:
-    def __init__(self, *, scheduler: RequestScheduler | None = None) -> None:
+    def __init__(self, *, scheduler: RequestScheduler | None = None,
+                 s2_delay_seconds: float = 1.0) -> None:
+        _positive_number(s2_delay_seconds, 's2_delay_seconds', 1)
         self.scheduler = scheduler
+        self.s2_delay_seconds = s2_delay_seconds
 
     def build(self, options: RunOptions, checkpoints: CheckpointStore) -> ModuleSet:
         from ..http import RequestScheduler
@@ -56,7 +60,7 @@ class LiveModuleFactory:
                             checkpoints=checkpoints),
             MetadataModule(OaiClient(scheduler=scheduler)),
             SourcesModule(ArxivSourceClient(scheduler=scheduler), SourceExtractor()),
-            ReferencesModule(SemanticScholarClient(scheduler=scheduler),
+            ReferencesModule(SemanticScholarClient(scheduler=scheduler, delay=self.s2_delay_seconds),
                              ArxivDateClient(scheduler=scheduler),
                              **checkpoint_kwargs(ReferencesModule, checkpoints)),
         )

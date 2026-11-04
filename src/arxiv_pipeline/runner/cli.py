@@ -13,6 +13,7 @@ from typing import get_args
 
 from ..config import OWNERS, ASSIGNED_RANGES
 from ..http import RequestScheduler
+from ..discovery.api import _positive_number
 from ..pipeline_contracts import Stage
 from .checkpoints import CheckpointValidator, InMemoryCheckpointStore
 from .factory import LiveModuleFactory, MockModuleFactory
@@ -69,6 +70,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--full-range', action='store_true', help='Explicitly remove both sample limits')
     parser.add_argument('--stop-after-tasks', type=int, help='Pause at a task boundary for a resume check')
     parser.add_argument('--stop-after-seconds', type=float, help='Soft time budget; finish the current task before pausing')
+    parser.add_argument('--s2-delay-seconds', type=float, default=1.0,
+                        help='Pause after each Semantic Scholar HTTP attempt (finite >=1; default 1s)')
     parser.add_argument('--references-rate-limit-threshold', type=int,
                         help='Pause after this many consecutive new references Results with HTTP 429')
     parser.add_argument('--retry-before-attempt', type=int,
@@ -83,6 +86,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.full_range and (args.max_candidates is not None or args.max_papers is not None):
         parser.error('--full-range excludes sample limit flags')
     try:
+        _positive_number(args.s2_delay_seconds, 's2_delay_seconds', 1)
         if args.resume:
             options = load_options(args.output_root / 'state.sqlite', args.run_id)
             if options.output_root.resolve() != args.output_root.resolve():
@@ -92,7 +96,8 @@ def main(argv: list[str] | None = None) -> int:
             options = RunOptions(args.run_id, args.output_root, owners, args.mock,
                                  None if args.full_range else 10 if args.max_candidates is None else args.max_candidates,
                                  None if args.full_range else 5 if args.max_papers is None else args.max_papers)
-        factory = MockModuleFactory() if options.is_mock else LiveModuleFactory()
+        factory = (MockModuleFactory() if options.is_mock else
+                   LiveModuleFactory(s2_delay_seconds=args.s2_delay_seconds))
         runner = PipelineRunner(factory, producer_commit=producer_revision(), validate_record=checkpoint_validator())
         with TerminalProgress(enabled=not args.quiet) as progress:
             progress(f"Bắt đầu run {options.run_id} | {'mock' if options.is_mock else 'dữ liệu thật'} | "

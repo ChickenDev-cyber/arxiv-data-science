@@ -724,6 +724,7 @@ RUN_MODE = "full"
 MEASUREMENT_ID = "cold-01"
 STOP_AFTER_TASKS = 500
 STOP_AFTER_SECONDS = 600
+S2_DELAY_SECONDS = 1.0  # giữ nhịp cũ; có thể thử 2.0 trong một batch nhỏ
 REFERENCES_RATE_LIMIT_THRESHOLD = 2
 REQUIRE_S2_KEY = True
 AUTO_BATCHES_PER_CALL = None  # đặt 1 để thử một đợt, giữ nguyên ngân sách tổng
@@ -750,6 +751,8 @@ Preflight với key → tối đa 500 task hoặc mốc mềm 600 giây → ki�
 Không cần tự đổi measurement ID sau mỗi đợt. Notebook cấp `cold-01`, `resume-01`, `resume-02`… và in tổng kết mỗi đợt. `STOP_AFTER_TASKS=500` chỉ dừng invocation hiện tại để sao lưu; vòng điều phối tiếp tục cho đến điều kiện dừng. Discovery cả dải là một task nên đợt đầu có thể lâu.
 
 Thêm `S2_API_KEY` trong **Colab Secrets** (biểu tượng chìa khóa), bật quyền truy cập cho notebook rồi chạy ô nạp key. Không đưa key vào code, log hay Drive. Trước mỗi batch mới, notebook gửi một request references với `limit=1`, dùng cùng key với runner. Probe nằm ngoài benchmark; khi resume, request này dùng checkpoint scheduler chung. Nếu thiếu key, còn cooldown hoặc probe lỗi thì chưa tạo pending batch mới. Khôi phục một backup đang chờ không cần key. Core CLI vẫn cho phép không key; notebook chạy thật mặc định yêu cầu key.
+
+`S2_DELAY_SECONDS` truyền thành `--s2-delay-seconds` trong runner: số giây nghỉ sau khi một HTTP attempt Semantic Scholar kết thúc, hữu hạn và ít nhất 1. Mặc định vẫn là 1 giây. Thử 2 giây có thể giảm lỗi 429 nhưng cần số đo Colab để kết luận; giới hạn cửa sổ 100 request/300 giây, cooldown, `Retry-After` và nhịp arXiv vẫn giữ nguyên. Worker chờ ít nhất khoảng này sau preflight trước khi chạy runner. Lệnh chứa cấu hình được giữ trong `invocation.json` ở VM và `run.json` trong gói sao lưu. Mọi chờ/retry trong runner vẫn tính vào wall time; preflight và thời gian chờ ngay sau probe nằm ngoài phép đo runner. Khi so sánh các đợt, giữ cả log lỗi, phạm vi task mới và commit tương ứng; mẫu 20 task là kiểm tra vận hành, chưa đủ để kết luận nhanh hơn hoặc thay benchmark cuối.
 
 `STOP_AFTER_SECONDS=600` kiểm tra giữa các task sau bước phục hồi, cho task hiện tại hoàn tất. Thời gian phục hồi, task dài, kiểm tra và sao lưu có thể làm một batch vượt 10 phút. Runner ghi lý do dừng trong `runs/<run_id>/execution.json`; notebook đối chiếu với trạng thái và attempt mới nhất trước khi dùng.
 
