@@ -75,6 +75,7 @@ class RunOutcome:
     validation: ValidationReport
     quality: ValidationReport
     deferred_tasks: int = 0
+    pause_reason: str | None = None
 
 
 def discovery_spec(config: RangeConfig) -> TaskSpec:

@@ -4,6 +4,8 @@ from collections import Counter
 from copy import deepcopy
 from inspect import signature
 import json
+import math
+import time
 from pathlib import Path
 import re
 import shutil
@@ -41,21 +43,35 @@ class PipelineRunner:
     """Own one synchronous run session; modules only return domain Results."""
 
     def __init__(self, factory: ModuleFactory, *, producer_commit: str | None = None,
-                 validate_record: CheckpointValidator | None = None):
+                 validate_record: CheckpointValidator | None = None,
+                 monotonic: Callable[[], float] = time.monotonic):
         if producer_commit is not None and not re.fullmatch(r'[0-9a-f]{40}', producer_commit):
             raise ValueError('producer_commit must be a 40-character lowercase Git SHA')
         self.factory = factory
         self.producer_commit = producer_commit
         self.validate_record = validate_record
+        self.monotonic = monotonic
 
     def run(self, options: RunOptions, *, stage: Stage = 'all', stop_after_tasks: int | None = None,
             retry_before_attempt: int | None = None,
+            stop_after_seconds: float | None = None,
+            references_rate_limit_threshold: int | None = None,
             progress: Callable[[str], None] | None = None) -> RunOutcome:
         self.stage = validate_stage(stage)
         if stop_after_tasks is not None and (type(stop_after_tasks) is not int or stop_after_tasks < 1):
             raise ValueError('stop_after_tasks must be a positive integer')
         if retry_before_attempt is not None and (type(retry_before_attempt) is not int or retry_before_attempt < 0):
             raise ValueError('retry_before_attempt must be a nonnegative integer')
+        if stop_after_seconds is not None and (type(stop_after_seconds) not in (int, float)
+                or not math.isfinite(stop_after_seconds) or stop_after_seconds <= 0):
+            raise ValueError('stop_after_seconds must be finite and positive')
+        if references_rate_limit_threshold is not None and (
+                type(references_rate_limit_threshold) is not int or references_rate_limit_threshold < 1):
+            raise ValueError('references_rate_limit_threshold must be a positive integer')
+        self.stop_after_seconds = stop_after_seconds
+        self.references_rate_limit_threshold = references_rate_limit_threshold
+        self.references_429_streak = 0
+        self.pause_reason = None
         self.options, self.context = options, options.context
         self.root = Path(options.output_root)
         self.progress, self.stop_after_tasks = progress, stop_after_tasks
@@ -81,6 +97,7 @@ class PipelineRunner:
                 self._recover()
                 checkpoints = SQLiteCheckpointStore(store, validate_record=self.validate_record)
                 self.modules = self.factory.build(options, checkpoints)
+                self.started_at = self.monotonic()
                 self._discover()
                 if self.stage in ('sources', 'all'):
                     self._sources_pass()
@@ -101,14 +118,22 @@ class PipelineRunner:
                 store.update_scope(self.scope)
                 store.set_run_status('paused')
                 self.exporter.checkpoint()
+                self.pause_reason = 'interrupted' if isinstance(exc, KeyboardInterrupt) else str(exc)
                 code = 130 if isinstance(exc, KeyboardInterrupt) else 2
             except BaseException:
                 store.set_run_status('error')
                 if self.exporter.extra_issues:
                     self.exporter.checkpoint()
                 raise
+            max_attempt = store.connection.execute(
+                'SELECT coalesce(max(attempt_id),0) FROM attempts WHERE run_id=?',
+                (options.run_id,)).fetchone()[0]
+            atomic_json(safe_path(self.root, f'runs/{options.run_id}/execution.json'), {
+                'format_version': 1, 'run_id': options.run_id,
+                'run_state': store.read_run_record().status, 'max_attempt_id': max_attempt,
+                'pause_reason': self.pause_reason})
             return RunOutcome(code, store.read_scope(), self.executed, self.reused,
-                              self.exporter.validation, self.exporter.quality, self.deferred)
+                              self.exporter.validation, self.exporter.quality, self.deferred, self.pause_reason)
 
     def _report(self, message: str) -> None:
         if self.progress is not None:
@@ -173,7 +198,10 @@ class PipelineRunner:
                     self._report(f"{label} | hoãn thử lại ({result['status']})")
                     return previous or result
         if self.stop_after_tasks is not None and self.executed >= self.stop_after_tasks:
-            raise _Pause()
+            raise _Pause('task_limit')
+        if (self.stop_after_seconds is not None and self.executed > 0
+                and self.monotonic() - self.started_at >= self.stop_after_seconds):
+            raise _Pause('time_limit')
         if spec.step == 'sources':
             stage = safe_path(self.root, f'staging/{self.options.run_id}/{spec.owner}/'
                                         f'{paper_folder(spec.arxiv_id)}/v{spec.version}')
@@ -197,6 +225,11 @@ class PipelineRunner:
         self._report(f"{label} | {result['status']} | {result['duration_seconds']:.1f}s")
         if result['status'] in ('failed', 'not_found'):
             self.failures[spec.key] = result
+        if spec.step == 'references' and self.references_rate_limit_threshold is not None:
+            limited = bool(result.get('error') and result['error'].get('http_status') == 429)
+            self.references_429_streak = self.references_429_streak + 1 if limited else 0
+            if self.references_429_streak >= self.references_rate_limit_threshold:
+                raise _Pause('references_rate_limited')
         return self.store.get_task(spec.key)['accepted_result'] or result
 
     def _discover(self) -> None:

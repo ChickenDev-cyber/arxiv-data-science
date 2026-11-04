@@ -709,7 +709,7 @@ Mỗi thành viên chạy **toàn bộ pipeline cho owner của mình**, vừa c
 
 Drive chung đã được tạo: [mở thư mục của nhóm](https://drive.google.com/drive/folders/1w9cVHms6Q9aakHKMSJY5DGzmBRAPleeT?usp=drive_link). Notebook lưu link trong `TEAM_DRIVE_FOLDER_URL`, tìm đường dẫn lối tắt theo ID nếu có; `/content/drive/MyDrive/arXiv-data` là đường dẫn dự phòng, cần khớp thư mục thực tế sau mount. Leader chia sẻ quyền chỉnh sửa cho các thành viên; mỗi người thêm shortcut vào My Drive nếu cần và xác nhận đường dẫn trên tài khoản của mình. Đây phải là cùng thư mục đã chia sẻ, không phải các thư mục riêng cùng tên. [Hướng dẫn shortcut](https://support.google.com/drive/answer/9700156).
 
-Mở notebook trên Colab, chọn **Hardware accelerator: None (CPU)**. Cell cấu hình đã có commit và Drive, đổi `OWNER` theo bảng; `RUN_ID` được tạo theo owner. Cấu hình khởi đầu:
+Mở notebook trên Colab, chọn **Hardware accelerator: None (CPU)**. Điền commit mới vào cell cấu hình, kiểm tra Drive và đổi `OWNER` theo bảng; `RUN_ID` được tạo theo owner. Cấu hình khởi đầu:
 
 ```python
 COMMIT_SHA = "<SHA 40 ký tự của commit runner mới do leader cung cấp>"
@@ -719,6 +719,10 @@ RUN_ID = f"m1-colab-{OWNER}-01"
 RUN_MODE = "full"
 MEASUREMENT_ID = "cold-01"
 STOP_AFTER_TASKS = 500
+STOP_AFTER_SECONDS = 600
+REFERENCES_RATE_LIMIT_THRESHOLD = 2
+REQUIRE_S2_KEY = True
+AUTO_BATCHES_PER_CALL = None  # đặt 1 để thử một đợt, giữ nguyên ngân sách tổng
 AUTO_RETRY_PASSES = 2
 AUTO_MAX_BATCHES = 200
 SNAPSHOT_MAX_FILES = 500_000
@@ -735,11 +739,19 @@ RESTORE_BUNDLE = ""
 Sau khi đổi `OWNER` và xác nhận đường dẫn Drive, chọn **Runtime → Run all** rồi cấp quyền mount Drive. Notebook lần lượt chạy:
 
 ```text
-500 task mới → kiểm tra corpus → xuất thống kê → snapshot + verify
+Preflight với key → tối đa 500 task hoặc mốc mềm 600 giây → kiểm tra corpus → xuất thống kê → snapshot + verify
 → chép ZIP/checksum và số liệu lên Drive → đối chiếu SHA-256 → resume
 ```
 
 Không cần tự đổi measurement ID sau mỗi đợt. Notebook cấp `cold-01`, `resume-01`, `resume-02`… và in tổng kết mỗi đợt. `STOP_AFTER_TASKS=500` chỉ dừng invocation hiện tại để sao lưu; vòng điều phối tiếp tục cho đến điều kiện dừng. Discovery cả dải là một task nên đợt đầu có thể lâu.
+
+Thêm `S2_API_KEY` trong **Colab Secrets** (biểu tượng chìa khóa), bật quyền truy cập cho notebook rồi chạy ô nạp key. Không đưa key vào code, log hay Drive. Trước mỗi batch mới, notebook gửi một request references với `limit=1`, dùng cùng key với runner. Probe nằm ngoài benchmark; khi resume, request này dùng checkpoint scheduler chung. Nếu thiếu key, còn cooldown hoặc probe lỗi thì chưa tạo pending batch mới. Khôi phục một backup đang chờ không cần key. Core CLI vẫn cho phép không key; notebook chạy thật mặc định yêu cầu key.
+
+`STOP_AFTER_SECONDS=600` kiểm tra giữa các task sau bước phục hồi, cho task hiện tại hoàn tất. Thời gian phục hồi, task dài, kiểm tra và sao lưu có thể làm một batch vượt 10 phút. Runner ghi lý do dừng trong `runs/<run_id>/execution.json`; notebook đối chiếu với trạng thái và attempt mới nhất trước khi dùng.
+
+Hai Result references mới liên tiếp có HTTP 429 sẽ dừng runner. Notebook kiểm tra, sao lưu và xác minh Drive rồi trả `stop_reason=rate_limited`; không tự chạy thêm batch và không tiêu thụ thêm lượt retry/stall vì lý do này. Giữ nguyên retry HTTP và cooldown đã lưu. Khi chạy lại, preflight phải thành công mới tiếp tục.
+
+Để thử một đợt nhỏ, dùng `STOP_AFTER_TASKS=20`, `AUTO_BATCHES_PER_CALL=1`; đợt thử vẫn giữ nguyên owner/run ID/scope trong snapshot. `stop_reason=session_limit` là đã sao lưu rồi dừng theo giới hạn của lần bấm chạy này. Sau khi kiểm tra backup, đổi lại `500` và `None` để tiếp tục. Không giảm `AUTO_MAX_BATCHES` xuống 1 vì đây là ngân sách cộng dồn qua các VM.
 
 Mốc sao lưu **không mở một lượt retry mới**. Lượt đầu xử lý các task chưa có kết quả hoàn tất; task lỗi được hoãn để tiếp tục metadata/nguồn/references còn mới. Khi đã đi hết dải mới bắt đầu lượt retry, chỉ thử các lỗi được đánh dấu `retryable=true`. Mỗi task tối đa một lần thực thi trong mỗi lượt duyệt, kể cả khi lượt đó gồm nhiều đợt sao lưu. Các lần thử HTTP bên trong một task vẫn theo chính sách mạng hiện có.
 
