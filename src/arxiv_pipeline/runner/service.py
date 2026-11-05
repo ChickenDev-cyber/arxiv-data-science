@@ -309,13 +309,52 @@ class PipelineRunner:
                 self._count_paper(task)
                 self._owner_finished(task['owner'], remaining)
 
+    def _batch_fetch_allowed(self) -> bool:
+        if self.stop_after_tasks is not None and self.executed >= self.stop_after_tasks:
+            return False
+        if (self.stop_after_seconds is not None and self.executed > 0
+                and self.monotonic() - self.started_at >= self.stop_after_seconds):
+            return False
+        return True
+
+    def _references_pending(self, spec) -> bool:
+        row = self.store.get_task(spec.key)
+        return not row or row['accepted_result'] is None or not _reusable(row['accepted_result'])
+
     def _references_pass(self) -> None:
         remaining = self.totals.copy()
         self._bar('References', 0, len(self.papers), unit='bài')
+        prefetched = {}
         for index, task in enumerate(self.papers, 1):
             self._report(f"Bài {index}/{len(self.papers)} | {task['owner']} | {task['arxiv_id']} | references")
-            result = self._perform(paper_spec(task, 'references'),
-                                   lambda task=task: self.modules.references.fetch_references(task, self.context))
+            key = (task['owner'], task['arxiv_id'])
+            spec = paper_spec(task, 'references')
+            # Only a fresh pass batches: retry-pass attempt boundaries must remain
+            # controlled by _perform(), and reusable tasks must not be re-fetched.
+            if (key not in prefetched and self.retry_before_attempt is None
+                    and hasattr(self.modules.references, 'fetch_references_batch')
+                    and self._batch_fetch_allowed() and self._references_pending(spec)):
+                maximum = 8
+                if self.stop_after_tasks is not None:
+                    maximum = min(maximum, self.stop_after_tasks - self.executed)
+                group = []
+                for candidate in self.papers[index-1:]:
+                    if len(group) >= maximum:
+                        break
+                    if self._references_pending(paper_spec(candidate, 'references')):
+                        group.append(candidate)
+                if group:
+                    self._report(f"References | gom {len(group)} bài để tra ngày arXiv theo lô")
+                    results = self.modules.references.fetch_references_batch(
+                        group, self.context, progress=self._report)
+                    for prepared in results:
+                        prefetched[(prepared['owner'], prepared['arxiv_id'])] = prepared
+
+            def load(task=task, key=key):
+                prepared = prefetched.pop(key, None)
+                return prepared if prepared is not None else self.modules.references.fetch_references(task, self.context)
+
+            result = self._perform(spec, load)
             self._bar('References', index, len(self.papers), unit='bài')
             self._count_paper(task, references=result)
             self._owner_finished(task['owner'], remaining)
