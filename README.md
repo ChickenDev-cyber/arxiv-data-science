@@ -756,7 +756,9 @@ Thêm `S2_API_KEY` trong **Colab Secrets** (biểu tượng chìa khóa), bật 
 
 `STOP_AFTER_SECONDS=600` kiểm tra giữa các task sau bước phục hồi, cho task hiện tại hoàn tất. Thời gian phục hồi, task dài, kiểm tra và sao lưu có thể làm một batch vượt 10 phút. Runner ghi lý do dừng trong `runs/<run_id>/execution.json`; notebook đối chiếu với trạng thái và attempt mới nhất trước khi dùng.
 
-Hai Result references mới liên tiếp có HTTP 429 sẽ dừng runner. Notebook kiểm tra, sao lưu và xác minh Drive rồi trả `stop_reason=rate_limited`; không tự chạy thêm batch và không tiêu thụ thêm lượt retry/stall vì lý do này. Giữ nguyên retry HTTP và cooldown đã lưu. Khi chạy lại, preflight phải thành công mới tiếp tục.
+Hai Result references mới liên tiếp có HTTP 429 ở bước lấy trang **Semantic Scholar** sẽ dừng runner. Lỗi 429 ở bước lấy ngày nộp bài từ **arXiv**, khi danh sách S2 đã đầy đủ (`data.complete=true`), giữ trạng thái `partial` và các trường còn thiếu, tiếp tục bài kế tiếp theo mốc task/thời gian; lỗi này không kích hoạt vòng phục hồi S2. Result mới ghi dịch vụ gây lỗi trong `provenance.error_source`; Result cũ vẫn được đọc bằng trạng thái đầy đủ của danh sách. Khi đến lượt retry, checkpoint trang S2 và cache ngày đã lấy thành công tiếp tục được dùng.
+
+Khi S2 thật sự kích hoạt guard, notebook kiểm tra, sao lưu và xác minh Drive rồi trả `stop_reason=rate_limited`; không tiêu thụ thêm lượt retry/stall vì lý do này. Chế độ mặc định yêu cầu bạn chủ động chạy lại; nếu đã bật `AUTO_RECOVER_RATE_LIMITS=True`, vòng tự phục hồi chờ và kiểm tra lại trong ngân sách cấu hình. Giữ nguyên retry HTTP, cooldown và `Retry-After` đã lưu. Preflight phải thành công mới tạo batch tiếp theo. Việc sửa nguồn lỗi không làm tăng hạn mức API và chưa phải bằng chứng tăng tốc trên Colab.
 
 Để thử một đợt nhỏ, dùng `STOP_AFTER_TASKS=20`, `AUTO_BATCHES_PER_CALL=1`; đợt thử vẫn giữ nguyên owner/run ID/scope trong snapshot. `stop_reason=session_limit` là đã sao lưu rồi dừng theo giới hạn của lần bấm chạy này. Sau khi kiểm tra backup, đổi lại `500` và `None` để tiếp tục. Không giảm `AUTO_MAX_BATCHES` xuống 1 vì đây là ngân sách cộng dồn qua các VM.
 

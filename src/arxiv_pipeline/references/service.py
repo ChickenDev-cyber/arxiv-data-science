@@ -152,9 +152,11 @@ class ReferencesModule:
             offset = following
 
         if first_page_failed:
+            provenance = self._provenance(pages, 0)
+            provenance['error_source'] = 'semantic_scholar'
             return self._finish(task, context, started_at, clock, initial_attempts,
                                 status="not_found" if page_error["code"] == "not_found" else "failed",
-                                data=None, error=page_error, provenance=self._provenance(pages, 0), metrics={})
+                                data=None, error=page_error, provenance=provenance, metrics={})
 
         # 2) Keep arXiv references only; merge duplicates field by field.
         merged, notes = self._merge(received)
@@ -184,6 +186,8 @@ class ReferencesModule:
             error = None
 
         provenance = self._provenance(new_pages, failed_batches)
+        if error is not None:
+            provenance['error_source'] = 'semantic_scholar' if page_error is not None else 'arxiv'
         if self.store is not None:
             provenance.update({"pages_resumed": str(resumed_pages), "dates_from_cache": str(cached_dates)})
             if checkpoint_errors:
