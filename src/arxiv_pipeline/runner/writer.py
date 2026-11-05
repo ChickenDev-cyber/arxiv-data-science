@@ -78,6 +78,22 @@ class Publisher:
         self.context,self.store=context,store
         self.root=Path(context["output_root"])
         self.issues=[]
+        # In-memory only: skip rehashing unchanged files between recovery
+        # verification and end-of-invocation checkpoint verification.
+        self._verified_hashes={}
+
+    def _cached_digest(self,path):
+        before=path.stat()
+        signature=(before.st_dev,before.st_ino,before.st_size,before.st_mtime_ns,before.st_ctime_ns)
+        cached=self._verified_hashes.get(str(path))
+        if cached is not None and cached[0]==signature:
+            return cached[1]
+        checksum=digest(path)
+        after=path.stat()
+        if signature!=(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns):
+            raise ValueError("Artifact changed while hashing")
+        self._verified_hashes[str(path)]=(signature,checksum)
+        return checksum
 
     def _payloads(self,r):
         step=r["step"];base=f"raw/{r['owner']}/{paper_folder(r['arxiv_id'])}" if step!="discovery" else ""
@@ -220,7 +236,7 @@ class Publisher:
             if not row["artifacts"]:raise ValueError("Accepted result has no artifact checksums")
             for a in row["artifacts"]:
                 p=safe_path(self.root,a.path)
-                if not p.is_file() or p.stat().st_size!=a.size_bytes or digest(p)!=a.sha256:
+                if not p.is_file() or p.stat().st_size!=a.size_bytes or self._cached_digest(p)!=a.sha256:
                     raise ValueError("Accepted artifact missing or changed: "+a.path)
             for path,payload in self._payloads(r).items():
                 if json.loads(safe_path(self.root,path).read_text(encoding="utf-8"))!=payload:
