@@ -851,3 +851,22 @@ Nếu tải bị cắt, giữ log và để task còn thiếu để chạy tiế
 Nếu runner đã xuất benchmark/snapshot nhưng notebook lỗi ở bước dọn ZIP sau nhiều lần nâng code, giữ runtime và corpus hiện tại. Với batch `resume-31` đang pending, mở [ô phục hồi backup](src/colab_pending_backup_recovery.py), chép toàn bộ vào một ô mới trong chính notebook đang lỗi và chạy riêng ô đó. Script xác nhận journal/worker/measurement, chỉ hoàn tất backup đã thực thi, tạm giữ tất cả ZIP và chặn cả preflight lẫn task mới; mã producer, số đo, retry boundary và ngân sách được giữ nguyên. Các kiểm tra định danh batch hiện tại, revision corpus và SHA-256 khi sao lưu vẫn chạy. Nếu pending khác hoặc runtime đã mất, script dừng để kiểm tra thay vì tự crawl lại.
 
 Bản notebook hiện tại phân biệt commit của phiên đang chạy với producer của số đo lịch sử khi dọn archive: bản lịch sử vẫn phải đúng owner/run ID/mock/measurement, SHA hợp lệ và checksum ZIP, nhưng có thể thuộc nhiều thế hệ commit. Hai ZIP mới nhất được giữ sau xác minh; JSON của mọi lượt đo được giữ nguyên. Restore và batch đang chạy tiếp tục kiểm tra commit theo cấu hình đã ghim.
+
+### Tự chờ và chạy tiếp khi Semantic Scholar trả 429
+
+Notebook hỗ trợ chế độ tùy chọn:
+
+```python
+AUTO_RECOVER_RATE_LIMITS = True
+AUTO_RATE_LIMIT_MAX_RETRIES = 48
+AUTO_RATE_LIMIT_MAX_WAIT_SECONDS = 21600
+AUTO_BATCHES_PER_CALL = None
+```
+
+Mặc định notebook chung vẫn tắt chế độ này. Khi bật, lớp điều phối giữ nguyên controller/journal dữ liệu: preflight429/cooldown được chờ rồi kiểm tra lại; batch dừng do429 phải verify/backup xong mới chờ và tiếp tục. Nhịp chờ tăng60/120/240/480/900giây, dùng cooldown hoặc Retry-After đã lưu nếu dài hơn. Nếu cooldown dài hơn ngân sách chờ còn lại thì dừng, không thử sớm để vượt hạn mức. Lỗi key/quyền, cấu trúc dữ liệu, backup hoặc lỗi chưa phân loại vẫn dừng.
+
+`21600` là tối đa6giờ **chờ429**, không phải6giờ crawl. `48` là số lượt phục hồi tối đa, khác với3attemptsHTTP trong mỗi task và2lượt retry dữ liệu sau khi duyệt hết phạm vi. Hai giới hạn mới tính cho mỗi lần bấm auto-run; số batch/retry dữ liệu và cooldown lưu trong corpus vẫn giữ qua các lần chạy và restore. `AUTO_BATCHES_PER_CALL=1` vẫn giới hạn tổng một batch trong lần bấm chạy đó, kể cả có phục hồi;200batch/2lượt dữ liệu cộng dồn không đổi. Colab thu hồi runtime hoặc hết ngân sách vẫn có thể làm dừng; chế độ này không giữ VM sống.
+
+Log điều phối là các JSON nhỏ, bất biến, được chép/đối chiếu lên `<owner>/<run_id>/control-events/<control_id>/` sau mỗi sự kiện. Log có UTC, cấu hình phục hồi, chờ dự kiến/thực tế và elapsed của auto-run; không chứa key/header/body lỗi. Thiếu log Drive làm dừng trước khi gửi thêm request. Có heartbeat trong lúc chờ và khóa local ngăn hai lớp điều phối cùng chạy. Bấm dừng khi đang chờ sẽ trả `interrupted` mà không crawl thêm.
+
+Benchmark runner và sampler giữ nguyên. Wait/retry trong runner vẫn nằm trong wall runner; chờ bổ sung ở preflight/giữa batch được ghi riêng trong control events. Wall của auto-run bao gồm preflight, runner, kiểm tra/đóng gói/Drive và chờ tự phục hồi, nhưng không gồm checkout/restore/Secrets trước ô auto-run; cũng không bổ sung phép đo RAM/đĩa ngoài runner. Khi báo cáo cần giữ rõ phạm vi này, không sửa JSON benchmark cũ hay trừ thời gian chờ.
