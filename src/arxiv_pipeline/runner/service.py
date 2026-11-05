@@ -226,7 +226,12 @@ class PipelineRunner:
         if result['status'] in ('failed', 'not_found'):
             self.failures[spec.key] = result
         if spec.step == 'references' and self.references_rate_limit_threshold is not None:
-            limited = bool(result.get('error') and result['error'].get('http_status') == 429)
+            # A complete S2 list can still have an arXiv date-enrichment error.
+            # Infer from the validated payload, including old Results without an
+            # error_source annotation, so arXiv 429 never triggers S2 recovery.
+            data = result['data']
+            limited = bool(result.get('error') and result['error'].get('http_status') == 429
+                           and (data is None or not data['complete']))
             self.references_429_streak = self.references_429_streak + 1 if limited else 0
             if self.references_429_streak >= self.references_rate_limit_threshold:
                 raise _Pause('references_rate_limited')

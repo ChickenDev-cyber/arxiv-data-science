@@ -73,7 +73,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument('--s2-delay-seconds', type=float, default=1.0,
                         help='Pause after each Semantic Scholar HTTP attempt (finite >=1; default 1s)')
     parser.add_argument('--references-rate-limit-threshold', type=int,
-                        help='Pause after this many consecutive new references Results with HTTP 429')
+                        help='Pause after this many consecutive new references Results with Semantic Scholar HTTP 429')
     parser.add_argument('--retry-before-attempt', type=int,
                         help='Defer completed failures newer than this pass boundary; 0 visits only new work')
     parser.add_argument('--quiet', action='store_true', help='Hide terminal progress; keep JSON summary and file logs')
