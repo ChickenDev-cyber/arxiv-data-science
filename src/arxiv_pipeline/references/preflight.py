@@ -29,6 +29,40 @@ class PreflightBlocked(ValueError):
         self.code, self.wait_seconds = code, wait_seconds
 
 
+class PreflightRateLimited(RemoteError):
+    """Preserve a safe numeric deadline even before a corpus database exists."""
+
+    def __init__(self, wait_seconds):
+        super().__init__('rate_limited', 'Semantic Scholar returned HTTP 429', True, 429)
+        self.wait_seconds = wait_seconds
+
+
+def _saved_wait_seconds(checkpoints):
+    record = checkpoints.load('rate_limits', canonical_checkpoint_key('semantic_scholar'))
+    if record is None:
+        return 0
+    payload = record['payload']
+    now = time.time()
+    deadline = parse_utc_iso(payload['next_allowed_at'])
+    stamps = sorted(parse_utc_iso(s) for s in payload['recent_requests_at'])
+    recent = [stamp for stamp in stamps if stamp > now - S2_WINDOW_SECONDS]
+    if len(recent) >= S2_WINDOW_REQUESTS:
+        deadline = max(deadline, recent[-S2_WINDOW_REQUESTS] + S2_WINDOW_SECONDS)
+    return max(0, math.ceil(deadline - now))
+
+
+def remaining_cooldown_seconds(output_root, run_id):
+    """Inspect durable S2 deadlines/window without key, HTTP or database writes."""
+    path = Path(output_root) / 'state.sqlite'
+    if not path.is_file():
+        return 0
+    with StateStore.readonly(path, run_id) as store:
+        store.read_run_record()
+        checkpoints = SQLiteCheckpointStore(store)
+        RequestScheduler(checkpoints=checkpoints)  # Validate the entire saved payload first.
+        return _saved_wait_seconds(checkpoints)
+
+
 def check_access(arxiv_id, *, api_key, transport=None, output_root=None, run_id=None):
     if not isinstance(api_key, str) or not api_key.strip():
         raise PreflightBlocked('missing_key', 'S2_API_KEY is required')
@@ -45,21 +79,23 @@ def check_access(arxiv_id, *, api_key, transport=None, output_root=None, run_id=
             checkpoints = SQLiteCheckpointStore(store)
             # Constructing the scheduler validates the complete saved pacing payload.
             scheduler = RequestScheduler(checkpoints=checkpoints)
-            record = checkpoints.load('rate_limits', canonical_checkpoint_key('semantic_scholar'))
-            if record is not None:
-                payload = record['payload']
-                now = time.time()
-                deadline = parse_utc_iso(payload['next_allowed_at'])
-                stamps = sorted(parse_utc_iso(s) for s in payload['recent_requests_at'])
-                recent = [stamp for stamp in stamps if stamp > now - S2_WINDOW_SECONDS]
-                if len(recent) >= S2_WINDOW_REQUESTS:
-                    deadline = max(deadline, recent[-S2_WINDOW_REQUESTS] + S2_WINDOW_SECONDS)
-                if deadline > now:
-                    raise PreflightBlocked('cooldown', 'Saved Semantic Scholar cooldown active',
-                                           wait_seconds=math.ceil(deadline-now))
+            waiting = _saved_wait_seconds(checkpoints)
+            if waiting:
+                raise PreflightBlocked('cooldown', 'Saved Semantic Scholar cooldown active',
+                                       wait_seconds=waiting)
         client = SemanticScholarClient(api_key=api_key, max_attempts=1, timeout=20,
                                        transport=transport, scheduler=scheduler)
-        page = client.references_page(arxiv_id, 0, 1)
+        try:
+            page = client.references_page(arxiv_id, 0, 1)
+        except RemoteError as exc:
+            if exc.info['http_status'] == 429:
+                # The one-attempt client already parsed both Retry-After forms.
+                # Without SQLite its in-memory deadline is the only source.
+                waiting = max(0, math.ceil(client._next_allowed - client.monotonic()))
+                if scheduler is not None:
+                    waiting = max(waiting, _saved_wait_seconds(checkpoints))
+                raise PreflightRateLimited(waiting) from None
+            raise
         return {'ok': True, 'http_status': 200, 'returned_count': len(page['data'])}
 
 
@@ -74,6 +110,14 @@ def main(argv=None):
                               output_root=args.output_root, run_id=args.run_id)
     except RemoteError as exc:
         result = {'ok': False, 'code': exc.info['code'], 'http_status': exc.info['http_status']}
+        if exc.info['http_status'] == 429:
+            result['wait_seconds'] = exc.wait_seconds if isinstance(exc, PreflightRateLimited) else 0
+        if exc.info['http_status'] == 429 and args.output_root is not None:
+            try:
+                result['wait_seconds'] = max(result['wait_seconds'],
+                    remaining_cooldown_seconds(args.output_root, args.run_id))
+            except (ValueError, OSError, sqlite3.Error):
+                result = {'ok': False, 'code': 'invalid_preflight_configuration', 'http_status': None}
     except PreflightBlocked as exc:
         result = {'ok': False, 'code': exc.code, 'http_status': None}
         if exc.wait_seconds is not None:
