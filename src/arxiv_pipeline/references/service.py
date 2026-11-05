@@ -101,7 +101,7 @@ class ReferencesModule:
     def _attempts(self):
         return getattr(self.reader, "attempts", 0) + getattr(self.dates, "attempts", 0)
 
-    def fetch_references(self, task: PaperTask, context: Context) -> Result:
+    def fetch_references(self, task: PaperTask, context: Context, *, defer_dates=False) -> Result:
         validate_task(task)
         validate_context(context)
         started_at, clock = _utc_now(), time.monotonic()
@@ -162,7 +162,12 @@ class ReferencesModule:
         merged, notes = self._merge(received)
 
         # 3) arXiv submission date, only from the arXiv API.
-        dates, date_error, failed_batches, cached_dates = self._submission_dates(list(merged), checkpoint_errors)
+        if defer_dates:
+            # The runner buffers this draft in memory; it is never published until
+            # batch-wide arXiv dates are resolved. S2 page checkpoints are durable.
+            dates, date_error, failed_batches, cached_dates = {}, None, 0, 0
+        else:
+            dates, date_error, failed_batches, cached_dates = self._submission_dates(list(merged), checkpoint_errors)
         for key, record in merged.items():
             record["submission_date"] = dates.get(key)
 
@@ -239,7 +244,88 @@ class ReferencesModule:
             provenance[_pointer("data", "references", key, field)] = text
         return merged, provenance
 
-    def _submission_dates(self, ids, checkpoint_errors=None):
+    def fetch_references_batch(self, tasks, context, *, progress=None):
+        """Buffer S2 reference pages per paper, then share arXiv date lookups.
+
+        Only the runner may call this method. S2 page checkpoints still persist
+        after each accepted page; the runner publishes finished Results one by
+        one using its existing SQLite/filesystem transaction. A 429 prevents
+        prefetching more papers until the runner has handled that result.
+        """
+        results = []
+        for task in tasks:
+            result = self.fetch_references(task, context, defer_dates=True)
+            results.append(result)
+            if progress is not None:
+                progress(f"References | đã lấy S2 {len(results)}/{len(tasks)} bài: "
+                         f"{task['arxiv_id']} ({result['status']})")
+            err = result['error']
+            if (err is not None and err.get('http_status') == 429
+                    and (result['data'] is None or not result['data']['complete'])):
+                break
+
+        all_ids = list(dict.fromkeys(
+            ref_id for result in results if result['data'] is not None
+            for ref_id in result['data']['references']))
+        was_cached = self.date_cache.get_many(all_ids) if self.date_cache else {}
+        attempt_start, date_start = self._attempts(), time.monotonic()
+        failed_id_sets, checkpoint_errors = [], []
+        if all_ids:
+            dates, date_error, _, _ = self._submission_dates(
+                all_ids, checkpoint_errors, failed_id_sets=failed_id_sets)
+        else:
+            dates, date_error = {}, None
+        date_attempts = self._attempts() - attempt_start
+        date_share = (time.monotonic() - date_start) / max(1, len(results))
+
+        # Attribute shared HTTP attempts to one Result exactly once so batch
+        # totals remain meaningful; record the distribution in provenance.
+        recipient = next((r for r in results if r['data'] is not None), None)
+        if recipient is not None:
+            recipient['attempts'] += date_attempts
+
+        for result in results:
+            if result['data'] is None:  # S2 failed on first page: preserve error.
+                continue
+            refs = result['data']['references']
+            for ref_id, ref in refs.items():
+                ref['submission_date'] = dates.get(ref_id)
+            missing = [_pointer('data', 'references', ref_id, field)
+                       for ref_id, ref in refs.items()
+                       for field in REQUIRED_FIELDS if ref[field] is None]
+            result['missing_fields'] = missing
+            result['metrics']['complete_reference_count'] = sum(
+                all(ref[field] is not None for field in REQUIRED_FIELDS)
+                for ref in refs.values())
+            if not result['data']['complete']:
+                status = 'partial'
+            elif not refs:
+                status = 'empty'
+            elif missing:
+                status = 'partial'
+            else:
+                status = 'success'
+            page_error = result['error']
+            failed_here = sum(bool(set(refs).intersection(ids)) for ids in failed_id_sets)
+            result['error'] = page_error or (date_error if failed_here else None)
+            if status in ('success', 'empty'):
+                result['error'] = None
+            result['status'] = status
+            result['provenance']['date_lookup_batches_failed'] = str(failed_here)
+            result['provenance']['cross_paper_date_batch'] = 'true'
+            result['provenance']['date_batch_size_papers'] = str(len(results))
+            if self.date_cache is not None:
+                result['provenance']['dates_from_cache'] = str(
+                    sum(ref_id in was_cached for ref_id in refs))
+            if checkpoint_errors:
+                earlier = result['provenance'].get('checkpoint_write_errors')
+                result['provenance']['checkpoint_write_errors'] = '; '.join(
+                    ([earlier] if earlier else []) + checkpoint_errors)
+            result['duration_seconds'] += date_share
+            result['finished_at'] = _utc_now()
+        return results
+
+    def _submission_dates(self, ids, checkpoint_errors=None, failed_id_sets=None):
         """Dates from the cache first, then arXiv for the rest; every good batch is cached at once.
 
         Returns (dates, first_error, failed_batches, cached_count).
@@ -266,6 +352,8 @@ class ReferencesModule:
             except RemoteError as exc:
                 failed += 1
                 first_error = first_error or exc.info
+                if failed_id_sets is not None:
+                    failed_id_sets.append(set(batch))
         return dates, first_error, failed, cached
 
     @staticmethod

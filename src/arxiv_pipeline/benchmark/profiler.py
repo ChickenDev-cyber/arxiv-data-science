@@ -142,28 +142,34 @@ def get_pipeline_process_ram(pids: int | Iterable[int] | None = None) -> tuple[i
 
 
 def get_dir_size(path: Path) -> int:
-    """Calculate total byte size of all files in directory tree, never following symlinks."""
-    if not path.exists() or path.is_symlink():
-        return 0
-    if path.is_file():
-        try:
-            return path.stat().st_size
-        except OSError:
+    """Measure file sizes with scandir, without Path.rglob or following symlinks."""
+    path = Path(path)
+    try:
+        if path.is_symlink() or not path.exists():
             return 0
+        if path.is_file():
+            return path.stat().st_size
+    except OSError:
+        return 0
 
     total = 0
-    try:
-        for entry in path.rglob("*"):
-            # Never follow or count symlinks
-            if entry.is_symlink():
-                continue
-            if entry.is_file():
-                try:
-                    total += entry.stat().st_size
-                except OSError:
-                    pass
-    except OSError:
-        pass
+    pending = [path]
+    while pending:
+        directory = pending.pop()
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_symlink():
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            pending.append(entry.path)
+                        elif entry.is_file(follow_symlinks=False):
+                            total += entry.stat(follow_symlinks=False).st_size
+                    except OSError:
+                        continue
+        except OSError:
+            continue
     return total
 
 
@@ -181,9 +187,12 @@ class ResourceSampler:
         interval_seconds: float = 0.1,
         process_pid: int | None = None,
         extra_pids: Iterable[int] | None = None,
+        disk_interval_seconds: float = 60.0,
     ):
         self.target_dir = target_dir
         self.interval_seconds = max(0.01, interval_seconds)
+        # Disk scans touch every file; never run one per RAM sample.
+        self.disk_interval_seconds = max(10.0, float(disk_interval_seconds))
 
         # Include wrapper process and runner process PID
         root_pids: set[int] = {os.getpid()}
@@ -195,6 +204,7 @@ class ResourceSampler:
 
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._disk_thread: threading.Thread | None = None
 
         # Store tuples of (timestamp, ram_bytes)
         self.ram_samples: list[tuple[float, int]] = []
@@ -204,6 +214,7 @@ class ResourceSampler:
         self.measurement_method: str = "none"
 
     def _sample_once(self) -> None:
+        """Cheap RAM-only sample; must never traverse the corpus directory."""
         now = time.perf_counter()
         ram, method = get_pipeline_process_ram(self.monitored_pids)
         if ram is not None:
@@ -212,6 +223,8 @@ class ResourceSampler:
             if self.peak_ram_bytes is None or ram > self.peak_ram_bytes:
                 self.peak_ram_bytes = ram
 
+    def _sample_disk_once(self) -> None:
+        """Slow filesystem sample on an independent cadence/thread."""
         if self.target_dir and self.target_dir.exists():
             disk = get_dir_size(self.target_dir)
             self.disk_samples.append(disk)
@@ -223,6 +236,11 @@ class ResourceSampler:
             self._sample_once()
             self._stop_event.wait(self.interval_seconds)
 
+    def _disk_sample_loop(self) -> None:
+        # An initial disk scan has already been taken in start().
+        while not self._stop_event.wait(self.disk_interval_seconds):
+            self._sample_disk_once()
+
     def start(self) -> None:
         """Start the background sampler."""
         self.ram_samples.clear()
@@ -231,11 +249,14 @@ class ResourceSampler:
         self.peak_disk_bytes = None
         self._stop_event.clear()
 
-        # Initial baseline sample
+        # Baseline RAM and disk, then two independent sampling cadences.
         self._sample_once()
+        self._sample_disk_once()
 
         self._thread = threading.Thread(target=self._sample_loop, daemon=True)
+        self._disk_thread = threading.Thread(target=self._disk_sample_loop, daemon=True)
         self._thread.start()
+        self._disk_thread.start()
 
     def stop(self) -> tuple[int | None, int | None, int | None, str]:
         """Stop sampling and return (peak_ram, time_weighted_mean_ram, peak_disk, method).
@@ -246,9 +267,13 @@ class ResourceSampler:
         self._stop_event.set()
         if self._thread and self._thread.is_alive():
             self._thread.join(timeout=1.0)
+        if self._disk_thread and self._disk_thread.is_alive():
+            # Do not overlap a large in-progress scan with the final scan.
+            self._disk_thread.join()
 
-        # Final sample
+        # Final RAM/disk samples also detect files added after the last cadence.
         self._sample_once()
+        self._sample_disk_once()
 
         mean_ram: int | None = None
         if self.ram_samples:
