@@ -186,7 +186,8 @@ def get_pending_source_tasks(db_path: Path, run_id: str, skip_not_found: bool = 
 def run_metadata_stage(corpus_dir: Path, db_path: Path, run_id: str, args):
     """Crawl and publish missing metadata via OAI-PMH."""
     pending = get_pending_metadata_tasks(corpus_dir, db_path, run_id, retry_not_found=args.retry_not_found)
-    owner = pending[0].get("owner", "unknown") if pending else "unknown"
+    assigned = get_assigned_papers(corpus_dir, db_path, run_id)
+    owner = assigned[0].get("owner", "unknown") if assigned else (pending[0].get("owner", "unknown") if pending else "unknown")
 
     print("\n" + "=" * 65)
     print(f"[*] [STAGE 1: METADATA] Thư mục: {corpus_dir}")
@@ -206,13 +207,17 @@ def run_metadata_stage(corpus_dir: Path, db_path: Path, run_id: str, args):
         print(f"[*] Giới hạn lượt này: Chạy {len(pending)} bài.")
 
     context = {"run_id": run_id, "output_root": corpus_dir, "is_mock": False}
-    metadata_module = MetadataModule(client=OaiClient(delay=args.delay))
+    # Tối ưu: metadata XML chỉ ~3KB nên timeout 15s là lý tưởng (tránh treo 60s).
+    # Đặt max_attempts=1 trong OaiClient để tránh cấp số nhân retry (3x3=9 lần).
+    meta_timeout = min(args.timeout, 15.0)
+    metadata_module = MetadataModule(client=OaiClient(timeout=meta_timeout, delay=args.delay, max_attempts=1))
     acc_path = corpus_dir / "runs" / run_id / "accepted_results.jsonl"
     acc_path.parent.mkdir(parents=True, exist_ok=True)
 
     total = len(pending)
     succeeded = 0
     start_time = time.time()
+    consecutive_network_failures = 0
 
     with OutputLock(corpus_dir):
         with StateStore(db_path, run_id) as store:
@@ -228,7 +233,7 @@ def run_metadata_stage(corpus_dir: Path, db_path: Path, run_id: str, args):
                 label = f"{aid} [metadata]"
                 print(f"[{i}/{total}] Đang lấy metadata {label}...", end=" ", flush=True)
 
-                consecutive_errors = 0
+                paper_attempts = 0
                 while True:
                     try:
                         attempt = store.mark_running(spec.key)
@@ -240,6 +245,7 @@ def run_metadata_stage(corpus_dir: Path, db_path: Path, run_id: str, args):
                             with open(acc_path, "a", encoding="utf-8") as f:
                                 f.write(json.dumps(result, ensure_ascii=False) + "\n")
                             succeeded += 1
+                            consecutive_network_failures = 0
 
                             # Register newly discovered versions into run_tasks for sources stage
                             versions = (result.get("data") or {}).get("versions") or []
@@ -252,26 +258,56 @@ def run_metadata_stage(corpus_dir: Path, db_path: Path, run_id: str, args):
                             if len(title) > 35:
                                 title = title[:32] + "..."
                             print(f"OK! ({result['status']}: {len(versions)} phiên bản - {title})")
+                            break
 
                         elif result["status"] == "not_found":
+                            consecutive_network_failures = 0
                             store.complete(attempt, accepted=False)
                             with open(acc_path, "a", encoding="utf-8") as f:
                                 f.write(json.dumps(result, ensure_ascii=False) + "\n")
                             print("[!] 404 Not Found trên OAI-PMH (Bỏ qua)")
+                            break
+
+                        elif (result.get("error") or {}).get("retryable", False):
+                            paper_attempts += 1
+                            consecutive_network_failures += 1
+
+                            # Circuit Breaker: nếu bị timeout liên tiếp 2 bài, arXiv đang throttle IP. Nghỉ 45s để phục hồi!
+                            if consecutive_network_failures >= 2:
+                                print(f"\n    [!] Phát hiện arXiv OAI-PMH đang nghẽn/tarpit (2 lỗi timeout liên tiếp).")
+                                print(f"    [*] Kích hoạt Circuit Breaker: Tạm nghỉ 45s để arXiv xả hàng chờ...", end=" ", flush=True)
+                                time.sleep(45)
+                                consecutive_network_failures = 0
+                                print("Tiếp tục!")
+
+                            if paper_attempts <= args.max_retries:
+                                cooldown = 3.0 * paper_attempts
+                                print(f"\n    [!] Lỗi tạm thời ({result.get('error', {}).get('message')}). Thử lại ({paper_attempts}/{args.max_retries}) sau {cooldown:.0f}s...", end=" ", flush=True)
+                                time.sleep(cooldown)
+                                continue
+                            else:
+                                store.complete(attempt, accepted=False)
+                                print(f"\n    [!] Hết số lần thử ({args.max_retries} lần). Tạm bỏ qua bài này.")
+                                break
+
                         else:
+                            consecutive_network_failures = 0
                             store.complete(attempt, accepted=False)
                             print(f"[!] Bỏ qua (status: {result['status']}, lỗi: {result.get('error')})")
-
-                        break
+                            break
 
                     except KeyboardInterrupt:
                         print("\n[!] Dừng bởi người dùng (Ctrl+C). Tiến trình đã lưu an toàn.")
                         sys.exit(0)
                     except Exception as exc:
-                        consecutive_errors += 1
-                        cooldown = min(60, 10 * consecutive_errors)
-                        print(f"\n    [!] Lỗi lấy metadata {label}: {exc}. Chờ {cooldown}s rồi thử lại...", flush=True)
-                        time.sleep(cooldown)
+                        paper_attempts += 1
+                        if paper_attempts <= args.max_retries:
+                            cooldown = 3.0 * paper_attempts
+                            print(f"\n    [!] Lỗi ngoại lệ: {exc}. Thử lại ({paper_attempts}/{args.max_retries}) sau {cooldown:.0f}s...", end=" ", flush=True)
+                            time.sleep(cooldown)
+                        else:
+                            print(f"\n    [!] Bỏ qua bài này do lỗi: {exc}")
+                            break
 
     elapsed = time.time() - start_time
     print(f"\n[+] Kết thúc stage Metadata: Đã lưu {succeeded}/{total} bài ({elapsed / 60:.1f} phút).\n")
@@ -307,7 +343,7 @@ def run_sources_stage(corpus_dir: Path, db_path: Path, run_id: str, args):
         max_extracted_bytes=max(1024 * 1024 * 1024, 2 * args.max_download_bytes),
     )
     sources_module = SourcesModule(
-        client=ArxivSourceClient(delay=args.delay, max_download_bytes=args.max_download_bytes),
+        client=ArxivSourceClient(timeout=args.timeout, delay=args.delay, max_download_bytes=args.max_download_bytes),
         extractor=SourceExtractor(),
         limits=limits,
     )
@@ -350,25 +386,44 @@ def run_sources_stage(corpus_dir: Path, db_path: Path, run_id: str, args):
                             files_count = len(result.get("data", {}).get("files", []))
                             kind = result.get("data", {}).get("source_kind", "unknown")
                             print(f"OK! ({result['status']}: {kind}, {dl_mb:.1f} MB, {files_count} files TeX/bib)")
+                            break
+
                         elif result["status"] == "not_found":
                             store.complete(attempt, accepted=False)
                             with open(acc_path, "a", encoding="utf-8") as f:
                                 f.write(json.dumps(result, ensure_ascii=False) + "\n")
                             print("[!] 404 Not Found trên arXiv (Đã ghi nhận, bỏ qua)")
+                            break
+
+                        elif (result.get("error") or {}).get("retryable", False):
+                            consecutive_errors += 1
+                            if consecutive_errors <= args.max_retries:
+                                cooldown = min(60, 5 * consecutive_errors)
+                                print(f"\n    [!] Lỗi tải tạm thời ({result.get('error', {}).get('message')}). Thử lại ({consecutive_errors}/{args.max_retries}) sau {cooldown}s...", end=" ", flush=True)
+                                time.sleep(cooldown)
+                                continue
+                            else:
+                                store.complete(attempt, accepted=False)
+                                print(f"\n    [!] Hết số lần thử lại ({args.max_retries} lần). Bỏ qua (lỗi: {result.get('error', {}).get('message')})")
+                                break
+
                         else:
                             store.complete(attempt, accepted=False)
                             print(f"[!] Bỏ qua (status: {result['status']}, lỗi: {result.get('error')})")
-
-                        break
+                            break
 
                     except KeyboardInterrupt:
                         print("\n[!] Dừng bởi người dùng (Ctrl+C). Tiến trình đã lưu an toàn.")
                         sys.exit(0)
                     except Exception as exc:
                         consecutive_errors += 1
-                        cooldown = min(60, 10 * consecutive_errors)
-                        print(f"\n    [!] Lỗi tải {label}: {exc}. Chờ {cooldown}s rồi thử lại...", flush=True)
-                        time.sleep(cooldown)
+                        if consecutive_errors <= args.max_retries:
+                            cooldown = min(60, 5 * consecutive_errors)
+                            print(f"\n    [!] Lỗi tải {label}: {exc}. Thử lại ({consecutive_errors}/{args.max_retries}) sau {cooldown}s...", end=" ", flush=True)
+                            time.sleep(cooldown)
+                        else:
+                            print(f"\n    [!] Lỗi tải {label}: {exc}. Bỏ qua phiên bản này.")
+                            break
 
     elapsed = time.time() - start_time
     print(f"\n[+] Kết thúc stage Sources: Đã xử lý {succeeded}/{total} phiên bản ({elapsed / 60:.1f} phút).\n")
@@ -383,13 +438,17 @@ def main():
         description="Thu thập Metadata và Mã nguồn TeX/LaTeX (Sources) cục bộ cho tập dữ liệu arXiv."
     )
     parser.add_argument(
+        "--output-root",
         "--corpus-dir",
+        dest="corpus_dir",
         default="data/m1-colab-trong-01/corpus",
         help="Đường dẫn thư mục corpus local (mặc định: data/m1-colab-trong-01/corpus)",
     )
     parser.add_argument("--run-id", default=None, help="Mã run_id (tự động phát hiện nếu để trống)")
     parser.add_argument(
+        "--stage",
         "--step",
+        dest="step",
         choices=["all", "metadata", "sources"],
         default="all",
         help="Công đoạn cần chạy: all (cả metadata lẫn sources, mặc định), metadata, hoặc sources",
@@ -397,8 +456,20 @@ def main():
     parser.add_argument(
         "--delay",
         type=float,
-        default=3.0,
-        help="Thời gian giãn cách giữa các lượt gọi arXiv (giây, mặc định 3.0s)",
+        default=3.5,
+        help="Thời gian giãn cách giữa các lượt gọi arXiv (giây, mặc định 3.5s an toàn)",
+    )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=30.0,
+        help="Thời gian chờ tối đa cho mỗi request mạng (giây, mặc định 30.0s, metadata tối đa 15s)",
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=2,
+        help="Số lần thử lại tự động khi gặp lỗi mạng/timeout (mặc định 2 lần)",
     )
     parser.add_argument(
         "--max-download-bytes",
@@ -425,7 +496,7 @@ def main():
     print(f"### Thư mục: {corpus_dir}")
     print(f"### Run ID: {run_id}")
     print(f"### Công đoạn (step): {args.step}")
-    print(f"### Giới hạn tải: {args.max_download_bytes / (1024 * 1024):.0f} MiB | Giãn cách: {args.delay}s")
+    print(f"### Giới hạn tải: {args.max_download_bytes / (1024 * 1024):.0f} MiB | Giãn cách: {args.delay}s | Timeout: {args.timeout}s")
     print("#" * 65)
 
     if args.step in ("all", "metadata"):
