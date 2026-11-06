@@ -275,7 +275,8 @@ def main():
     parser = argparse.ArgumentParser(description="Thu thập References theo lô (POST Batch) tại máy local.")
     parser.add_argument("--zip", default="data/m1-colab-trong-01-resume-40.zip",
                         help="Đường dẫn file ZIP backup từ Colab")
-    parser.add_argument("--corpus-dir", default="data/m1-colab-trong-01/corpus",
+    parser.add_argument("--output-root", "--corpus-dir", dest="corpus_dir",
+                        default="data/m1-colab-trong-01/corpus",
                         help="Đường dẫn thư mục corpus local")
     parser.add_argument("--run-id", default=None, help="Mã run_id (tự động nhận diện nếu để trống)")
     parser.add_argument("--env", default=".env", help="Đường dẫn file .env chứa S2_API_KEY")
