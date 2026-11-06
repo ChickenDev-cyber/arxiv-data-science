@@ -46,7 +46,7 @@ class SourceProcessingError(Exception):
 @dataclass(frozen=True, slots=True)
 class ExtractionLimits:
     max_members: int = 10_000
-    max_file_bytes: int = 200 * 1024 * 1024  # Max 200Mb file size
+    max_file_bytes: int = 500 * 1024 * 1024  # Max 500Mb file size
     max_extracted_bytes: int = 1024 * 1024 * 1024  # Max 1Gb extracted bytes
 
 
