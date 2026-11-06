@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import sys
 import tempfile
 import time
@@ -308,9 +309,33 @@ def main():
     # Identify pending papers
     pending_tasks = []
     done_count = 0
+
+    # Query DB for already known not_found papers
+    db_conn = sqlite3.connect(db_path)
+    not_found_aids = set()
+    try:
+        cur = db_conn.cursor()
+        cur.execute(
+            "SELECT t.task_key, a.result_json FROM run_tasks t "
+            "JOIN attempts a ON a.attempt_id = t.latest_attempt_id "
+            "WHERE t.run_id = ? AND t.task_key LIKE '%references%'",
+            (run_id,)
+        )
+        for key_str, rjson in cur.fetchall():
+            if rjson:
+                try:
+                    res = json.loads(rjson)
+                    if res.get("status") == "not_found":
+                        not_found_aids.add(json.loads(key_str)[2])
+                except Exception:
+                    pass
+    finally:
+        db_conn.close()
+
     for task in tasks:
-        pdir = corpus_dir / "raw" / task["owner"] / paper_folder(task["arxiv_id"])
-        if (pdir / "references.json").is_file():
+        aid = task["arxiv_id"]
+        pdir = corpus_dir / "raw" / task["owner"] / paper_folder(aid)
+        if (pdir / "references.json").is_file() or aid in not_found_aids:
             done_count += 1
         else:
             pending_tasks.append(task)
