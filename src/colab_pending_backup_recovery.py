@@ -31,7 +31,7 @@ def recover_pending_backup(namespace, *, expected_measurement='resume-31'):
     def no_new_crawl(*args, **kwargs):
         raise RuntimeError('Ô phục hồi chỉ hoàn tất backup; đã chặn preflight và task mới.')
 
-    def keep_all_archives():
+    def keep_all_archives(*args, **kwargs):
         print('Phục hồi backup: tạm giữ toàn bộ ZIP cũ; không dọn snapshot trong lần này.')
 
     print('Hoàn tất batch đang chờ:', expected_measurement)
