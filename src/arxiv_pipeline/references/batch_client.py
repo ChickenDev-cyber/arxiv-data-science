@@ -120,7 +120,13 @@ class BatchSemanticScholarClient:
                         raise RemoteError("rate_limited", f"HTTP 429: wait {cooldown:.0f}s", True, 429)
                     continue
 
-                if resp.status_code in (400, 413):
+                if resp.status_code == 400:
+                    if b"No valid paper ids given" in resp.body:
+                        # Semantic Scholar returns HTTP 400 when none of the IDs in the batch are indexed in S2
+                        return [None] * len(arxiv_ids)
+                    raise RemoteError("remote_error", f"HTTP {resp.status_code}", False, resp.status_code)
+
+                if resp.status_code == 413:
                     raise RemoteError("remote_error", f"HTTP {resp.status_code}", False, resp.status_code)
 
                 if resp.status_code in (500, 502, 503, 504):
