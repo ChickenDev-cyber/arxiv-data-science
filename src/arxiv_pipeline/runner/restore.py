@@ -42,7 +42,7 @@ class RunStateRelocator:
                 validation = json.loads(safe_path(root, reports + "/validation.json").read_text())
                 exported_scope = json.loads(safe_path(root, reports + "/scope.json").read_text())
                 exported_results = [json.loads(line) for line in safe_path(
-                    root, reports + "/accepted_results.jsonl").read_text().splitlines() if line.strip()]
+                    root, reports + "/accepted_results.jsonl").read_text(encoding="utf-8").split("\n") if line.strip()]
                 if (validation != {"valid": True, "issues": []} or exported_scope != scope
                         or exported_results != accepted):
                     raise ValueError("Restored export is unavailable or differs from SQLite")

@@ -87,7 +87,7 @@ class RunInspector:
     def _read(root, relative):
         try:
             text = safe_path(root, relative).read_text(encoding="utf-8")
-            return ([json.loads(line) for line in text.splitlines() if line.strip()]
+            return ([json.loads(line) for line in text.split("\n") if line.strip()]
                     if relative.endswith(".jsonl") else json.loads(text))
         except (OSError, ValueError) as exc:
             raise ValueError(f"Run file {relative} is unavailable or not valid JSON") from exc

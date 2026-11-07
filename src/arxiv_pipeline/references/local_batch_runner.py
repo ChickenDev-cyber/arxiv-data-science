@@ -32,6 +32,10 @@ def _utc_now():
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _pointer(*tokens):
+    return "/" + "/".join(str(t).replace("~", "~0").replace("/", "~1") for t in tokens)
+
+
 def process_batch_references(root: Path, run_id: str, tasks: list[dict],
                              s2_client: BatchSemanticScholarClient,
                              arxiv_dates_client: ArxivDateClient,
@@ -138,7 +142,7 @@ def process_batch_references(root: Path, run_id: str, tasks: list[dict],
                         }
                         for field, val in norm_refs[norm_c].items():
                             if val is None:
-                                missing_fields.append(f"/data/references/{norm_c}/{field}")
+                                missing_fields.append(_pointer("data", "references", norm_c, field))
 
                     metrics = {
                         "s2_reference_count": len(raw_refs),
@@ -146,7 +150,7 @@ def process_batch_references(root: Path, run_id: str, tasks: list[dict],
                         "complete_reference_count": sum(1 for r in norm_refs.values() if r["submission_date"] and r["title"] and r["authors"])
                     }
 
-                    if not raw_refs:
+                    if not norm_refs:
                         status = "empty"
                     elif missing_fields:
                         status = "partial"
