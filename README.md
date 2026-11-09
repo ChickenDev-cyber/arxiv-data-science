@@ -872,3 +872,146 @@ Mặc định notebook chung vẫn tắt chế độ này. Khi bật, lớp đi�
 Log điều phối là các JSON nhỏ, bất biến, được chép/đối chiếu lên `<owner>/<run_id>/control-events/<control_id>/` sau mỗi sự kiện. Log có UTC, cấu hình phục hồi, chờ dự kiến/thực tế và elapsed của auto-run; không chứa key/header/body lỗi. Thiếu log Drive làm dừng trước khi gửi thêm request. Có heartbeat trong lúc chờ và khóa local ngăn hai lớp điều phối cùng chạy. Bấm dừng khi đang chờ sẽ trả `interrupted` mà không crawl thêm.
 
 Benchmark runner và sampler giữ nguyên. Wait/retry trong runner vẫn nằm trong wall runner; chờ bổ sung ở preflight/giữa batch được ghi riêng trong control events. Wall của auto-run bao gồm preflight, runner, kiểm tra/đóng gói/Drive và chờ tự phục hồi, nhưng không gồm checkout/restore/Secrets trước ô auto-run; cũng không bổ sung phép đo RAM/đĩa ngoài runner. Khi báo cáo cần giữ rõ phạm vi này, không sửa JSON benchmark cũ hay trừ thời gian chờ.
+
+---
+
+## Milestone 2 — Module 4: Trích xuất BibTeX và chuẩn hóa citation (Mẫn Nhi)
+
+Phần này bổ sung tài liệu cho Module 4 của Milestone 2. **Các nội dung Milestone 1 ở phía trên được giữ nguyên**; Module 4 mới được đặt trong package riêng `bibtex/` và không thay thế module `references/` hiện có.
+
+### Phạm vi và luồng dữ liệu
+
+Module 4 nhận danh sách `GatheredSource` của nhiều phiên bản (`v1`, `v2`, ...) thuộc cùng một bài arXiv, đọc bibliography từ `merged_tex` và các file `.bbl`, rồi trả về:
+
+- `unified_bibtex`: danh sách `BibtexEntry` đã hợp nhất và loại trùng lặp xuyên phiên bản.
+- `citation_remap`: ánh xạ citation key theo từng phiên bản, theo dạng `{version: {old_key: canonical_key}}`; Module 2 dùng ánh xạ này để viết lại `\\cite{...}`, còn Module 5 nhận bibliography đã thống nhất.
+
+```text
+Module 1 (GatheredSource)
+          │
+          ▼
+Module 4 — arxiv_pipeline.bibtex
+  ├── Đọc thebibliography trong merged_tex / .bbl
+  ├── Phân tích từng \\bibitem thành BibtexEntry
+  ├── Chuẩn hóa DOI và title
+  ├── Gộp mục trùng giữa các phiên bản
+  └── Tạo citation_remap theo version
+       │                         │
+       ▼                         ▼
+Module 5: unified_bibtex    Module 2: citation_remap
+```
+
+### Vị trí mã nguồn
+
+```text
+src/arxiv_pipeline/bibtex/
+├── __init__.py       # Public API của Module 4
+├── contracts.py      # GatheredSource, BibtexEntry, PaperReferences
+├── parser.py         # Đọc thebibliography, .bbl và phân tích \bibitem
+├── normalizer.py     # Chuẩn hóa DOI và title
+├── deduplicator.py   # Dedup xuyên version, hợp nhất trường và tạo remap
+├── remapper.py       # Viết lại citation key trong lệnh \cite
+└── service.py        # Hàm điều phối extract_and_unify_references
+
+tests/bibtex/
+└── test_module4.py   # Kiểm thử parser, dedup, field union và citation remap
+```
+
+`src/arxiv_pipeline/references/` vẫn là T4 Milestone 1: lấy references từ Semantic Scholar API và metadata arXiv. `src/arxiv_pipeline/bibtex/` là Module 4 Milestone 2: trích xuất bibliography trực tiếp từ LaTeX/.bbl và chuẩn hóa citation key. Hai module có mục đích khác nhau, không ghi đè hoặc thay thế lẫn nhau.
+
+### Hợp đồng dữ liệu
+
+`GatheredSource` sử dụng các trường đầu vào sau (các trường không cần thiết có thể vắng mặt theo `TypedDict` hiện tại):
+
+| Trường | Kiểu | Ý nghĩa |
+|---|---|---|
+| `arxiv_id` | `str` | ID bài arXiv |
+| `version` | `int` | Số phiên bản |
+| `root_file` | `str \| None` | File `.tex` gốc |
+| `compilation_path` | `list[str]` | Thứ tự file trong luồng biên dịch |
+| `merged_tex` | `str` | Nội dung LaTeX đã ghép |
+| `bbl_files` | `list[str]` | Đường dẫn đến file `.bbl` nếu có |
+| `status` | `str` | Trạng thái gathering |
+
+Mỗi `BibtexEntry` có `arxiv_id`, `citation_key`, `entry_type`, `title`, `authors`, `year`, `doi`, `journal` và `url`. `PaperReferences` gồm `arxiv_id`, `unified_bibtex` và `citation_remap`.
+
+### Cách sử dụng từ Python
+
+Chạy từ thư mục gốc repository, với `src` nằm trong `PYTHONPATH`:
+
+```python
+from arxiv_pipeline.bibtex import (
+    extract_and_unify_references,
+    rewrite_citation_keys,
+)
+
+versions_sources = [
+    {
+        "arxiv_id": "2409.00001",
+        "version": 1,
+        "root_file": "main.tex",
+        "compilation_path": ["main.tex"],
+        "merged_tex": tex_v1,
+        "bbl_files": ["/path/to/v1/main.bbl"],
+        "status": "ok",
+    },
+    {
+        "arxiv_id": "2409.00001",
+        "version": 2,
+        "root_file": "main.tex",
+        "compilation_path": ["main.tex"],
+        "merged_tex": tex_v2,
+        "bbl_files": ["/path/to/v2/main.bbl"],
+        "status": "ok",
+    },
+]
+
+result = extract_and_unify_references(versions_sources)
+
+# Bàn giao cho Module 5
+bibtex_rows = result["unified_bibtex"]
+
+# Bàn giao cho Module 2: lấy map đúng phiên bản trước khi rewrite
+remap_v2 = result["citation_remap"].get(2, {})
+rewritten_tex_v2 = rewrite_citation_keys(tex_v2, remap_v2)
+```
+
+Hai hàm public:
+
+```python
+extract_and_unify_references(
+    versions_sources: list[GatheredSource]
+) -> PaperReferences
+
+rewrite_citation_keys(
+    text: str,
+    remap: dict[str, str]
+) -> str
+```
+
+`extract_and_unify_references` sắp xếp nguồn theo số version trước khi xử lý. Nếu danh sách đầu vào rỗng, hàm trả hợp đồng rỗng. Nếu đầu vào trộn nhiều `arxiv_id` khác nhau, hàm báo `ValueError`. Những version không có bibliography vẫn được giữ trong `citation_remap` với map rỗng.
+
+### Quy tắc trích xuất, hợp nhất và rewrite
+
+1. Parser tìm môi trường `\\begin{thebibliography} ... \\end{thebibliography}` trong `merged_tex` và nội dung của các file `.bbl` tồn tại, sau đó tách từng `\\bibitem` thành citation key và raw entry.
+2. Nếu cùng một citation key xuất hiện trong cả `.tex` và `.bbl` của cùng nguồn, parser chỉ giữ lần xuất hiện đầu tiên.
+3. DOI được chuẩn hóa trước khi so khớp; title được chuẩn hóa về chữ thường, bỏ dấu và ký tự đặc biệt. Hai mục được coi là trùng nếu có cùng DOI **hoặc** cùng title chuẩn hóa. Nếu không có cả hai định danh, fallback dùng citation key.
+4. Canonical key là key của mục được gặp đầu tiên theo thứ tự version tăng dần. Key của mục trùng ở phiên bản sau được ánh xạ về key canonical.
+5. Khi hợp nhất, trường còn thiếu được bổ sung từ mục trùng; danh sách authors được union, không thêm tên đã có; `year` được bổ sung nếu mục canonical chưa có năm.
+6. `rewrite_citation_keys` xử lý các key trong `\\cite{a,b}` và dạng có tối đa hai optional arguments như `\\cite[p. 4]{a,b}`. Key không có trong map được giữ nguyên.
+
+### Kiểm thử
+
+Cài dependencies của project nếu môi trường chưa có pytest, sau đó chạy từ thư mục gốc repository:
+
+```bash
+PYTHONPATH=src pytest -q tests/bibtex
+```
+
+Test Module 4 hiện có kiểm tra: tách nhiều `\\bibitem` (bao gồm label tùy chọn), dedup giữa các version, hợp nhất DOI/năm, canonical key và citation remap, rewrite nhiều key trong một lệnh `\\cite`, giữ key không được ánh xạ, input rỗng và version không có bibliography.
+
+### Giới hạn và việc cần xác nhận trước khi tích hợp
+
+Nội dung `\\bibitem` là văn bản tự do nên việc suy luận `title`, `authors`, `journal` và `entry_type` hiện dùng heuristic; không thể đảm bảo đúng tuyệt đối cho mọi định dạng bibliography. Cần kiểm tra thêm các trường hợp thực tế như tên tác giả nhiều dòng, title có dấu chấm, DOI bị xuống dòng và tên venue có dấu chấm. Hướng dẫn Module 4 cũng yêu cầu chạy thử trên ít nhất 10 bài có raw TeX trong corpus trước khi merge. **Đây là bước xác nhận trên dữ liệu thật, không được xem là đã hoàn tất chỉ vì các test offline chạy qua.**
+
+Khi tích hợp, Module 1 cung cấp `GatheredSource`; Module 4 chuyển `citation_remap` theo đúng version cho Khang (Module 2) và chuyển `unified_bibtex` cho Trọng (Module 5). Không đưa bibliography vào cây hierarchy của Module 3; đề Milestone 2 quy định phần tài liệu tham khảo được xử lý riêng bởi Module 4.
