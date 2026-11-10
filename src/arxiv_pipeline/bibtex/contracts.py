@@ -2,7 +2,7 @@
 from typing import TypedDict
 
 
-class GatheredSource(TypedDict, total=False):
+class GatheredSource(TypedDict):
     arxiv_id: str
     version: int
     root_file: str | None
