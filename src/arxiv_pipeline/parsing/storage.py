@@ -215,7 +215,8 @@ class ParsingDatabase:
                 ],
                 names=["element_id", "arxiv_id", "kind", "content"],
             )
-            pq.write_table(table_el, out_path / "elements.parquet", compression="snappy")
+            (out_path / "elements").mkdir(parents=True, exist_ok=True)
+            pq.write_table(table_el, out_path / "elements" / "train.parquet", compression="snappy")
         counts["elements"] = len(el_rows)
 
         # Hierarchy table
@@ -231,7 +232,8 @@ class ParsingDatabase:
                 ],
                 names=["arxiv_id", "version", "element_id", "parent_id"],
             )
-            pq.write_table(table_h, out_path / "hierarchy.parquet", compression="snappy")
+            (out_path / "hierarchy").mkdir(parents=True, exist_ok=True)
+            pq.write_table(table_h, out_path / "hierarchy" / "train.parquet", compression="snappy")
         counts["hierarchy"] = len(h_rows)
 
         # Bibtex table (authors is typed as list<string>)
@@ -265,7 +267,8 @@ class ParsingDatabase:
                     "url",
                 ],
             )
-            pq.write_table(table_b, out_path / "bibtex.parquet", compression="snappy")
+            (out_path / "bibtex").mkdir(parents=True, exist_ok=True)
+            pq.write_table(table_b, out_path / "bibtex" / "train.parquet", compression="snappy")
         counts["bibtex"] = len(b_rows)
 
         return counts
