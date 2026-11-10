@@ -11,6 +11,7 @@ class GatheredSource(TypedDict):
     root_file: str | None
     compilation_path: list[str]
     merged_tex: str
+    bib_files: list[str]
     bbl_files: list[str]
     status: GatherStatus
 

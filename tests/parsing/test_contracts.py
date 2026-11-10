@@ -1,5 +1,6 @@
 import unittest
 from arxiv_pipeline.parsing.contracts import (
+    GatheredSource,
     ElementRecord,
     HierarchyEdgeRecord,
     BibtexRecord,
@@ -10,6 +11,21 @@ from arxiv_pipeline.parsing.contracts import (
 
 
 class TestParsingContracts(unittest.TestCase):
+    def test_gathered_source_fields(self):
+        gathered: GatheredSource = {
+            "arxiv_id": "2409.03594",
+            "version": 1,
+            "root_file": "main.tex",
+            "compilation_path": ["main.tex"],
+            "merged_tex": r"\documentclass{article}",
+            "bib_files": ["data/2409-03594/v1/refs.bib"],
+            "bbl_files": [],
+            "status": "ok",
+        }
+        self.assertEqual(gathered["bib_files"], ["data/2409-03594/v1/refs.bib"])
+        self.assertEqual(gathered["bbl_files"], [])
+        self.assertEqual(gathered["status"], "ok")
+
     def test_element_record_fields(self):
         record: ElementRecord = {
             "element_id": "2409.03594#s1",
