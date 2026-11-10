@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from arxiv_pipeline.parsing.runner import (
+    PipelineComponents,
     discover_paper_dirs,
     extract_fallback_references,
     parse_fallback_hierarchy,
@@ -165,6 +166,151 @@ class TestParsingRunner(unittest.TestCase):
         discovered = discover_paper_dirs(raw_corpus)
         self.assertEqual(len(discovered), 1)
         self.assertEqual(discovered[0].name, "2503-11892")
+
+    def test_pluggable_components_pipeline_flow_and_cite_rewrite(self):
+        """Verify M1 -> M4 -> Rewrite -> M3 -> M5 orchestration deduplicates rewritten citations."""
+        p_hook = self.corpus_path / "2503.77777"
+        (p_hook / "v1").mkdir(parents=True, exist_ok=True)
+        (p_hook / "v2").mkdir(parents=True, exist_ok=True)
+        (p_hook / "v1" / "main.tex").write_text("dummy v1", encoding="utf-8")
+        (p_hook / "v2" / "main.tex").write_text("dummy v2", encoding="utf-8")
+
+        def mock_gather(src_dir, arxiv_id, ver):
+            tex = r"We cite \cite{oldA}." if ver == 1 else r"We cite \cite{newB}."
+            return {
+                "arxiv_id": arxiv_id,
+                "version": ver,
+                "root_file": "main.tex",
+                "compilation_path": ["main.tex"],
+                "merged_tex": tex,
+                "bib_files": [],
+                "bbl_files": [],
+                "status": "ok",
+            }
+
+        def mock_refs(sources):
+            return {
+                "arxiv_id": sources[0]["arxiv_id"],
+                "unified_bibtex": [
+                    {
+                        "arxiv_id": sources[0]["arxiv_id"],
+                        "citation_key": "canonA",
+                        "entry_type": "article",
+                        "title": "Unified Paper",
+                        "authors": ["Alice"],
+                        "year": 2024,
+                        "doi": "",
+                        "journal": "",
+                        "url": "",
+                    }
+                ],
+                "citation_remap": {1: {"oldA": "canonA"}, 2: {"newB": "canonA"}},
+            }
+
+        def mock_rewrite(text, remap):
+            for old, new in remap.items():
+                text = text.replace(old, new)
+            return text
+
+        def mock_hierarchy(source):
+            return {
+                "arxiv_id": source["arxiv_id"],
+                "version": source["version"],
+                "nodes": [
+                    {"temp_id": "root", "kind": "document", "content": "Doc", "parent_temp_id": None},
+                    {"temp_id": "s1", "kind": "sentence", "content": source["merged_tex"], "parent_temp_id": "root"},
+                ],
+            }
+
+        components = PipelineComponents(
+            gather_fn=mock_gather,
+            refs_fn=mock_refs,
+            rewrite_fn=mock_rewrite,
+            hierarchy_fn=mock_hierarchy,
+        )
+        res = process_single_publication("2503.77777", p_hook, components=components)
+        sent_elements = [e for e in res["elements"] if e["kind"] == "sentence"]
+        self.assertEqual(len(sent_elements), 1)
+        self.assertEqual(sent_elements[0]["content"], r"We cite \cite{canonA}.")
+
+    def test_bib_file_discovery_ignores_unused_template_and_uncited_dump(self):
+        """Verify fallback ignores unused template .bib and uncited Zotero dump entries."""
+        p_bib = self.corpus_path / "2503.88888"
+        v1 = p_bib / "v1"
+        v1.mkdir(parents=True, exist_ok=True)
+        (v1 / "main.tex").write_text(
+            r"""
+            \documentclass{article}
+            \begin{document}
+            \section{Intro}
+            We build upon \citep{cited_key}.
+            \bibliography{refs}
+            \end{document}
+            """,
+            encoding="utf-8",
+        )
+        (v1 / "refs.bib").write_text(
+            """
+            @String(ICLR = {Int. Conf. Learn. Represent.})
+            @article{cited_key,
+              title={Targeted Paper Title},
+              author={Doe, John and Smith, Jane},
+              journal=ICLR,
+              year={2024}
+            }
+            @misc{uncited_dump_key,
+              title={Unused Zotero Entry},
+              author={Nobody},
+              year={2020}
+            }
+            """,
+            encoding="utf-8",
+        )
+        (v1 / "sample-bibliography.bib").write_text(
+            """
+            @article{template_key,
+              title={Overleaf Template Junk},
+              year={1999}
+            }
+            """,
+            encoding="utf-8",
+        )
+
+        res = process_single_publication("2503.88888", p_bib)
+        self.assertEqual(res["bib_source_kind"], "bib_file")
+        keys = [b["citation_key"] for b in res["bibtex"]]
+        self.assertEqual(keys, ["cited_key"])
+        self.assertEqual(res["bibtex"][0]["title"], "Targeted Paper Title")
+        self.assertEqual(res["bibtex"][0]["authors"], ["Doe, John", "Smith, Jane"])
+        self.assertEqual(res["bibtex"][0]["journal"], "Int. Conf. Learn. Represent.")
+        self.assertEqual(res["bibtex"][0]["year"], 2024)
+
+    def test_bbl_missing_classification(self):
+        """Papers with \\bibliography command but missing .bib and no thebibliography record bbl_missing."""
+        p_bbl = self.corpus_path / "2503.66666"
+        v1 = p_bbl / "v1"
+        v1.mkdir(parents=True, exist_ok=True)
+        (v1 / "main.tex").write_text(
+            r"\documentclass{article}\begin{document}\section{Intro} See \cite{x}.\bibliography{missing_bib}\end{document}",
+            encoding="utf-8",
+        )
+        res = process_single_publication("2503.66666", p_bbl)
+        self.assertEqual(res["bib_source_kind"], "bbl_missing")
+        self.assertEqual(res["bibtex"], [])
+        self.assertTrue(len(res["elements"]) > 0)
+
+    def test_pipeline_telemetry_includes_corpus_stats_and_db_size(self):
+        """Verify run_parsing_pipeline exposes pre/post dedup counts, coverage, and db_size_mb."""
+        stats = run_parsing_pipeline(self.corpus_path, self.db_path)
+        self.assertIn("elements_before_dedup", stats)
+        self.assertIn("elements_after_dedup", stats)
+        self.assertIn("bibtex_before_dedup", stats)
+        self.assertIn("bibtex_after_dedup", stats)
+        self.assertIn("total_versions", stats)
+        self.assertIn("empty_versions_count", stats)
+        self.assertIn("bib_source_counts", stats)
+        self.assertIn("db_size_mb", stats)
+        self.assertGreater(stats["db_size_mb"], 0.0)
 
 
 if __name__ == "__main__":

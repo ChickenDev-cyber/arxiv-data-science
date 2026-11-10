@@ -161,6 +161,91 @@ class TestParsingDatabase(unittest.TestCase):
             self.assertEqual(counts["bibtex"], 0)
             self.assertEqual(mock_pq.write_table.call_count, 0)
 
+    def test_publications_meta_and_corpus_statistics(self):
+        """Verify raw counts, bib_source_kind, and corpus-wide statistics aggregation."""
+        res1: PublicationParsingResult = {
+            "arxiv_id": "2503.00001",
+            "elements": [
+                {"element_id": "2503.00001#root1", "arxiv_id": "2503.00001", "kind": "document", "content": "R1"},
+                {"element_id": "2503.00001#s1", "arxiv_id": "2503.00001", "kind": "sentence", "content": "A."},
+            ],
+            "hierarchy": [
+                {"arxiv_id": "2503.00001", "version": 1, "element_id": "2503.00001#s1", "parent_id": "2503.00001#root1"}
+            ],
+            "bibtex": [
+                {
+                    "arxiv_id": "2503.00001",
+                    "citation_key": "k1",
+                    "entry_type": "article",
+                    "title": "Paper One",
+                    "authors": ["A. Author"],
+                    "year": 2024,
+                    "doi": "",
+                    "journal": "",
+                    "url": "",
+                }
+            ],
+            "version_count": 2,
+            "empty_versions": [2],
+            "raw_element_count": 4,
+            "raw_bibtex_count": 2,
+            "bib_source_kind": "bib_file",
+        }
+        res2: PublicationParsingResult = {
+            "arxiv_id": "2503.00002",
+            "elements": [],
+            "hierarchy": [],
+            "bibtex": [],
+            "version_count": 1,
+            "empty_versions": [1],
+            "raw_element_count": 0,
+            "raw_bibtex_count": 0,
+            "bib_source_kind": "bbl_missing",
+        }
+        self.db.save_publication(res1)
+        self.db.save_publication(res2)
+        self.db.commit()
+
+        meta1 = self.db.get_publication_meta("2503.00001")
+        self.assertEqual(meta1["raw_element_count"], 4)
+        self.assertEqual(meta1["raw_bibtex_count"], 2)
+        self.assertEqual(meta1["bib_source_kind"], "bib_file")
+
+        stats = self.db.get_corpus_statistics()
+        self.assertEqual(stats["publications_count"], 2)
+        self.assertEqual(stats["total_versions"], 3)
+        self.assertEqual(stats["empty_versions_count"], 2)
+        self.assertEqual(stats["parsed_versions_count"], 1)
+        self.assertEqual(stats["elements_before_dedup"], 4)
+        self.assertEqual(stats["elements_after_dedup"], 2)
+        self.assertEqual(stats["bibtex_before_dedup"], 2)
+        self.assertEqual(stats["bibtex_after_dedup"], 1)
+        self.assertEqual(stats["bib_source_counts"]["bib_file"], 1)
+        self.assertEqual(stats["bib_source_counts"]["bbl_missing"], 1)
+
+    def test_export_to_parquet_sharded_with_mock(self):
+        """Verify chunked streaming produces multiple part-NNNNN.parquet shards."""
+        self.db.insert_elements([
+            {"element_id": "p1#s1", "arxiv_id": "p1", "kind": "sentence", "content": "One."},
+            {"element_id": "p1#s2", "arxiv_id": "p1", "kind": "sentence", "content": "Two."},
+            {"element_id": "p1#s3", "arxiv_id": "p1", "kind": "sentence", "content": "Three."},
+        ])
+        self.db.commit()
+
+        mock_pa = MagicMock()
+        mock_pq = MagicMock()
+        mock_pa.parquet = mock_pq
+        out_dir = os.path.join(self.temp_dir.name, "sharded_parquet")
+
+        with patch.dict(sys.modules, {"pyarrow": mock_pa, "pyarrow.parquet": mock_pq}):
+            counts = self.db.export_to_parquet(out_dir, shard_size=2)
+            self.assertEqual(counts["elements"], 3)
+            # 3 elements with shard_size=2 -> 2 shards (part-00000.parquet, part-00001.parquet)
+            self.assertEqual(mock_pq.write_table.call_count, 2)
+            written_paths = [str(call.args[1]) for call in mock_pq.write_table.call_args_list]
+            self.assertTrue(written_paths[0].endswith("elements/part-00000.parquet"))
+            self.assertTrue(written_paths[1].endswith("elements/part-00001.parquet"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -90,6 +90,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             with ParsingDatabase(args.db) as db:
                 export_counts = db.export_to_parquet(args.parquet_dir)
                 summary["parquet_export"] = export_counts
+            pq_dir = Path(args.parquet_dir)
+            pq_bytes = sum(f.stat().st_size for f in pq_dir.rglob("*.parquet")) if pq_dir.exists() else 0
+            summary["parquet_size_mb"] = pq_bytes / (1024 * 1024)
         except RuntimeError as e:
             logger.warning("Parquet export skipped: %s", e)
             summary["parquet_export"] = None

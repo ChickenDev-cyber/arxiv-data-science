@@ -96,6 +96,73 @@ class TestDedupEngine(unittest.TestCase):
         self.assertEqual(len(res["bibtex"]), 1)
         self.assertEqual(res["bibtex"][0]["citation_key"], "vaswani2017attention")
 
+    def test_empty_items_and_itemize_do_not_collapse_within_version(self):
+        """Empty item and boilerplate list containers must keep distinct element IDs."""
+        v1_nodes: list[LocalNode] = [
+            {"temp_id": "root", "kind": "document", "content": "Root", "parent_temp_id": None},
+            {"temp_id": "list_1", "kind": "itemize", "content": r"\begin{itemize}", "parent_temp_id": "root"},
+            {"temp_id": "item_1", "kind": "item", "content": "", "parent_temp_id": "list_1"},
+            {"temp_id": "s_1", "kind": "sentence", "content": "First point.", "parent_temp_id": "item_1"},
+            {"temp_id": "item_2", "kind": "item", "content": "", "parent_temp_id": "list_1"},
+            {"temp_id": "s_2", "kind": "sentence", "content": "Second point.", "parent_temp_id": "item_2"},
+            {"temp_id": "item_3", "kind": "item", "content": "", "parent_temp_id": "list_1"},
+            {"temp_id": "s_3", "kind": "sentence", "content": "Third point.", "parent_temp_id": "item_3"},
+            {"temp_id": "list_2", "kind": "itemize", "content": r"\begin{itemize}", "parent_temp_id": "root"},
+        ]
+        h1: VersionHierarchy = {"arxiv_id": self.arxiv_id, "version": 1, "nodes": v1_nodes}
+        res = deduplicate_publication_elements(self.arxiv_id, [h1], None)
+
+        item_elements = [e for e in res["elements"] if e["kind"] == "item"]
+        list_elements = [e for e in res["elements"] if e["kind"] == "itemize"]
+        self.assertEqual(len(item_elements), 3)
+        self.assertEqual(len(list_elements), 2)
+
+        sentence_parents = {
+            e["parent_id"] for e in res["hierarchy"]
+            if e["element_id"].startswith(f"{self.arxiv_id}#s")
+        }
+        self.assertEqual(len(sentence_parents), 3)
+
+    def test_raw_counts_tracked_before_dedup(self):
+        """Pre-dedup raw_element_count and raw_bibtex_count are captured for telemetry."""
+        v1_nodes: list[LocalNode] = [
+            {"temp_id": "root", "kind": "document", "content": "Root V1", "parent_temp_id": None},
+            {"temp_id": "s1", "kind": "sentence", "content": "Shared sentence.", "parent_temp_id": "root"},
+        ]
+        v2_nodes: list[LocalNode] = [
+            {"temp_id": "root", "kind": "document", "content": "Root V2", "parent_temp_id": None},
+            {"temp_id": "s1", "kind": "sentence", "content": "Shared sentence.", "parent_temp_id": "root"},
+        ]
+        refs: PaperReferences = {
+            "arxiv_id": self.arxiv_id,
+            "unified_bibtex": [
+                {
+                    "arxiv_id": self.arxiv_id,
+                    "citation_key": "k1",
+                    "entry_type": "article",
+                    "title": "Paper",
+                    "authors": [],
+                    "year": 2022,
+                    "doi": "",
+                    "journal": "",
+                    "url": "",
+                }
+            ],
+            "citation_remap": {1: {"k1_old": "k1"}, 2: {"k1": "k1"}},
+        }
+        res = deduplicate_publication_elements(
+            self.arxiv_id,
+            [
+                {"arxiv_id": self.arxiv_id, "version": 1, "nodes": v1_nodes},
+                {"arxiv_id": self.arxiv_id, "version": 2, "nodes": v2_nodes},
+            ],
+            refs,
+        )
+        self.assertEqual(res["raw_element_count"], 4)
+        self.assertEqual(len(res["elements"]), 3)
+        self.assertEqual(res["raw_bibtex_count"], 2)
+        self.assertEqual(len(res["bibtex"]), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

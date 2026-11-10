@@ -88,7 +88,13 @@ class BibtexRecord(TypedDict):
     url: str
 
 
-class PublicationParsingResult(TypedDict):
+class _OptionalPublicationMetrics(TypedDict, total=False):
+    raw_element_count: int
+    raw_bibtex_count: int
+    bib_source_kind: str
+
+
+class PublicationParsingResult(_OptionalPublicationMetrics):
     arxiv_id: str
     elements: list[ElementRecord]
     hierarchy: list[HierarchyEdgeRecord]

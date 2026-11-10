@@ -38,6 +38,16 @@ def kind_prefix(kind: ElementKind | str) -> str:
     return mapping.get(kind, "elem")
 
 
+_GENERIC_LIST_CONTENT = frozenset({"", r"\begin{itemize}", r"\begin{enumerate}"})
+
+
+def _is_non_dedup_container(kind: str, norm_content: str) -> bool:
+    """Return True if a structural node lacks semantic content and must stay distinct."""
+    if kind in ("itemize", "enumerate", "item") and norm_content in _GENERIC_LIST_CONTENT:
+        return True
+    return norm_content == ""
+
+
 def deduplicate_publication_elements(
     arxiv_id: str,
     hierarchies: list[VersionHierarchy],
@@ -54,6 +64,7 @@ def deduplicate_publication_elements(
     bibtex_records: list[BibtexRecord] = []
 
     counters: dict[str, int] = {}
+    raw_element_count = 0
 
     def next_id(kind: str) -> str:
         prefix = kind_prefix(kind)
@@ -67,6 +78,7 @@ def deduplicate_publication_elements(
 
         # First pass: map nodes to canonical element_id
         for node in v_tree["nodes"]:
+            raw_element_count += 1
             raw_content = node["content"]
             norm_content = normalize_content(raw_content)
             kind = node["kind"]
@@ -84,18 +96,27 @@ def deduplicate_publication_elements(
                 })
                 continue
 
-            cache_key = (kind, norm_content)
-            if cache_key in content_to_id:
-                canonical_id = content_to_id[cache_key]
-            else:
+            if _is_non_dedup_container(kind, norm_content):
                 canonical_id = next_id(kind)
-                content_to_id[cache_key] = canonical_id
                 elements.append({
                     "element_id": canonical_id,
                     "arxiv_id": arxiv_id,
                     "kind": kind,
                     "content": norm_content,
                 })
+            else:
+                cache_key = (kind, norm_content)
+                if cache_key in content_to_id:
+                    canonical_id = content_to_id[cache_key]
+                else:
+                    canonical_id = next_id(kind)
+                    content_to_id[cache_key] = canonical_id
+                    elements.append({
+                        "element_id": canonical_id,
+                        "arxiv_id": arxiv_id,
+                        "kind": kind,
+                        "content": norm_content,
+                    })
 
             temp_to_canonical[temp_id] = canonical_id
 
@@ -131,6 +152,10 @@ def deduplicate_publication_elements(
                 "url": b.get("url", ""),
             })
 
+    remap_dict = references.get("citation_remap", {}) if references else {}
+    raw_bib_from_remap = sum(len(v_map) for v_map in remap_dict.values()) if remap_dict else 0
+    raw_bibtex_count = max(raw_bib_from_remap, len(bibtex_records))
+
     all_versions = {h["version"] for h in hierarchies}.union(empty_versions)
 
     return {
@@ -140,4 +165,6 @@ def deduplicate_publication_elements(
         "bibtex": bibtex_records,
         "version_count": len(all_versions),
         "empty_versions": sorted(list(set(empty_versions))),
+        "raw_element_count": raw_element_count,
+        "raw_bibtex_count": raw_bibtex_count,
     }

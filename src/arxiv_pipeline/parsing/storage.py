@@ -69,9 +69,21 @@ class ParsingDatabase:
             CREATE TABLE IF NOT EXISTS publications_meta (
                 arxiv_id TEXT PRIMARY KEY,
                 version_count INTEGER NOT NULL,
-                empty_versions TEXT NOT NULL
+                empty_versions TEXT NOT NULL,
+                raw_element_count INTEGER NOT NULL DEFAULT 0,
+                raw_bibtex_count INTEGER NOT NULL DEFAULT 0,
+                bib_source_kind TEXT NOT NULL DEFAULT 'none'
             );
         """)
+        existing_cols = {
+            row[1] for row in cursor.execute("PRAGMA table_info(publications_meta)").fetchall()
+        }
+        if "raw_element_count" not in existing_cols:
+            cursor.execute("ALTER TABLE publications_meta ADD COLUMN raw_element_count INTEGER NOT NULL DEFAULT 0;")
+        if "raw_bibtex_count" not in existing_cols:
+            cursor.execute("ALTER TABLE publications_meta ADD COLUMN raw_bibtex_count INTEGER NOT NULL DEFAULT 0;")
+        if "bib_source_kind" not in existing_cols:
+            cursor.execute("ALTER TABLE publications_meta ADD COLUMN bib_source_kind TEXT NOT NULL DEFAULT 'none';")
         self.conn.commit()
 
     def insert_elements(self, records: List[ElementRecord]) -> None:
@@ -122,13 +134,25 @@ class ParsingDatabase:
         self.insert_hierarchy(result["hierarchy"])
         self.insert_bibtex(result["bibtex"])
 
+        raw_el_count = result.get("raw_element_count", len(result["elements"]))
+        raw_bib_count = result.get("raw_bibtex_count", len(result["bibtex"]))
+        bib_source_kind = result.get("bib_source_kind", "none")
+
         cursor = self.conn.cursor()
         cursor.execute(
             """
-            INSERT OR REPLACE INTO publications_meta (arxiv_id, version_count, empty_versions)
-            VALUES (?, ?, ?);
+            INSERT OR REPLACE INTO publications_meta
+                (arxiv_id, version_count, empty_versions, raw_element_count, raw_bibtex_count, bib_source_kind)
+            VALUES (?, ?, ?, ?, ?, ?);
             """,
-            (result["arxiv_id"], result["version_count"], json.dumps(result["empty_versions"])),
+            (
+                result["arxiv_id"],
+                result["version_count"],
+                json.dumps(result["empty_versions"]),
+                raw_el_count,
+                raw_bib_count,
+                bib_source_kind,
+            ),
         )
 
     def commit(self) -> None:
@@ -175,7 +199,10 @@ class ParsingDatabase:
     def get_publication_meta(self, arxiv_id: str) -> Optional[Dict[str, Any]]:
         cursor = self.conn.cursor()
         cursor.execute(
-            "SELECT arxiv_id, version_count, empty_versions FROM publications_meta WHERE arxiv_id = ?",
+            """
+            SELECT arxiv_id, version_count, empty_versions, raw_element_count, raw_bibtex_count, bib_source_kind
+            FROM publications_meta WHERE arxiv_id = ?
+            """,
             (arxiv_id,),
         )
         row = cursor.fetchone()
@@ -185,8 +212,84 @@ class ParsingDatabase:
         d["empty_versions"] = json.loads(d["empty_versions"]) if d["empty_versions"] else []
         return d
 
-    def export_to_parquet(self, output_dir: Path | str) -> Dict[str, int]:
+    def get_corpus_statistics(self) -> Dict[str, Any]:
+        """Aggregate corpus-wide statistics for Jupyter Book reporting."""
+        cursor = self.conn.cursor()
+        meta_rows = cursor.execute(
+            "SELECT version_count, empty_versions, raw_element_count, raw_bibtex_count, bib_source_kind FROM publications_meta"
+        ).fetchall()
+
+        total_versions = 0
+        empty_versions_count = 0
+        raw_elements = 0
+        raw_bibtex = 0
+        bib_source_counts: Dict[str, int] = {}
+
+        for row in meta_rows:
+            total_versions += row["version_count"]
+            empties = json.loads(row["empty_versions"]) if row["empty_versions"] else []
+            empty_versions_count += len(empties)
+            raw_elements += row["raw_element_count"]
+            raw_bibtex += row["raw_bibtex_count"]
+            src_kind = row["bib_source_kind"] or "none"
+            bib_source_counts[src_kind] = bib_source_counts.get(src_kind, 0) + 1
+
+        elements_after = cursor.execute("SELECT COUNT(*) FROM elements").fetchone()[0]
+        hierarchy_edges = cursor.execute("SELECT COUNT(*) FROM hierarchy").fetchone()[0]
+        bibtex_after = cursor.execute("SELECT COUNT(*) FROM bibtex").fetchone()[0]
+
+        return {
+            "publications_count": len(meta_rows),
+            "total_versions": total_versions,
+            "empty_versions_count": empty_versions_count,
+            "parsed_versions_count": max(0, total_versions - empty_versions_count),
+            "elements_before_dedup": raw_elements,
+            "elements_after_dedup": elements_after,
+            "hierarchy_edges_count": hierarchy_edges,
+            "bibtex_before_dedup": raw_bibtex,
+            "bibtex_after_dedup": bibtex_after,
+            "bib_source_counts": bib_source_counts,
+        }
+
+    def _stream_table_to_parquet(
+        self,
+        sql: str,
+        table_dir: Path,
+        build_table_fn: Any,
+        pq_mod: Any,
+        shard_size: int,
+    ) -> int:
+        """Stream SQL query results in chunks into sharded Parquet files."""
+        cursor = self.conn.cursor()
+        cursor.execute(sql)
+        total_rows = 0
+        shard_idx = 0
+
+        while True:
+            batch = cursor.fetchmany(shard_size)
+            if not batch:
+                break
+            table_dir.mkdir(parents=True, exist_ok=True)
+            arrow_table = build_table_fn(batch)
+            pq_mod.write_table(
+                arrow_table,
+                table_dir / f"part-{shard_idx:05d}.parquet",
+                compression="snappy",
+            )
+            total_rows += len(batch)
+            shard_idx += 1
+
+        return total_rows
+
+    def export_to_parquet(
+        self,
+        output_dir: Path | str,
+        shard_size: int = 250_000,
+    ) -> Dict[str, int]:
         """Export SQLite tables to Hugging Face-ready sharded Parquet files."""
+        if shard_size <= 0:
+            raise ValueError("shard_size must be a positive integer.")
+
         try:
             import pyarrow as pa
             import pyarrow.parquet as pq
@@ -199,61 +302,41 @@ class ParsingDatabase:
         out_path = Path(output_dir)
         out_path.mkdir(parents=True, exist_ok=True)
 
-        counts: Dict[str, int] = {}
-        cursor = self.conn.cursor()
-
-        # Elements table
-        cursor.execute("SELECT element_id, arxiv_id, kind, content FROM elements")
-        el_rows = cursor.fetchall()
-        if el_rows:
-            table_el = pa.Table.from_arrays(
+        def build_elements(rows: List[Any]) -> Any:
+            return pa.Table.from_arrays(
                 [
-                    pa.array([r[0] for r in el_rows], type=pa.string()),
-                    pa.array([r[1] for r in el_rows], type=pa.string()),
-                    pa.array([r[2] for r in el_rows], type=pa.string()),
-                    pa.array([r[3] for r in el_rows], type=pa.string()),
+                    pa.array([r[0] for r in rows], type=pa.string()),
+                    pa.array([r[1] for r in rows], type=pa.string()),
+                    pa.array([r[2] for r in rows], type=pa.string()),
+                    pa.array([r[3] for r in rows], type=pa.string()),
                 ],
                 names=["element_id", "arxiv_id", "kind", "content"],
             )
-            (out_path / "elements").mkdir(parents=True, exist_ok=True)
-            pq.write_table(table_el, out_path / "elements" / "train.parquet", compression="snappy")
-        counts["elements"] = len(el_rows)
 
-        # Hierarchy table
-        cursor.execute("SELECT arxiv_id, version, element_id, parent_id FROM hierarchy")
-        h_rows = cursor.fetchall()
-        if h_rows:
-            table_h = pa.Table.from_arrays(
+        def build_hierarchy(rows: List[Any]) -> Any:
+            return pa.Table.from_arrays(
                 [
-                    pa.array([r[0] for r in h_rows], type=pa.string()),
-                    pa.array([r[1] for r in h_rows], type=pa.int32()),
-                    pa.array([r[2] for r in h_rows], type=pa.string()),
-                    pa.array([r[3] for r in h_rows], type=pa.string()),
+                    pa.array([r[0] for r in rows], type=pa.string()),
+                    pa.array([r[1] for r in rows], type=pa.int32()),
+                    pa.array([r[2] for r in rows], type=pa.string()),
+                    pa.array([r[3] for r in rows], type=pa.string()),
                 ],
                 names=["arxiv_id", "version", "element_id", "parent_id"],
             )
-            (out_path / "hierarchy").mkdir(parents=True, exist_ok=True)
-            pq.write_table(table_h, out_path / "hierarchy" / "train.parquet", compression="snappy")
-        counts["hierarchy"] = len(h_rows)
 
-        # Bibtex table (authors is typed as list<string>)
-        cursor.execute(
-            "SELECT arxiv_id, citation_key, entry_type, title, authors, year, doi, journal, url FROM bibtex"
-        )
-        b_rows = cursor.fetchall()
-        if b_rows:
-            parsed_authors = [json.loads(r[4]) if r[4] else [] for r in b_rows]
-            table_b = pa.Table.from_arrays(
+        def build_bibtex(rows: List[Any]) -> Any:
+            parsed_authors = [json.loads(r[4]) if r[4] else [] for r in rows]
+            return pa.Table.from_arrays(
                 [
-                    pa.array([r[0] for r in b_rows], type=pa.string()),
-                    pa.array([r[1] for r in b_rows], type=pa.string()),
-                    pa.array([r[2] for r in b_rows], type=pa.string()),
-                    pa.array([r[3] for r in b_rows], type=pa.string()),
+                    pa.array([r[0] for r in rows], type=pa.string()),
+                    pa.array([r[1] for r in rows], type=pa.string()),
+                    pa.array([r[2] for r in rows], type=pa.string()),
+                    pa.array([r[3] for r in rows], type=pa.string()),
                     pa.array(parsed_authors, type=pa.list_(pa.string())),
-                    pa.array([r[5] for r in b_rows], type=pa.int32()),
-                    pa.array([r[6] for r in b_rows], type=pa.string()),
-                    pa.array([r[7] for r in b_rows], type=pa.string()),
-                    pa.array([r[8] for r in b_rows], type=pa.string()),
+                    pa.array([r[5] for r in rows], type=pa.int32()),
+                    pa.array([r[6] for r in rows], type=pa.string()),
+                    pa.array([r[7] for r in rows], type=pa.string()),
+                    pa.array([r[8] for r in rows], type=pa.string()),
                 ],
                 names=[
                     "arxiv_id",
@@ -267,8 +350,27 @@ class ParsingDatabase:
                     "url",
                 ],
             )
-            (out_path / "bibtex").mkdir(parents=True, exist_ok=True)
-            pq.write_table(table_b, out_path / "bibtex" / "train.parquet", compression="snappy")
-        counts["bibtex"] = len(b_rows)
 
-        return counts
+        return {
+            "elements": self._stream_table_to_parquet(
+                "SELECT element_id, arxiv_id, kind, content FROM elements",
+                out_path / "elements",
+                build_elements,
+                pq,
+                shard_size,
+            ),
+            "hierarchy": self._stream_table_to_parquet(
+                "SELECT arxiv_id, version, element_id, parent_id FROM hierarchy",
+                out_path / "hierarchy",
+                build_hierarchy,
+                pq,
+                shard_size,
+            ),
+            "bibtex": self._stream_table_to_parquet(
+                "SELECT arxiv_id, citation_key, entry_type, title, authors, year, doi, journal, url FROM bibtex",
+                out_path / "bibtex",
+                build_bibtex,
+                pq,
+                shard_size,
+            ),
+        }
