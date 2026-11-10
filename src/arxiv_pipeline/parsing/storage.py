@@ -47,6 +47,7 @@ class ParsingDatabase:
             );
         """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_hierarchy_arxiv_ver ON hierarchy(arxiv_id, version);")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_hierarchy_parent ON hierarchy(arxiv_id, parent_id);")
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS bibtex (
@@ -135,6 +136,12 @@ class ParsingDatabase:
 
     def close(self) -> None:
         self.conn.close()
+
+    def __enter__(self) -> "ParsingDatabase":
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self.close()
 
     def get_elements(self, arxiv_id: str) -> List[Dict[str, Any]]:
         cursor = self.conn.cursor()

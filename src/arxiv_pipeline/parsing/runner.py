@@ -1,5 +1,6 @@
 """Pipeline orchestrator for hierarchical parsing, standardization, and storage."""
 
+import json
 import logging
 import os
 import re
@@ -127,16 +128,66 @@ def extract_fallback_references(raw_tex: str, arxiv_id: str) -> PaperReferences:
     }
 
 
+def discover_paper_dirs(corpus_path: Path) -> List[Path]:
+    """Discover publication directories within corpus, handling flat, nested, and M1 raw layouts."""
+    if not corpus_path.is_dir():
+        return []
+
+    # Check if corpus_path directly contains paper dirs (has metadata.json or v1/ or sources/)
+    direct_papers = [
+        d for d in corpus_path.iterdir()
+        if d.is_dir() and not d.name.startswith(".")
+        and ((d / "metadata.json").exists() or (d / "v1").is_dir() or (d / "sources").is_dir())
+    ]
+    if direct_papers:
+        return sorted(direct_papers, key=lambda d: d.name)
+
+    # Check if corpus_path / "raw" exists (e.g. data/m1-colab-*/corpus/raw/<member>/<paper_id>)
+    raw_dir = corpus_path / "raw"
+    if raw_dir.is_dir():
+        raw_sub = [d for d in raw_dir.iterdir() if d.is_dir() and not d.name.startswith(".")]
+        papers = []
+        for sub in raw_sub:
+            if (sub / "metadata.json").exists() or (sub / "v1").is_dir() or (sub / "sources").is_dir():
+                papers.append(sub)
+            else:
+                for p in sub.iterdir():
+                    if p.is_dir() and not p.name.startswith(".") and (
+                        (p / "metadata.json").exists() or (p / "v1").is_dir() or (p / "sources").is_dir()
+                    ):
+                        papers.append(p)
+        if papers:
+            return sorted(papers, key=lambda d: d.name)
+
+    # Fallback: all non-hidden subdirectories
+    return sorted(
+        [d for d in corpus_path.iterdir() if d.is_dir() and not d.name.startswith(".")],
+        key=lambda d: d.name,
+    )
+
+
 def process_single_publication(arxiv_id: str, paper_dir: Path | str) -> PublicationParsingResult:
     """Process all versions of a single publication and return deduplicated relational tables."""
     paper_path = Path(paper_dir)
-    sources_dir = paper_path / "sources"
+
+    # Check metadata.json to resolve canonical arxiv_id and declared version list
+    meta_file = paper_path / "metadata.json"
+    declared_versions: List[int] = []
+    if meta_file.exists():
+        try:
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            if meta.get("arxiv_id"):
+                arxiv_id = meta["arxiv_id"]
+            if meta.get("versions"):
+                declared_versions = [v["version"] for v in meta["versions"] if "version" in v]
+        except Exception as e:
+            logger.warning("Could not parse metadata.json in %s: %s", paper_dir, e)
+
+    # Support both layouts: <paper_dir>/sources/v* and <paper_dir>/v*
+    sources_dir = paper_path / "sources" if (paper_path / "sources").is_dir() else paper_path
     hierarchies: List[VersionHierarchy] = []
     empty_versions: List[int] = []
     combined_raw_tex = ""
-
-    if not sources_dir.exists():
-        return deduplicate_publication_elements(arxiv_id, [], None, empty_versions=[1])
 
     version_subdirs = sorted(
         [d for d in sources_dir.iterdir() if d.is_dir() and d.name.startswith("v")],
@@ -154,10 +205,12 @@ def process_single_publication(arxiv_id: str, paper_dir: Path | str) -> Publicat
             hierarchies.append(tree)
             combined_raw_tex += tex_content
         else:
-            empty_versions.append(1)
+            empty_versions.extend(declared_versions if declared_versions else [1])
     else:
+        found_version_nums = set()
         for v_dir in version_subdirs:
             v_num = int(v_dir.name[1:]) if v_dir.name[1:].isdigit() else 1
+            found_version_nums.add(v_num)
             tex_files = sorted(list(v_dir.rglob("*.tex")))
             if not tex_files or sum(f.stat().st_size for f in tex_files) == 0:
                 empty_versions.append(v_num)
@@ -169,9 +222,14 @@ def process_single_publication(arxiv_id: str, paper_dir: Path | str) -> Publicat
             tree = parse_fallback_hierarchy(raw_tex, arxiv_id, v_num)
             hierarchies.append(tree)
 
+        # Any declared version that had no directory on disk is also recorded as empty
+        for d_ver in declared_versions:
+            if d_ver not in found_version_nums and d_ver not in empty_versions:
+                empty_versions.append(d_ver)
+
     refs = extract_fallback_references(combined_raw_tex, arxiv_id) if combined_raw_tex else None
     return deduplicate_publication_elements(
-        arxiv_id, hierarchies, refs, empty_versions=empty_versions
+        arxiv_id, hierarchies, refs, empty_versions=sorted(list(set(empty_versions)))
     )
 
 
@@ -183,9 +241,7 @@ def run_parsing_pipeline(
 ) -> Dict[str, Any]:
     """Execute the end-to-end parsing pipeline with streaming commits and memory tracking."""
     corpus_path = Path(corpus_dir)
-    db = ParsingDatabase(db_path)
-
-    paper_dirs = sorted([d for d in corpus_path.iterdir() if d.is_dir() and not d.name.startswith(".")])
+    paper_dirs = discover_paper_dirs(corpus_path)
     if limit is not None:
         paper_dirs = paper_dirs[:limit]
 
@@ -198,7 +254,7 @@ def run_parsing_pipeline(
 
     logger.info("Starting pipeline on %d publications...", total)
 
-    try:
+    with ParsingDatabase(db_path) as db:
         for i, p_dir in enumerate(paper_dirs, start=1):
             arxiv_id = p_dir.name
             try:
@@ -220,18 +276,18 @@ def run_parsing_pipeline(
                 )
 
         current, peak = tracemalloc.get_traced_memory()
-        total_time = time.time() - t0
-        avg_time = (total_time / processed) if processed > 0 else 0.0
 
-        return {
-            "total_publications": total,
-            "processed_publications": processed,
-            "total_wall_time_sec": total_time,
-            "avg_time_per_paper_sec": avg_time,
-            "peak_ram_mb": peak / (1024 * 1024),
-            "db_path": str(db_path),
-        }
-    finally:
-        if not already_tracing:
-            tracemalloc.stop()
-        db.close()
+    total_time = time.time() - t0
+    avg_time = (total_time / processed) if processed > 0 else 0.0
+
+    if not already_tracing:
+        tracemalloc.stop()
+
+    return {
+        "total_publications": total,
+        "processed_publications": processed,
+        "total_wall_time_sec": total_time,
+        "avg_time_per_paper_sec": avg_time,
+        "peak_ram_mb": peak / (1024 * 1024),
+        "db_path": str(db_path),
+    }

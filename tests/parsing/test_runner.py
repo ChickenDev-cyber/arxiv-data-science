@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 
 from arxiv_pipeline.parsing.runner import (
+    discover_paper_dirs,
     extract_fallback_references,
     parse_fallback_hierarchy,
     process_single_publication,
@@ -130,6 +131,40 @@ class TestParsingRunner(unittest.TestCase):
         self.assertEqual(res["version_count"], 1)
         self.assertEqual(len(res["empty_versions"]), 0)
         self.assertTrue(len(res["elements"]) > 0)
+
+    def test_real_m1_layout_with_metadata(self):
+        """Test real Milestone 1 layout where v1/ is directly under paper dir and metadata.json is present."""
+        p_m1 = self.corpus_path / "2503-11904"
+        v1_dir = p_m1 / "v1"
+        v1_dir.mkdir(parents=True, exist_ok=True)
+        (v1_dir / "main.tex").write_text(r"\documentclass{article}\begin{document}\section{Intro} Real M1 layout test.\end{document}", encoding="utf-8")
+        (p_m1 / "v2").mkdir(parents=True, exist_ok=True)  # empty v2
+
+        (p_m1 / "metadata.json").write_text(
+            json.dumps({
+                "arxiv_id": "2503.11904",
+                "versions": [{"version": 1}, {"version": 2}, {"version": 3}],
+            }),
+            encoding="utf-8",
+        )
+
+        res = process_single_publication("2503-11904", p_m1)
+        self.assertEqual(res["arxiv_id"], "2503.11904")
+        self.assertEqual(res["version_count"], 3)
+        self.assertIn(2, res["empty_versions"])
+        self.assertIn(3, res["empty_versions"])  # v3 was declared in metadata but missing on disk
+        self.assertTrue(len(res["elements"]) > 0)
+
+    def test_discover_paper_dirs_nested_raw(self):
+        """Test discovering paper directories in nested raw/<member>/<paper_id> layout."""
+        raw_corpus = self.base_path / "m1_corpus"
+        paper_in_raw = raw_corpus / "raw" / "hoang" / "2503-11892"
+        (paper_in_raw / "v1").mkdir(parents=True, exist_ok=True)
+        (paper_in_raw / "v1" / "main.tex").write_text(r"Testing nested.", encoding="utf-8")
+
+        discovered = discover_paper_dirs(raw_corpus)
+        self.assertEqual(len(discovered), 1)
+        self.assertEqual(discovered[0].name, "2503-11892")
 
 
 if __name__ == "__main__":

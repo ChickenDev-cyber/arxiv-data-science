@@ -87,10 +87,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.parquet_dir:
         try:
-            db = ParsingDatabase(args.db)
-            export_counts = db.export_to_parquet(args.parquet_dir)
-            db.close()
-            summary["parquet_export"] = export_counts
+            with ParsingDatabase(args.db) as db:
+                export_counts = db.export_to_parquet(args.parquet_dir)
+                summary["parquet_export"] = export_counts
         except RuntimeError as e:
             logger.warning("Parquet export skipped: %s", e)
             summary["parquet_export"] = None

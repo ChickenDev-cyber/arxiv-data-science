@@ -117,6 +117,7 @@ class TestParsingCLI(unittest.TestCase):
             "sys.stdout", stdout_capture
         ):
             mock_inst = MagicMock()
+            mock_inst.__enter__.return_value = mock_inst
             mock_inst.export_to_parquet.return_value = {"elements": 10, "hierarchy": 5, "bibtex": 2}
             mock_db_cls.return_value = mock_inst
 
