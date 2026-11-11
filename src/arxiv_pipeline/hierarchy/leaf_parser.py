@@ -137,11 +137,11 @@ def tokenize_sentences(text: str) -> list[str]:
 
     working_text = re.sub(r"(?<!\\)\$.*?(?<!\\)\$", mask_math, working_text, flags=re.DOTALL)
 
-    # 2. Mask LaTeX commands with braces like \cite{...}, \ref{...}, \url{...}
+    # 2. Mask LaTeX commands with braces like \cite{...}, \citep[see][p. 15]{...}, \ref{...}, \url{...}
     def mask_cmd(m: re.Match[str]) -> str:
         return create_mask(m.group(0))
 
-    working_text = re.sub(r"\\[a-zA-Z]+\*?(?:\[[^\]]*\])?\{[^}]*\}", mask_cmd, working_text)
+    working_text = re.sub(r"\\[a-zA-Z]+\*?(?:\[[^\]]*\])*(?:\{[^}]*\})+", mask_cmd, working_text)
 
     # 3. Mask URLs and emails (excluding trailing sentence-ending punctuation)
     def mask_url(m: re.Match[str]) -> str:

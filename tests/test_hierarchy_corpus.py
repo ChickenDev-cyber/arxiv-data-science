@@ -28,6 +28,7 @@ def _make_source(arxiv_id: str, tex: str, status: str = "ok") -> GatheredSource:
         "root_file": "main.tex",
         "compilation_path": ["main.tex"],
         "merged_tex": tex,
+        "bib_files": [],
         "bbl_files": [],
         "status": status,  # type: ignore[typeddict-item]
     }

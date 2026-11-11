@@ -81,6 +81,20 @@ def test_sentence_tokenizer_negative_rules():
     assert "This concludes our introduction." in sentences[3]
 
 
+def test_sentence_tokenizer_extended_cite_commands():
+    r"""Tokenizer MUST NOT split inside extended citation commands like \citep, \citet with pre/post notes."""
+    text = (
+        r"Recent advances in transformers \citep[see][p. 15]{vaswani2017} demonstrate strong scaling laws. "
+        r"As argued by \citet[Theorem 2.1]{devlin2019}, pretraining provides good initialization. "
+        r"This completes our analysis."
+    )
+    sentences = tokenize_sentences(text)
+    assert len(sentences) == 3
+    assert r"\citep[see][p. 15]{vaswani2017}" in sentences[0]
+    assert r"\citet[Theorem 2.1]{devlin2019}" in sentences[1]
+    assert "This completes our analysis." in sentences[2]
+
+
 def test_full_tree_with_leaves_and_parent_relations():
     """Verify end-to-end integration: sections, itemize, sentences, formulas, and figures."""
     tex = r"""
@@ -116,6 +130,7 @@ def test_full_tree_with_leaves_and_parent_relations():
         "root_file": "main.tex",
         "compilation_path": ["main.tex"],
         "merged_tex": tex,
+        "bib_files": [],
         "bbl_files": [],
         "status": "ok",
     }

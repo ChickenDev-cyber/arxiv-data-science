@@ -18,7 +18,8 @@ class GatheredSource(TypedDict):
     root_file: str | None  # Primary .tex file containing \documentclass
     compilation_path: list[str]  # Order of included .tex files (\input, \include)
     merged_tex: str  # Concatenated LaTeX text in compilation order
-    bbl_files: list[str]  # Accompanying .bbl files (if any)
+    bib_files: list[str]  # Actual accessible .bib files called via \bibliography
+    bbl_files: list[str]  # Accompanying .bbl files (if any, typically [] due to M1 filter)
     status: GatherStatus
 
 

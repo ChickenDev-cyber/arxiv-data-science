@@ -15,6 +15,7 @@ def test_empty_source():
         "root_file": None,
         "compilation_path": [],
         "merged_tex": "",
+        "bib_files": [],
         "bbl_files": [],
         "status": "empty_source",
     }
@@ -45,6 +46,7 @@ def test_section_scoping_and_unwinding():
         "root_file": "main.tex",
         "compilation_path": ["main.tex"],
         "merged_tex": tex,
+        "bib_files": [],
         "bbl_files": [],
         "status": "ok",
     }
@@ -112,6 +114,7 @@ def test_list_environments_and_items():
         "root_file": "main.tex",
         "compilation_path": ["main.tex"],
         "merged_tex": tex,
+        "bib_files": [],
         "bbl_files": [],
         "status": "ok",
     }
@@ -160,6 +163,7 @@ def test_nested_lists():
         "root_file": "main.tex",
         "compilation_path": ["main.tex"],
         "merged_tex": tex,
+        "bib_files": [],
         "bbl_files": [],
         "status": "ok",
     }
@@ -200,6 +204,7 @@ def test_inclusions_acknowledgements_and_appendices():
         "root_file": "main.tex",
         "compilation_path": ["main.tex"],
         "merged_tex": tex,
+        "bib_files": [],
         "bbl_files": [],
         "status": "ok",
     }
@@ -233,6 +238,7 @@ def test_exclusions_references_and_comments():
         "root_file": "main.tex",
         "compilation_path": ["main.tex"],
         "merged_tex": tex,
+        "bib_files": [],
         "bbl_files": [],
         "status": "ok",
     }
