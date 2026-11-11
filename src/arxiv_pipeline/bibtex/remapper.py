@@ -15,7 +15,13 @@ _CITE_RE = re.compile(
 def rewrite_citation_keys(text: str, remap: dict[str, str]) -> str:
     """Rewrite keys for supported natbib/biblatex citation commands."""
     def replace(match: re.Match[str]) -> str:
-        keys = [key.strip() for key in match.group(2).split(",")]
-        rewritten = [remap.get(key, key) for key in keys]
+        # Rewrite each key independently while preserving whitespace and empty
+        # segments. This keeps the user's original TeX formatting intact.
+        rewritten: list[str] = []
+        for segment in match.group(2).split(","):
+            key_match = re.fullmatch(r"(\s*)(.*?)(\s*)", segment, re.DOTALL)
+            assert key_match is not None
+            leading, key, trailing = key_match.groups()
+            rewritten.append(leading + remap.get(key, key) + trailing)
         return match.group(1) + ",".join(rewritten) + match.group(3)
     return _CITE_RE.sub(replace, text)

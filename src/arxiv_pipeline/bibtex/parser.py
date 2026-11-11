@@ -1,8 +1,14 @@
-"""Extract bibliography items from LaTeX thebibliography environments."""
+"""Extract references from BibTeX files and LaTeX ``thebibliography`` blocks.
+
+Paths supplied by Module 1 are relative to ``source_dir``.  The public service
+accepts a per-version source directory mapping so the GatheredSource contract
+can remain exactly as specified by Module 1.
+"""
 from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Iterable
 
 _BIBLIOGRAPHY_RE = re.compile(
     r"\\begin\s*\{thebibliography\}\s*(.*?)\\end\s*\{thebibliography\}",
@@ -12,17 +18,62 @@ _BIBITEM_START_RE = re.compile(r"\\bibitem\s*(?:\[[^\]]*\]\s*)?\{([^{}]+)\}")
 _DOI_RE = re.compile(r"\b(?:https?://(?:dx\.)?doi\.org/|doi\s*:\s*)?(10\.\d{4,9}/[-._;()/:A-Z0-9]+)", re.I)
 _URL_RE = re.compile(r"https?://[^\s{}<>]+", re.I)
 _YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2}|2100)\b")
+_CITE_COMMANDS = (
+    "cite", "citep", "citet", "citealt", "citealp", "autocite",
+    "parencite", "textcite", "nocite",
+)
+_CITE_RE = re.compile(
+    r"\\(?:" + "|".join(_CITE_COMMANDS) + r")\*?"
+    r"(?:\s*\[[^\]]*\]){0,2}\s*\{([^{}]*)\}"
+)
+_BIB_ENTRY_START_RE = re.compile(r"@([a-zA-Z]+)\s*([({])")
 
+
+def _strip_tex_comments(text: str) -> str:
+    """Remove TeX comments while respecting escaped percent signs."""
+    result = []
+    for line in (text or "").splitlines():
+        out = []
+        i = 0
+        while i < len(line):
+            if line[i] == "%":
+                backslashes = 0
+                j = i - 1
+                while j >= 0 and line[j] == "\\":
+                    backslashes += 1
+                    j -= 1
+                if backslashes % 2 == 0:
+                    break
+            out.append(line[i])
+            i += 1
+        result.append("".join(out))
+    return "\n".join(result)
+
+
+def extract_cited_keys(merged_tex: str) -> tuple[set[str], bool]:
+    """Return citation keys and whether ``\\nocite{*}`` requests every entry."""
+    keys: set[str] = set()
+    include_all = False
+    for match in _CITE_RE.finditer(_strip_tex_comments(merged_tex or "")):
+        command = match.group(0).lstrip("\\").split("{", 1)[0].split("[", 1)[0].rstrip("*")
+        for key in match.group(1).split(","):
+            key = key.strip()
+            if command == "nocite" and key == "*":
+                include_all = True
+            elif key:
+                keys.add(key)
+    return keys, include_all
 
 
 def _balanced_bibitems(body: str) -> list[tuple[str, str]]:
     """Return (citation key, raw entry) pairs without splitting nested braces."""
-    matches = list(_BIBITEM_START_RE.finditer(body))
+    clean_body = _strip_tex_comments(body)
+    matches = list(_BIBITEM_START_RE.finditer(clean_body))
     items: list[tuple[str, str]] = []
     for index, match in enumerate(matches):
         start = match.end()
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
-        raw = re.sub(r"(?m)%[^\n]*$", "", body[start:end]).strip()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(clean_body)
+        raw = clean_body[start:end].strip()
         if raw:
             items.append((match.group(1).strip(), raw))
     return items
@@ -31,26 +82,10 @@ def _balanced_bibitems(body: str) -> list[tuple[str, str]]:
 def extract_bibitems(text: str) -> list[tuple[str, str]]:
     """Extract citation-key/raw-entry pairs from every bibliography block."""
     found: list[tuple[str, str]] = []
-    for block in _BIBLIOGRAPHY_RE.findall(text or ""):
+    clean_text = _strip_tex_comments(text or "")
+    for block in _BIBLIOGRAPHY_RE.findall(clean_text):
         found.extend(_balanced_bibitems(block))
     return found
-
-
-def _command_argument(value: str, command: str) -> str:
-    """Return the first braced argument of a TeX command, supporting nested braces."""
-    match = re.search(r"\\" + re.escape(command) + r"\s*\{", value)
-    if not match:
-        return ""
-    start = match.end()
-    depth = 1
-    for index in range(start, len(value)):
-        if value[index] == "{":
-            depth += 1
-        elif value[index] == "}":
-            depth -= 1
-            if depth == 0:
-                return value[start:index]
-    return ""
 
 
 def _replace_href(value: str) -> str:
@@ -64,7 +99,6 @@ def _replace_href(value: str) -> str:
 
 
 def _clean_latex(value: str) -> str:
-    # Keep visible text, not the URL, for hyperlinks.
     value = _replace_href(value)
     value = re.sub(r"\\(?:emph|textit|textbf|textrm|mathrm|url)\s*\{([^{}]*)\}", r"\1", value)
     value = re.sub(r"\\\\(?:[,;:!]|\\)", " ", value)
@@ -76,97 +110,126 @@ def _clean_latex(value: str) -> str:
 
 
 def _split_blocks(raw: str) -> list[str]:
-    """Split a bibitem on structural \\newblock markers before cleaning commands."""
-    blocks = re.split(r"\\newblock\b", raw, flags=re.IGNORECASE)
-    return [block.strip() for block in blocks if block.strip()]
+    return [block.strip() for block in re.split(r"\\newblock\b", raw, flags=re.I) if block.strip()]
 
 
 def _quoted_title(raw: str) -> str:
-    # BibTeX style commonly emits ``title''; support straight/curly quotes too.
-    patterns = (
-        r"``\s*(.*?)\s*''",
-        r"[“\"]\s*(.*?)\s*[”\"]",
-    )
-    for pattern in patterns:
+    for pattern in (r"``\s*(.*?)\s*''", r"[“\"]\s*(.*?)\s*[”\"]"):
         match = re.search(pattern, raw, re.DOTALL)
         if match:
             return _clean_latex(match.group(1))
     return ""
 
 
+def _author_list_prefix(raw: str) -> tuple[list[str], str]:
+    """Recognize a conventional author list at the start of an unstructured entry.
+
+    Supports both ``M. Erhard, M. Krenn, and A. Zeilinger`` and
+    ``Wang, W., Zhang, J., and Li, Q.`` without treating initials as sentence
+    boundaries. Returns the parsed authors and the remaining bibliography text.
+    """
+    text = _replace_href(raw).replace("\n", " ").strip()
+    person = (
+        r"(?:"
+        r"(?:[A-Z](?:\.[\s]*)+)[A-Z][A-Za-z'’\-]+"
+        r"|[A-Z][A-Za-z'’\-]+,\s*(?:[A-Z](?:\.[\s]*)+)(?:[A-Z](?:\.[\s]*)*)?"
+        r"|(?:[A-Z][a-z'’\-]+\s+){1,2}[A-Z][a-z'’\-]+"
+        r")"
+    )
+    pattern = re.compile(
+        rf"^\s*(?P<authors>{person}(?:\s*,\s*(?:and\s+)?{person})*)\s*,\s*(?P<rest>.+)$",
+        re.DOTALL,
+    )
+    match = pattern.match(text)
+    if not match:
+        return [], text
+    author_text = match.group("authors")
+    person_re = re.compile(person)
+    authors = [item.group(0).strip(" ,;") for item in person_re.finditer(author_text)]
+    return authors, match.group("rest").strip()
+
+
 def _extract_title(raw: str, authors: list[str]) -> str:
     quoted = _quoted_title(raw)
     if quoted:
         return quoted
-
     blocks = _split_blocks(raw)
-    # In standard .bbl output, block 0 is authors and block 1 is the title.
     if len(blocks) >= 2:
         candidate = _clean_latex(blocks[1])
         candidate = re.sub(r"\b(?:19\d{2}|20\d{2}|2100)\b.*$", "", candidate).strip(" .,:;")
         if candidate:
             return candidate
 
+    # Unstructured ``authors, title, journal volume, pages (year)`` entries.
+    parsed_authors, remainder = _author_list_prefix(raw)
+    if parsed_authors and remainder:
+        remainder = _clean_latex(remainder)
+        # A journal tail commonly ends in volume/pages followed by a year.
+        # Remove that tail first, then use the preceding comma as the title
+        # boundary. This avoids splitting initials such as ``W.`` or ``J.``.
+        journal_tail = re.search(
+            r",\s*[^,]+?\s+\d+\s*,\s*\d+(?:[-–]\d+)?\s*\(?(?:19\d{2}|20\d{2}|2100)\)?\.?$",
+            remainder,
+            re.I,
+        )
+        if journal_tail:
+            candidate = remainder[:journal_tail.start()].strip(" .,:;")
+            if candidate:
+                return candidate
+        candidate = re.split(r",\s*(?=[A-Z][A-Za-z .&-]*(?:\s+\d|\s*\())", remainder, maxsplit=1)[0]
+        if candidate.strip(" .,:;"):
+            return candidate.strip(" .,:;")
+
     cleaned = _clean_latex(raw)
     if authors:
-        author_text = authors[0]
-        pos = cleaned.lower().find(author_text.lower())
+        pos = cleaned.lower().find(authors[0].lower())
         if pos >= 0:
-            remainder = cleaned[pos + len(author_text):].lstrip(" .,:;-")
-            # Do not split at initials such as W. Zhang or J. Smith.
+            remainder = cleaned[pos + len(authors[0]):].lstrip(" .,:;-")
             pieces = [p.strip() for p in re.split(r"\.\s+(?=[A-Z“`])", remainder) if p.strip()]
-            if pieces:
-                candidate = pieces[0]
-                if not _YEAR_RE.fullmatch(candidate):
-                    return candidate.rstrip(".")
+            if pieces and not _YEAR_RE.fullmatch(pieces[0]):
+                return pieces[0].rstrip(".")
     pieces = [p.strip() for p in re.split(r"\.\s+(?=[A-Z“`])", cleaned) if p.strip()]
     return pieces[1] if len(pieces) > 1 else (pieces[0] if pieces else "")
 
 
 def _extract_authors(raw: str) -> list[str]:
     blocks = _split_blocks(raw)
-    author_block = _clean_latex(blocks[0] if blocks else raw)
-    # Remove common leading/trailing punctuation and avoid splitting "Wang, Z.".
-    author_block = re.sub(r"^\s*(?:\\bibinfo\s*\{[^}]+\}\s*)", "", author_block)
-    author_block = author_block.strip(" .,:;")
+    author_block = _clean_latex(blocks[0] if blocks else raw).strip(" .,:;")
+    if len(blocks) == 1:
+        parsed, _ = _author_list_prefix(raw)
+        if parsed:
+            return parsed
     if not author_block or len(author_block) > 300:
         return []
-    authors = re.split(r"\s+and\s+", author_block, flags=re.IGNORECASE)
+    # With explicit ``and`` the list separator is unambiguous. Preserve
+    # surname/initial comma pairs (e.g. ``Wang, W.``).
+    authors = re.split(r"\s+and\s+", author_block, flags=re.I)
     expanded: list[str] = []
-    for author_group in authors:
-        # Handle "Surname, I., Surname, J." without splitting surname/initial pairs.
-        expanded.extend(re.split(r",\s+(?=[A-Z][a-z]+,\s)", author_group))
+    for group in authors:
+        expanded.extend(re.split(r",\s+(?=[A-Z][a-z]+,\s)", group))
     return [author.strip(" ,;") for author in expanded if author.strip(" ,;")]
+
+def _entry_type_from_text(raw: str) -> str:
+    lower = raw.lower()
+    if any(term in lower for term in ("proceedings", "conference", "workshop", "symposium", "in proc.")):
+        return "inproceedings"
+    if any(term in lower for term in ("journal", "transactions", "vol.", "volume")):
+        return "article"
+    if any(term in lower for term in ("book", "publisher", "press")):
+        return "book"
+    return "misc"
 
 
 def parse_bibitem(arxiv_id: str, citation_key: str, raw_entry: str) -> dict[str, object]:
-    """Convert one free-form ``\\bibitem`` entry to the agreed BibtexEntry shape."""
     raw = raw_entry.strip()
     doi_match = _DOI_RE.search(raw)
     url_match = _URL_RE.search(raw)
     year_match = _YEAR_RE.search(raw)
-
     authors = _extract_authors(raw)
-    title = _extract_title(raw, authors)
-    lower = raw.lower()
-    if any(term in lower for term in ("proceedings", "conference", "workshop", "symposium", "in proc.")):
-        entry_type = "inproceedings"
-    elif any(term in lower for term in ("journal", "transactions", "vol.", "volume")):
-        entry_type = "article"
-    elif any(term in lower for term in ("book", "publisher", "press")):
-        entry_type = "book"
-    else:
-        entry_type = "misc"
-
-    journal = ""
     blocks = _split_blocks(raw)
-    if len(blocks) >= 3:
-        journal = _clean_latex(blocks[2])
-    elif entry_type == "article":
-        segments = [s.strip(" .,:;") for s in re.split(r"\.\s+", _clean_latex(raw)) if s.strip()]
-        if len(segments) >= 3:
-            journal = segments[2]
-
+    title = _extract_title(raw, authors)
+    entry_type = _entry_type_from_text(raw)
+    journal = _clean_latex(blocks[2]) if len(blocks) >= 3 else ""
     return {
         "arxiv_id": arxiv_id,
         "citation_key": citation_key.strip(),
@@ -180,29 +243,210 @@ def parse_bibitem(arxiv_id: str, citation_key: str, raw_entry: str) -> dict[str,
     }
 
 
-def extract_from_gathered_source(source: dict[str, object]) -> list[dict[str, object]]:
-    """Extract references from merged TeX and the .bbl files supplied by Module 1."""
-    arxiv_id = str(source.get("arxiv_id", ""))
-    texts: list[str] = [str(source.get("merged_tex", "") or "")]
-    source_dir_value = source.get("source_dir")
-    source_dir = Path(str(source_dir_value)) if source_dir_value else None
+def _find_entry_end(text: str, opening_index: int, opening: str) -> int:
+    closing = "}" if opening == "{" else ")"
+    depth = 1
+    in_quote = False
+    escaped = False
+    for index in range(opening_index + 1, len(text)):
+        char = text[index]
+        if char == '"' and not escaped:
+            in_quote = not in_quote
+        elif not in_quote:
+            if char == opening:
+                depth += 1
+            elif char == closing:
+                depth -= 1
+                if depth == 0:
+                    return index
+        if char == "\\" and not escaped:
+            escaped = True
+        else:
+            escaped = False
+    return len(text)
 
+
+def _split_top_level(value: str, delimiter: str = ",") -> list[str]:
+    parts, start = [], 0
+    brace_depth = 0
+    in_quote = False
+    escaped = False
+    for index, char in enumerate(value):
+        if char == '"' and not escaped:
+            in_quote = not in_quote
+        elif not in_quote:
+            if char == "{":
+                brace_depth += 1
+            elif char == "}":
+                brace_depth = max(0, brace_depth - 1)
+            elif char == delimiter and brace_depth == 0:
+                parts.append(value[start:index].strip())
+                start = index + 1
+        if char == "\\" and not escaped:
+            escaped = True
+        else:
+            escaped = False
+    tail = value[start:].strip()
+    if tail:
+        parts.append(tail)
+    return parts
+
+
+def _parse_bib_fields(body: str) -> dict[str, str]:
+    parts = _split_top_level(body)
+    fields: dict[str, str] = {}
+    for part in parts[1:]:  # first item is citation key
+        if "=" not in part:
+            continue
+        name, value = part.split("=", 1)
+        fields[name.strip().lower()] = value.strip().rstrip(",")
+    return fields
+
+
+def _bib_value(value: str, strings: dict[str, str]) -> str:
+    pieces = _split_top_level(value, "#")
+    output = []
+    for piece in pieces:
+        piece = piece.strip()
+        if not piece:
+            continue
+        if (piece.startswith("{") and piece.endswith("}")) or (piece.startswith('"') and piece.endswith('"')):
+            output.append(piece[1:-1])
+        elif re.fullmatch(r"\d+", piece):
+            output.append(piece)
+        else:
+            output.append(strings.get(piece.lower(), piece))
+    return _clean_latex("".join(output))
+
+
+def _parse_bibtex_text(text: str) -> tuple[list[tuple[str, str, dict[str, str]]], dict[str, str]]:
+    """Parse common BibTeX entries, @String macros, and skip comments/preambles."""
+    clean = _strip_tex_comments(text or "")
+    entries: list[tuple[str, str, dict[str, str]]] = []
+    strings: dict[str, str] = {}
+    pos = 0
+    while True:
+        match = _BIB_ENTRY_START_RE.search(clean, pos)
+        if not match:
+            break
+        kind = match.group(1).lower()
+        opening = match.group(2)
+        end = _find_entry_end(clean, match.end() - 1, opening)
+        body = clean[match.end():end].strip()
+        pos = max(end + 1, match.end())
+        if kind in ("comment", "preamble"):
+            continue
+        if kind == "string":
+            if "=" in body:
+                name, value = body.split("=", 1)
+                strings[name.strip().lower()] = _bib_value(value, strings)
+            continue
+        fields = _parse_bib_fields(body)
+        if not fields:
+            continue
+        citation_key = _split_top_level(body)[0].strip()
+        entries.append((kind, citation_key, fields))
+    return entries, strings
+
+
+def _parse_bibtex_entry(arxiv_id: str, key: str, kind: str, fields: dict[str, str],
+                        strings: dict[str, str]) -> dict[str, object]:
+    values = {name: _bib_value(value, strings) for name, value in fields.items()}
+    author_text = values.get("author", "")
+    authors = [name.strip() for name in re.split(r"\s+and\s+", author_text, flags=re.I) if name.strip()]
+    title = values.get("title", "")
+    doi = values.get("doi", "")
+    doi_match = _DOI_RE.search(doi)
+    url = values.get("url", "")
+    url_match = _URL_RE.search(url)
+    year_text = values.get("year", "")
+    year_match = _YEAR_RE.search(year_text)
+    return {
+        "arxiv_id": arxiv_id,
+        "citation_key": key,
+        "entry_type": kind.lower(),
+        "title": title,
+        "authors": authors,
+        "year": int(year_match.group(1)) if year_match else None,
+        "doi": doi_match.group(1).rstrip(".,;)") if doi_match else doi.strip(),
+        "journal": values.get("journal", values.get("booktitle", values.get("publisher", ""))),
+        "url": url_match.group(0).rstrip(".,;)") if url_match else url,
+    }
+
+
+def extract_from_gathered_source(
+    source: dict[str, object], source_dir: str | Path | None = None
+) -> list[dict[str, object]]:
+    """Read cited .bib entries plus .bibitem entries from merged TeX and .bbl."""
+    arxiv_id = str(source.get("arxiv_id", ""))
+    merged_tex = str(source.get("merged_tex", "") or "")
+    cited_keys, include_all = extract_cited_keys(merged_tex)
+    base_dir_value = source_dir or source.get("source_dir")
+    base_dir = Path(base_dir_value) if base_dir_value else None
+
+    results: list[dict[str, object]] = []
+    seen_keys: dict[str, dict[str, object]] = {}
+
+    # Read only .bib files explicitly discovered by Module 1.
+    parsed_bibs: list[tuple[str, str, dict[str, str], dict[str, str]]] = []
+    for filename in source.get("bib_files", []) or []:
+        try:
+            path = Path(str(filename))
+            if not path.is_absolute():
+                if base_dir is None:
+                    # Relative paths cannot safely be resolved from an unknown CWD.
+                    continue
+                path = base_dir / path
+            if path.is_file():
+                entries, strings = _parse_bibtex_text(path.read_text(encoding="utf-8", errors="replace"))
+                parsed_bibs.extend((kind, key, fields, strings) for kind, key, fields in entries)
+        except (OSError, ValueError, TypeError):
+            continue
+
+    for kind, key, fields, strings in parsed_bibs:
+        if not (include_all or key in cited_keys):
+            continue
+        entry = _parse_bibtex_entry(arxiv_id, key, kind, fields, strings)
+        previous = seen_keys.get(key)
+        if previous is None:
+            results.append(entry)
+            seen_keys[key] = entry
+        elif not _same_reference(previous, entry):
+            # Preserve conflicting entries; downstream remapping must treat
+            # this key as ambiguous rather than silently discarding one.
+            results.append(entry)
+
+    texts: list[str] = [merged_tex]
     for filename in source.get("bbl_files", []) or []:
         try:
             path = Path(str(filename))
-            if not path.is_absolute() and source_dir is not None:
-                path = source_dir / path
+            if not path.is_absolute():
+                if base_dir is None:
+                    continue
+                path = base_dir / path
             if path.is_file():
                 texts.append(path.read_text(encoding="utf-8", errors="replace"))
         except (OSError, ValueError, TypeError):
             continue
 
-    results: list[dict[str, object]] = []
-    seen_keys: set[str] = set()
     for text in texts:
         for key, raw in extract_bibitems(text):
-            if key in seen_keys:
-                continue
-            seen_keys.add(key)
-            results.append(parse_bibitem(arxiv_id, key, raw))
+            entry = parse_bibitem(arxiv_id, key, raw)
+            previous = seen_keys.get(key)
+            if previous is None:
+                results.append(entry)
+                seen_keys[key] = entry
+            elif not _same_reference(previous, entry):
+                results.append(entry)
     return results
+
+
+def _same_reference(left: dict[str, object], right: dict[str, object]) -> bool:
+    """Compare duplicate-key records conservatively, preferring DOI when present."""
+    left_doi = str(left.get("doi", "")).strip().lower()
+    right_doi = str(right.get("doi", "")).strip().lower()
+    if left_doi and right_doi:
+        return left_doi == right_doi
+    left_title = re.sub(r"\W+", "", str(left.get("title", "")).lower())
+    right_title = re.sub(r"\W+", "", str(right.get("title", "")).lower())
+    return bool(left_title and right_title and left_title == right_title)
