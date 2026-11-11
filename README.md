@@ -873,145 +873,74 @@ Log điều phối là các JSON nhỏ, bất biến, được chép/đối chi�
 
 Benchmark runner và sampler giữ nguyên. Wait/retry trong runner vẫn nằm trong wall runner; chờ bổ sung ở preflight/giữa batch được ghi riêng trong control events. Wall của auto-run bao gồm preflight, runner, kiểm tra/đóng gói/Drive và chờ tự phục hồi, nhưng không gồm checkout/restore/Secrets trước ô auto-run; cũng không bổ sung phép đo RAM/đĩa ngoài runner. Khi báo cáo cần giữ rõ phạm vi này, không sửa JSON benchmark cũ hay trừ thời gian chờ.
 
----
 
-## Milestone 2 — Module 4: Trích xuất BibTeX và chuẩn hóa citation (Mẫn Nhi)
+## M2 Module 1 — Gom nguồn nhiều file và luồng biên dịch (gathering)
 
-Phần này bổ sung tài liệu cho Module 4 của Milestone 2. **Các nội dung Milestone 1 ở phía trên được giữ nguyên**; Module 4 mới được đặt trong package riêng `bibtex/` và không thay thế module `references/` hiện có.
-
-### Phạm vi và luồng dữ liệu
-
-Module 4 nhận danh sách `GatheredSource` của nhiều phiên bản (`v1`, `v2`, ...) thuộc cùng một bài arXiv, đọc bibliography từ `merged_tex` và các file `.bbl`, rồi trả về:
-
-- `unified_bibtex`: danh sách `BibtexEntry` đã hợp nhất và loại trùng lặp xuyên phiên bản.
-- `citation_remap`: ánh xạ citation key theo từng phiên bản, theo dạng `{version: {old_key: canonical_key}}`; Module 2 dùng ánh xạ này để viết lại `\\cite{...}`, còn Module 5 nhận bibliography đã thống nhất.
-
-```text
-Module 1 (GatheredSource)
-          │
-          ▼
-Module 4 — arxiv_pipeline.bibtex
-  ├── Đọc thebibliography trong merged_tex / .bbl
-  ├── Phân tích từng \\bibitem thành BibtexEntry
-  ├── Chuẩn hóa DOI và title
-  ├── Gộp mục trùng giữa các phiên bản
-  └── Tạo citation_remap theo version
-       │                         │
-       ▼                         ▼
-Module 5: unified_bibtex    Module 2: citation_remap
-```
-
-### Vị trí mã nguồn
-
-```text
-src/arxiv_pipeline/bibtex/
-├── __init__.py       # Public API của Module 4
-├── contracts.py      # GatheredSource, BibtexEntry, PaperReferences
-├── parser.py         # Đọc thebibliography, .bbl và phân tích \bibitem
-├── normalizer.py     # Chuẩn hóa DOI và title
-├── deduplicator.py   # Dedup xuyên version, hợp nhất trường và tạo remap
-├── remapper.py       # Viết lại citation key trong lệnh \cite
-└── service.py        # Hàm điều phối extract_and_unify_references
-
-tests/bibtex/
-└── test_module4.py   # Kiểm thử parser, dedup, field union và citation remap
-```
-
-`src/arxiv_pipeline/references/` vẫn là T4 Milestone 1: lấy references từ Semantic Scholar API và metadata arXiv. `src/arxiv_pipeline/bibtex/` là Module 4 Milestone 2: trích xuất bibliography trực tiếp từ LaTeX/.bbl và chuẩn hóa citation key. Hai module có mục đích khác nhau, không ghi đè hoặc thay thế lẫn nhau.
-
-### Hợp đồng dữ liệu
-
-`GatheredSource` sử dụng các trường đầu vào sau (các trường không cần thiết có thể vắng mặt theo `TypedDict` hiện tại):
-
-| Trường | Kiểu | Ý nghĩa |
-|---|---|---|
-| `arxiv_id` | `str` | ID bài arXiv |
-| `version` | `int` | Số phiên bản |
-| `root_file` | `str \| None` | File `.tex` gốc |
-| `compilation_path` | `list[str]` | Thứ tự file trong luồng biên dịch |
-| `merged_tex` | `str` | Nội dung LaTeX đã ghép |
-| `bbl_files` | `list[str]` | Đường dẫn đến file `.bbl` nếu có |
-| `status` | `str` | Trạng thái gathering |
-
-Mỗi `BibtexEntry` có `arxiv_id`, `citation_key`, `entry_type`, `title`, `authors`, `year`, `doi`, `journal` và `url`. `PaperReferences` gồm `arxiv_id`, `unified_bibtex` và `citation_remap`.
-
-### Cách sử dụng từ Python
-
-Chạy từ thư mục gốc repository, với `src` nằm trong `PYTHONPATH`:
-
-```python
-from arxiv_pipeline.bibtex import (
-    extract_and_unify_references,
-    rewrite_citation_keys,
-)
-
-versions_sources = [
-    {
-        "arxiv_id": "2409.00001",
-        "version": 1,
-        "root_file": "main.tex",
-        "compilation_path": ["main.tex"],
-        "merged_tex": tex_v1,
-        "bbl_files": ["/path/to/v1/main.bbl"],
-        "status": "ok",
-    },
-    {
-        "arxiv_id": "2409.00001",
-        "version": 2,
-        "root_file": "main.tex",
-        "compilation_path": ["main.tex"],
-        "merged_tex": tex_v2,
-        "bbl_files": ["/path/to/v2/main.bbl"],
-        "status": "ok",
-    },
-]
-
-result = extract_and_unify_references(versions_sources)
-
-# Bàn giao cho Module 5
-bibtex_rows = result["unified_bibtex"]
-
-# Bàn giao cho Module 2: lấy map đúng phiên bản trước khi rewrite
-remap_v2 = result["citation_remap"].get(2, {})
-rewritten_tex_v2 = rewrite_citation_keys(tex_v2, remap_v2)
-```
-
-Hai hàm public:
-
-```python
-extract_and_unify_references(
-    versions_sources: list[GatheredSource]
-) -> PaperReferences
-
-rewrite_citation_keys(
-    text: str,
-    remap: dict[str, str]
-) -> str
-```
-
-`extract_and_unify_references` sắp xếp nguồn theo số version trước khi xử lý. Nếu danh sách đầu vào rỗng, hàm trả hợp đồng rỗng. Nếu đầu vào trộn nhiều `arxiv_id` khác nhau, hàm báo `ValueError`. Những version không có bibliography vẫn được giữ trong `citation_remap` với map rỗng.
-
-### Quy tắc trích xuất, hợp nhất và rewrite
-
-1. Parser tìm môi trường `\\begin{thebibliography} ... \\end{thebibliography}` trong `merged_tex` và nội dung của các file `.bbl` tồn tại, sau đó tách từng `\\bibitem` thành citation key và raw entry.
-2. Nếu cùng một citation key xuất hiện trong cả `.tex` và `.bbl` của cùng nguồn, parser chỉ giữ lần xuất hiện đầu tiên.
-3. DOI được chuẩn hóa trước khi so khớp; title được chuẩn hóa về chữ thường, bỏ dấu và ký tự đặc biệt. Hai mục được coi là trùng nếu có cùng DOI **hoặc** cùng title chuẩn hóa. Nếu không có cả hai định danh, fallback dùng citation key.
-4. Canonical key là key của mục được gặp đầu tiên theo thứ tự version tăng dần. Key của mục trùng ở phiên bản sau được ánh xạ về key canonical.
-5. Khi hợp nhất, trường còn thiếu được bổ sung từ mục trùng; danh sách authors được union, không thêm tên đã có; `year` được bổ sung nếu mục canonical chưa có năm.
-6. `rewrite_citation_keys` xử lý các key trong `\\cite{a,b}` và dạng có tối đa hai optional arguments như `\\cite[p. 4]{a,b}`. Key không có trong map được giữ nguyên.
-
-### Kiểm thử
-
-Cài dependencies của project nếu môi trường chưa có pytest, sau đó chạy từ thư mục gốc repository:
+Module 1 nhận thư mục nguồn đã giải nén của **một phiên bản** bài báo (`corpus/raw/<owner>/<bai>/v<N>/` do M1 tạo) và trả một `GatheredSource`: file `.tex` gốc, thứ tự các file được nạp, toàn bộ LaTeX đã nối theo luồng biên dịch, các file `.bib` thực sự được gọi và các file `.bbl`. Chỉ dùng thư viện chuẩn. Chạy từ thư mục gốc repo.
 
 ```bash
-PYTHONPATH=src pytest -q tests/bibtex
+PYTHONPATH=src python -m arxiv_pipeline.gathering one \
+  --source-dir data/m1-colab-huynh-nhi-01/corpus/raw/huynh-nhi/2409-03594/v1 \
+  --arxiv-id 2409.03594 --version 1 \
+  --output /tmp/gathered-one.json
 ```
 
-Test Module 4 hiện có kiểm tra: tách nhiều `\\bibitem` (bao gồm label tùy chọn), dedup giữa các version, hợp nhất DOI/năm, canonical key và citation remap, rewrite nhiều key trong một lệnh `\\cite`, giữ key không được ánh xạ, input rỗng và version không có bibliography.
+Lệnh in tóm tắt (root, `compilation_path`, `bib_files`, ứng viên root, `\input` thiếu, vòng lặp) và, nếu có `--output`, ghi `GatheredSource` đầy đủ ra JSON. Chạy cho mọi phiên bản của một owner:
 
-### Giới hạn và việc cần xác nhận trước khi tích hợp
+```bash
+PYTHONPATH=src python -m arxiv_pipeline.gathering batch \
+  --corpus data/m1-colab-huynh-nhi-01/corpus --owner huynh-nhi \
+  --output /tmp/gathered-huynh-nhi.jsonl \
+  --diagnostics /tmp/can-xem.jsonl
+```
 
-Nội dung `\\bibitem` là văn bản tự do nên việc suy luận `title`, `authors`, `journal` và `entry_type` hiện dùng heuristic; không thể đảm bảo đúng tuyệt đối cho mọi định dạng bibliography. Cần kiểm tra thêm các trường hợp thực tế như tên tác giả nhiều dòng, title có dấu chấm, DOI bị xuống dòng và tên venue có dấu chấm. Hướng dẫn Module 4 cũng yêu cầu chạy thử trên ít nhất 10 bài có raw TeX trong corpus trước khi merge. **Đây là bước xác nhận trên dữ liệu thật, không được xem là đã hoàn tất chỉ vì các test offline chạy qua.**
+`batch` ghi mỗi phiên bản một dòng JSONL, in tiến độ sau mỗi 500 phiên bản và cuối cùng in số phiên bản theo `status`, số có `.bib`, số gọi `.bib` không có trên đĩa, `\input` thiếu, vòng lặp, nhiều file `\documentclass`. `--diagnostics` ghi riêng các phiên bản cần xem tay. `--limit N` để thử nhanh. Exit code: 0 khi chạy xong; 1 khi thư mục không tồn tại hoặc ID/version sai; argparse báo 2 khi thiếu hay sai cú pháp tham số.
 
-Khi tích hợp, Module 1 cung cấp `GatheredSource`; Module 4 chuyển `citation_remap` theo đúng version cho Khang (Module 2) và chuyển `unified_bibtex` cho Trọng (Module 5). Không đưa bibliography vào cây hierarchy của Module 3; đề Milestone 2 quy định phần tài liệu tham khảo được xử lý riêng bởi Module 4.
+### Đầu ra
+
+```python
+class GatheredSource(TypedDict):
+    arxiv_id: str
+    version: int
+    root_file: str | None        # tương đối theo source_dir
+    compilation_path: list[str]  # các .tex theo thứ tự nạp lần đầu
+    merged_tex: str              # LaTeX đã chèn mọi \input/\include/\subfile
+    bib_files: list[str]         # .bib được \bibliography / \addbibresource gọi
+    bbl_files: list[str]         # .bbl trong source_dir (thường [] vì M1 không giữ)
+    status: Literal["ok", "empty_source", "no_root_file"]
+```
+
+Đúng 8 key, đúng thứ tự trên. Mọi đường dẫn tương đối theo `source_dir`, dùng `/` trên mọi hệ điều hành, đọc được bằng `Path(source_dir) / path`.
+
+| `status` | Khi nào | `merged_tex`, `compilation_path`, `bib_files` |
+|---|---|---|
+| `ok` | Tìm được file gốc | Có nội dung |
+| `empty_source` | Thư mục không có `.tex` (rỗng, PDF-only, không tồn tại) | `""`, `[]`, `[]` |
+| `no_root_file` | Có `.tex` nhưng không file nào có `\documentclass` không bị comment | `""`, `[]`, `[]` |
+
+### Quy tắc
+
+- **File gốc:** file có `\documentclass` (hoặc `\documentstyle`) không nằm trong comment. Nếu nhiều file, xếp hạng theo thứ tự: không phải `_region_.tex` (file tạm AUCTeX); có `\begin{document}`; class không phải `standalone`/`subfiles`; không bị file khác `\input`; nằm ở thư mục gốc (arXiv biên dịch file chính ở gốc, nên bản cũ trong `OldFiles/` hay tài liệu mẫu trong `doc/` xếp sau); tên `main/ms/paper/article/manuscript.tex`; biên dịch ra nhiều chữ nhất.
+- **Comment:** `%` mở comment, `\%` là chữ, `\\%` vẫn mở comment. Comment được giữ trong `merged_tex`, nhưng lệnh nằm trong comment không được nạp.
+- **`\input` / `\include` / `\subfile`:** thiếu đuôi thì thử `x.tex` trước rồi `x`; chuẩn hóa `./` và `..`; tìm theo thư mục file gốc, rồi thư mục file đang include, rồi `source_dir`; khớp chính xác trước, không phân biệt hoa/thường sau. `\input file` không ngoặc cũng được nhận. `\subfile{x}` chỉ chèn phần giữa `\begin{document}` và `\end{document}` của `x`. Macro đơn giản trong đường dẫn (`\newcommand{\dir}{sec}`, `\def\dir{sec}`) được thay. `\endinput` dừng đọc file sau dòng chứa nó.
+- **Vòng lặp:** file đang nằm trên stack include thì không nạp lại, lệnh bị bỏ. Một file được include hai lần không vòng thì chèn hai lần nhưng chỉ ghi một lần trong `compilation_path`.
+- **File không tìm thấy:** giữ nguyên lệnh trong `merged_tex`, `status` vẫn `ok`. Không nạp file ngoài `source_dir` hay symlink.
+- **`bib_files`:** chỉ lấy tên trong `\bibliography{a, b}` / `\addbibresource[...]{c.bib}` không bị comment, nằm trên luồng biên dịch và có trên đĩa. Không `glob("*.bib")`, nên `.bib` mẫu không được gọi sẽ bị bỏ qua. Tên thiếu đuôi thì thêm `.bib`; trùng thì giữ một lần; URL bị bỏ qua.
+- **Mã hóa:** UTF-8, lỗi thì Latin-1; `\r\n` thành `\n`.
+- Tham số sai (ID có `vN`, version không phải int ≥ 1, `source_dir` là file) → `ValueError`.
+
+Chưa hỗ trợ `\import{dir}{file}`, `\InputIfFileExists`, `\includeonly`, và không phân tích điều kiện TeX (`\iffalse ... \fi`).
+
+### Dùng từ Python
+
+```python
+from arxiv_pipeline.gathering import SourceGatherer, gather_source
+
+source = gather_source(source_dir, "2409.03594", 1)          # GatheredSource
+report = SourceGatherer().inspect(source_dir, "2409.03594", 1)
+report.source, report.root_candidates, report.missing_includes, report.missing_bib, report.cycles
+```
+
+`gather_source(source_dir, arxiv_id, version)` có cùng chữ ký với `gather_fn` của runner M2, nên cắm được bằng `PipelineComponents(gather_fn=gather_source)`.
+
+>>>>>>> origin/main
