@@ -872,3 +872,73 @@ Mặc định notebook chung vẫn tắt chế độ này. Khi bật, lớp đi�
 Log điều phối là các JSON nhỏ, bất biến, được chép/đối chiếu lên `<owner>/<run_id>/control-events/<control_id>/` sau mỗi sự kiện. Log có UTC, cấu hình phục hồi, chờ dự kiến/thực tế và elapsed của auto-run; không chứa key/header/body lỗi. Thiếu log Drive làm dừng trước khi gửi thêm request. Có heartbeat trong lúc chờ và khóa local ngăn hai lớp điều phối cùng chạy. Bấm dừng khi đang chờ sẽ trả `interrupted` mà không crawl thêm.
 
 Benchmark runner và sampler giữ nguyên. Wait/retry trong runner vẫn nằm trong wall runner; chờ bổ sung ở preflight/giữa batch được ghi riêng trong control events. Wall của auto-run bao gồm preflight, runner, kiểm tra/đóng gói/Drive và chờ tự phục hồi, nhưng không gồm checkout/restore/Secrets trước ô auto-run; cũng không bổ sung phép đo RAM/đĩa ngoài runner. Khi báo cáo cần giữ rõ phạm vi này, không sửa JSON benchmark cũ hay trừ thời gian chờ.
+
+## M2 Module 1 — Gom nguồn nhiều file và luồng biên dịch (gathering)
+
+Module 1 nhận thư mục nguồn đã giải nén của **một phiên bản** bài báo (`corpus/raw/<owner>/<bai>/v<N>/` do M1 tạo) và trả một `GatheredSource`: file `.tex` gốc, thứ tự các file được nạp, toàn bộ LaTeX đã nối theo luồng biên dịch, các file `.bib` thực sự được gọi và các file `.bbl`. Chỉ dùng thư viện chuẩn. Chạy từ thư mục gốc repo.
+
+```bash
+PYTHONPATH=src python -m arxiv_pipeline.gathering one \
+  --source-dir data/m1-colab-huynh-nhi-01/corpus/raw/huynh-nhi/2409-03594/v1 \
+  --arxiv-id 2409.03594 --version 1 \
+  --output /tmp/gathered-one.json
+```
+
+Lệnh in tóm tắt (root, `compilation_path`, `bib_files`, ứng viên root, `\input` thiếu, vòng lặp) và, nếu có `--output`, ghi `GatheredSource` đầy đủ ra JSON. Chạy cho mọi phiên bản của một owner:
+
+```bash
+PYTHONPATH=src python -m arxiv_pipeline.gathering batch \
+  --corpus data/m1-colab-huynh-nhi-01/corpus --owner huynh-nhi \
+  --output /tmp/gathered-huynh-nhi.jsonl \
+  --diagnostics /tmp/can-xem.jsonl
+```
+
+`batch` ghi mỗi phiên bản một dòng JSONL, in tiến độ sau mỗi 500 phiên bản và cuối cùng in số phiên bản theo `status`, số có `.bib`, số gọi `.bib` không có trên đĩa, `\input` thiếu, vòng lặp, nhiều file `\documentclass`. `--diagnostics` ghi riêng các phiên bản cần xem tay. `--limit N` để thử nhanh. Exit code: 0 khi chạy xong; 1 khi thư mục không tồn tại hoặc ID/version sai; argparse báo 2 khi thiếu hay sai cú pháp tham số.
+
+### Đầu ra
+
+```python
+class GatheredSource(TypedDict):
+    arxiv_id: str
+    version: int
+    root_file: str | None        # tương đối theo source_dir
+    compilation_path: list[str]  # các .tex theo thứ tự nạp lần đầu
+    merged_tex: str              # LaTeX đã chèn mọi \input/\include/\subfile
+    bib_files: list[str]         # .bib được \bibliography / \addbibresource gọi
+    bbl_files: list[str]         # .bbl trong source_dir (thường [] vì M1 không giữ)
+    status: Literal["ok", "empty_source", "no_root_file"]
+```
+
+Đúng 8 key, đúng thứ tự trên. Mọi đường dẫn tương đối theo `source_dir`, dùng `/` trên mọi hệ điều hành, đọc được bằng `Path(source_dir) / path`.
+
+| `status` | Khi nào | `merged_tex`, `compilation_path`, `bib_files` |
+|---|---|---|
+| `ok` | Tìm được file gốc | Có nội dung |
+| `empty_source` | Thư mục không có `.tex` (rỗng, PDF-only, không tồn tại) | `""`, `[]`, `[]` |
+| `no_root_file` | Có `.tex` nhưng không file nào có `\documentclass` không bị comment | `""`, `[]`, `[]` |
+
+### Quy tắc
+
+- **File gốc:** file có `\documentclass` (hoặc `\documentstyle`) không nằm trong comment. Nếu nhiều file, xếp hạng theo thứ tự: không phải `_region_.tex` (file tạm AUCTeX); có `\begin{document}`; class không phải `standalone`/`subfiles`; không bị file khác `\input`; nằm ở thư mục gốc (arXiv biên dịch file chính ở gốc, nên bản cũ trong `OldFiles/` hay tài liệu mẫu trong `doc/` xếp sau); tên `main/ms/paper/article/manuscript.tex`; biên dịch ra nhiều chữ nhất.
+- **Comment:** `%` mở comment, `\%` là chữ, `\\%` vẫn mở comment. Comment được giữ trong `merged_tex`, nhưng lệnh nằm trong comment không được nạp.
+- **`\input` / `\include` / `\subfile`:** thiếu đuôi thì thử `x.tex` trước rồi `x`; chuẩn hóa `./` và `..`; tìm theo thư mục file gốc, rồi thư mục file đang include, rồi `source_dir`; khớp chính xác trước, không phân biệt hoa/thường sau. `\input file` không ngoặc cũng được nhận. `\subfile{x}` chỉ chèn phần giữa `\begin{document}` và `\end{document}` của `x`. Macro đơn giản trong đường dẫn (`\newcommand{\dir}{sec}`, `\def\dir{sec}`) được thay. `\endinput` dừng đọc file sau dòng chứa nó.
+- **Vòng lặp:** file đang nằm trên stack include thì không nạp lại, lệnh bị bỏ. Một file được include hai lần không vòng thì chèn hai lần nhưng chỉ ghi một lần trong `compilation_path`.
+- **File không tìm thấy:** giữ nguyên lệnh trong `merged_tex`, `status` vẫn `ok`. Không nạp file ngoài `source_dir` hay symlink.
+- **`bib_files`:** chỉ lấy tên trong `\bibliography{a, b}` / `\addbibresource[...]{c.bib}` không bị comment, nằm trên luồng biên dịch và có trên đĩa. Không `glob("*.bib")`, nên `.bib` mẫu không được gọi sẽ bị bỏ qua. Tên thiếu đuôi thì thêm `.bib`; trùng thì giữ một lần; URL bị bỏ qua.
+- **Mã hóa:** UTF-8, lỗi thì Latin-1; `\r\n` thành `\n`.
+- Tham số sai (ID có `vN`, version không phải int ≥ 1, `source_dir` là file) → `ValueError`.
+
+Chưa hỗ trợ `\import{dir}{file}`, `\InputIfFileExists`, `\includeonly`, và không phân tích điều kiện TeX (`\iffalse ... \fi`).
+
+### Dùng từ Python
+
+```python
+from arxiv_pipeline.gathering import SourceGatherer, gather_source
+
+source = gather_source(source_dir, "2409.03594", 1)          # GatheredSource
+report = SourceGatherer().inspect(source_dir, "2409.03594", 1)
+report.source, report.root_candidates, report.missing_includes, report.missing_bib, report.cycles
+```
+
+`gather_source(source_dir, arxiv_id, version)` có cùng chữ ký với `gather_fn` của runner M2, nên cắm được bằng `PipelineComponents(gather_fn=gather_source)`.
+
