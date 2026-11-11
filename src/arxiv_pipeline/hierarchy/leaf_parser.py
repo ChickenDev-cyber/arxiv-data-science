@@ -4,15 +4,20 @@ Adheres strictly to the granularity and exclusion rules in parsing.md:
 - Sentence tokenization: Leaf nodes for body prose, split on periods.
   Never splits inside mathematics ($...$), commands (\cite, \ref), abbreviations
   (i.e., et al., Fig. 1), decimal numbers, or URLs.
+  Guarantees zero mask leakage via recursive mask unnesting.
 - Math normalization:
   Inline math converted to $ ... $
-  Block formulas converted to \begin{equation} ... \end{equation}
+  Block formulas (equation, align, gather, multline, eqnarray, flalign, alignat, displaymath)
+  converted to \begin{equation} ... \end{equation}
 - Figure/Table leaf handling:
-  Treated as kind='figure' with non-semantic formatting stripped.
+  Treated as kind='figure' with non-semantic formatting ([htpb], \centering) stripped.
+  Array notation like x[t] in prose is strictly preserved.
 """
 
 import re
 from typing import Callable
+
+from arxiv_pipeline.hierarchy.latex_utils import unwrap_styling_balanced
 
 # Abbreviation patterns that contain dots but do not terminate a sentence
 ABBREVIATIONS = [
@@ -40,33 +45,41 @@ ABBREVIATIONS = [
 
 ABBR_PATTERN = re.compile("|".join(ABBREVIATIONS), re.IGNORECASE)
 
-# Non-semantic formatting commands to remove
+# Non-semantic formatting commands to remove from prose (NEVER remove [htpb] here to protect x[t])
 FORMATTING_CLEANUP_RES = [
     re.compile(r"\\(?:centering|raggedright|raggedleft|clearpage|newpage)\b"),
     re.compile(r"\\(?:vspace|hspace)\*?\{[^}]*\}"),
-    re.compile(r"\[\s*[htpb!]+\s*\]"),  # [htpb] placement option
     re.compile(r"\\(?:midrule|toprule|bottomrule|hline)\b"),
     re.compile(r"\\(?:small|footnotesize|scriptsize|large|Large|huge|Huge|normalsize)\b"),
 ]
 
-# Text unwrapping regexes (\textbf{abc} -> abc)
-UNWRAP_RES = [
-    re.compile(r"\\(?:textbf|textit|emph|text|textsc|texttt|underline)\{([^}]+)\}")
+# Formatting commands strictly for figures and tables
+FIGURE_CLEANUP_RES = [
+    re.compile(r"\[\s*[htpb!]+\s*\]"),  # [htpb] placement option only for figures/tables
+    re.compile(r"\\(?:centering|raggedright|raggedleft)\b"),
+    re.compile(r"\\(?:vspace|hspace)\*?\{[^}]*\}"),
+    re.compile(r"\\(?:midrule|toprule|bottomrule|hline)\b"),
+    re.compile(r"\\(?:small|footnotesize|scriptsize|large|Large|huge|Huge|normalsize)\b"),
 ]
 
 
 def clean_latex_formatting(text: str) -> str:
-    """Remove non-semantic formatting commands and unwrap font styles."""
+    """Remove non-semantic formatting commands and unwrap font styles in body prose.
+
+    Preserves array indexing like x[t], dp[p] in prose text.
+    """
     cleaned = text
     for pattern in FORMATTING_CLEANUP_RES:
         cleaned = pattern.sub("", cleaned)
-    for pattern in UNWRAP_RES:
-        # Loop to handle nested unwrapping if any
-        prev = ""
-        while prev != cleaned:
-            prev = cleaned
-            cleaned = pattern.sub(r"\1", cleaned)
-    return cleaned
+    return unwrap_styling_balanced(cleaned)
+
+
+def clean_figure_formatting(text: str) -> str:
+    """Remove placement options and layout commands strictly inside figures/tables."""
+    cleaned = text
+    for pattern in FIGURE_CLEANUP_RES:
+        cleaned = pattern.sub("", cleaned)
+    return unwrap_styling_balanced(cleaned)
 
 
 def normalize_inline_math(text: str) -> str:
@@ -82,26 +95,29 @@ def normalize_inline_math(text: str) -> str:
 
 
 def normalize_block_formula(raw_formula: str) -> str:
-    """Normalize block mathematics to standard \\begin{equation}...\\end{equation} form."""
+    """Normalize block mathematics to standard \\begin{equation}...\\end{equation} form.
+
+    Supports equation, align, gather, multline, eqnarray, flalign, alignat, displaymath.
+    """
     cleaned = raw_formula.strip()
     # Check $$ ... $$
-    if cleaned.startswith("$$") and cleaned.endswith("$$"):
+    if cleaned.startswith("$$") and cleaned.endswith("$$") and len(cleaned) >= 4:
         inner = cleaned[2:-2].strip()
         return f"\\begin{{equation}}\n{inner}\n\\end{{equation}}"
     # Check \[ ... \]
-    if cleaned.startswith(r"\[") and cleaned.endswith(r"\]"):
+    if cleaned.startswith(r"\[") and cleaned.endswith(r"\]") and len(cleaned) >= 4:
         inner = cleaned[2:-2].strip()
         return f"\\begin{{equation}}\n{inner}\n\\end{{equation}}"
-    # Check \begin{equation*} ... \end{equation*}
-    if cleaned.startswith(r"\begin{equation*}") and cleaned.endswith(r"\end{equation*}"):
-        inner = cleaned[len(r"\begin{equation*}") : -len(r"\end{equation*}")].strip()
-        return f"\\begin{{equation}}\n{inner}\n\\end{{equation}}"
-    # Check \begin{align...} or \begin{gather...}
-    match = re.match(r"\\begin\{(?:align|gather)\*?\}(.*?)\\end\{(?:align|gather)\*?\}", cleaned, re.DOTALL)
+    # Check named environments: equation, align, gather, multline, eqnarray, flalign, alignat, displaymath
+    match = re.match(
+        r"\\begin\{(?:equation|align|gather|multline|eqnarray|flalign|alignat|displaymath)\*?\}(.*?)\\end\{(?:equation|align|gather|multline|eqnarray|flalign|alignat|displaymath)\*?\}",
+        cleaned,
+        re.DOTALL,
+    )
     if match:
         inner = match.group(1).strip()
         return f"\\begin{{equation}}\n{inner}\n\\end{{equation}}"
-    # If already \begin{equation} ... \end{equation}
+    # If already formatted or fallback
     return cleaned
 
 
@@ -110,10 +126,12 @@ def tokenize_sentences(text: str) -> list[str]:
 
     DOES NOT split on:
     - Mathematics inside $ ... $
-    - LaTeX commands (\cite{...}, \ref{...})
+    - LaTeX commands (\cite{...}, \citep[see][p. 15]{...}, \ref{...})
     - Abbreviations (i.e., et al., Fig. 1, etc.)
     - Decimal numbers (3.14, 0.05)
     - URLs and emails
+
+    Ensures zero placeholder leakage (__TOKEN_MASK_*__) via deep unnesting.
     """
     if not text or not text.strip():
         return []
@@ -137,7 +155,7 @@ def tokenize_sentences(text: str) -> list[str]:
 
     working_text = re.sub(r"(?<!\\)\$.*?(?<!\\)\$", mask_math, working_text, flags=re.DOTALL)
 
-    # 2. Mask LaTeX commands with braces like \cite{...}, \citep[see][p. 15]{...}, \ref{...}, \url{...}
+    # 2. Mask LaTeX commands with braces and optional brackets like \cite{...}, \citep[see][p. 15]{...}, \ref{...}, \url{...}
     def mask_cmd(m: re.Match[str]) -> str:
         return create_mask(m.group(0))
 
@@ -168,16 +186,30 @@ def tokenize_sentences(text: str) -> list[str]:
     # followed by whitespace or end of string
     raw_sentences = re.split(r"(?<=[.!?])(?:\s+|\n+)", working_text)
 
-    # Restore masks in each sentence
+    # Restore masks in reverse order to unnest placeholders
     restored_sentences: list[str] = []
     for raw in raw_sentences:
         s = raw.strip()
         if not s:
             continue
-        # Restore masks in reverse order
-        for placeholder, original in masks.items():
+
+        # Pass 1: Reverse order replacement
+        for placeholder, original in reversed(list(masks.items())):
             if placeholder in s:
                 s = s.replace(placeholder, original)
+
+        # Pass 2: Defensive loop for any deeply nested placeholders
+        depth = 0
+        while "__TOKEN_MASK_" in s and depth < 10:
+            depth += 1
+            replaced = False
+            for placeholder, original in reversed(list(masks.items())):
+                if placeholder in s:
+                    s = s.replace(placeholder, original)
+                    replaced = True
+            if not replaced:
+                break
+
         # Final cleanup of excessive internal spaces
         s = re.sub(r"\s+", " ", s).strip()
         if s:

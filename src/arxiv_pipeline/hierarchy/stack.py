@@ -141,7 +141,12 @@ class HierarchyStack:
         return node
 
     def pop_list_container(self, list_type: Literal["itemize", "enumerate"]) -> None:
-        """Close a list environment (\\end{itemize} or \\end{enumerate})."""
+        r"""Close a list environment (\end{itemize} or \end{enumerate})."""
+        # Defensive check: ensure the matching list container actually exists on the stack
+        # to prevent orphan \end{itemize} from collapsing sections back to root
+        if not any(frame.kind == list_type for frame in self._stack):
+            return
+
         # Pop any active items or inner structures until we pop the matching list container
         while len(self._stack) > 1:
             top = self._stack.pop()

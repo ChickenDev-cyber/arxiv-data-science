@@ -3,13 +3,14 @@ r"""Hierarchy Tree Builder (Module 3).
 Constructs structured VersionHierarchy trees from GatheredSource payloads:
 - Root 'document' container with title metadata
 - Hierarchical sectioning scopes (chapter, section, subsection, subsubsection, paragraph)
+  with support for optional short titles \section[short]{long}
 - List environments (itemize, enumerate) and list items (\item)
 - Three leaf node kinds strictly adhering to parsing.md:
   1. 'sentence': Prose text split by periods, preserving math/citations/abbreviations.
   2. 'formula': Block formulas normalized to \begin{equation} ... \end{equation}.
   3. 'figure': Figures and tables with non-semantic formatting stripped.
 - Strict inclusion of Acknowledgements and Appendices
-- Strict exclusion of References (\bibliography, \begin{thebibliography})
+- Strict exclusion of References (\bibliography, \begin{thebibliography}, \bibliographystyle, \addbibresource)
 - Resilient handling of empty sources (PDF-only / unsupported versions)
 """
 
@@ -26,9 +27,10 @@ from arxiv_pipeline.hierarchy.latex_utils import (
     extract_document_body,
     extract_title,
     strip_comments,
+    unwrap_styling_balanced,
 )
 from arxiv_pipeline.hierarchy.leaf_parser import (
-    clean_latex_formatting,
+    clean_figure_formatting,
     normalize_block_formula,
     process_prose_block,
 )
@@ -37,21 +39,30 @@ from arxiv_pipeline.hierarchy.validation import validate_version_hierarchy
 
 # Comprehensive delimiter scanner across structural commands, math blocks, and figures
 STREAM_DELIMITER_RE = re.compile(
-    # 1. Structural sectioning commands
-    r"(?P<section>\\(?:chapter|section|subsection|subsubsection|paragraph)\*?\s*\{)"
+    # 1. Structural sectioning commands supporting \section[short]{long}
+    r"(?P<section>\\(?:chapter|section|subsection|subsubsection|paragraph)\*?\s*(?:\[[^\]]*\])?\s*\{)"
     # 2. List environments
     r"|(?P<list_begin>\\begin\{(?:itemize|enumerate)\})"
     r"|(?P<list_end>\\end\{(?:itemize|enumerate)\})"
     r"|(?P<item>\\item(?:\s*\[[^\]]*\])?)"
-    # 3. Special boundaries
+    # 3. Special boundaries & References exclusions
     r"|(?P<appendix>\\appendix\b)"
     r"|(?P<bib_begin>\\begin\{thebibliography\})"
     r"|(?P<bib_cmd>\\bibliography\{)"
-    # 4. Block Formulas
-    r"|(?P<block_math_env>\\begin\{(?:equation|align|gather)\*?\}.*?\\end\{(?:equation|align|gather)\*?\})"
-    r"|(?P<block_math_dollar>\$\$.*?\$\$)"
-    r"|(?P<block_math_bracket>\\\[.*?\\\])"
-    # 5. Figures & Tables
+    r"|(?P<bib_style>\\bibliographystyle\{)"
+    r"|(?P<add_bib>\\addbibresource(?:\[[^\]]*\])?\{)"
+    r"|(?P<print_bib>\\printbibliography\b)"
+    # 4. Metadata macros that must not leak into body prose
+    r"|(?P<maketitle>\\maketitle\b)"
+    r"|(?P<meta_cmd>\\(?:title|author|date)\*?(?:\[[^\]]*\])?\s*\{)"
+    # 5. Block Formulas
+    # 5a. Named math environments (both unstarred and starred)
+    r"|(?P<block_math_env>\\begin\{(?:equation|align|gather|multline|eqnarray|flalign|alignat|displaymath)\*?\}.*?\\end\{(?:equation|align|gather|multline|eqnarray|flalign|alignat|displaymath)\*?\})"
+    # 5b. Single backslash \[ ... \] (not preceded by another backslash, to reject \\[length] newlines)
+    r"|(?P<block_math_bracket>(?<!\\)\\\[.*?(?<!\\)\\\])"
+    # 5c. Display math $$ ... $$ (requires non-empty content and rejects unescaped $ to avoid bridging adjacent inline math)
+    r"|(?P<block_math_dollar>(?<!\\)\$\$(?!\$)(?:[^\$]|\\\$)+?(?<!\\)\$\$)"
+    # 6. Figures & Tables
     r"|(?P<figure_env>\\begin\{(?:figure|table)\*?\}(?:\[[^\]]*\])?.*?\\end\{(?:figure|table)\*?\})",
     re.DOTALL,
 )
@@ -142,7 +153,7 @@ class HierarchyBuilder:
 
             pos = match_end
 
-            # --- 1. References Handling (Exclusion) ---
+            # --- 1. References Handling & Exclusions ---
             if match.group("bib_begin"):
                 in_references = True
                 end_bib = body_tex.find(r"\end{thebibliography}", match_end)
@@ -151,7 +162,16 @@ class HierarchyBuilder:
                     in_references = False
                 continue
 
-            if match.group("bib_cmd"):
+            if match.group("bib_cmd") or match.group("bib_style") or match.group("add_bib"):
+                open_pos = match_end - 1
+                _, close_pos = extract_balanced_braces(body_tex, open_pos)
+                pos = close_pos + 1
+                continue
+
+            if match.group("print_bib") or match.group("maketitle"):
+                continue
+
+            if match.group("meta_cmd"):
                 open_pos = match_end - 1
                 _, close_pos = extract_balanced_braces(body_tex, open_pos)
                 pos = close_pos + 1
@@ -164,7 +184,7 @@ class HierarchyBuilder:
             # --- 2. Structural Section Commands ---
             if match.group("section"):
                 cmd_match = re.match(
-                    r"\\(chapter|section|subsection|subsubsection|paragraph)\*?\s*\{",
+                    r"\\(chapter|section|subsection|subsubsection|paragraph)",
                     match.group("section"),
                 )
                 if not cmd_match:
@@ -174,7 +194,8 @@ class HierarchyBuilder:
                 title_content, close_brace_idx = extract_balanced_braces(body_tex, open_brace_idx)
                 pos = close_brace_idx + 1
 
-                title_text = re.sub(r"\s+", " ", title_content).strip()
+                title_text = unwrap_styling_balanced(title_content)
+                title_text = re.sub(r"\s+", " ", title_text).strip()
 
                 if _is_reference_title(title_text):
                     in_references = True
@@ -220,7 +241,7 @@ class HierarchyBuilder:
             # --- 5. Figures and Tables (Leaf kind='figure') ---
             if match.group("figure_env"):
                 raw_figure = match.group(0)
-                cleaned_figure = clean_latex_formatting(raw_figure)
+                cleaned_figure = clean_figure_formatting(raw_figure)
                 stack.add_leaf("figure", cleaned_figure)
                 continue
 

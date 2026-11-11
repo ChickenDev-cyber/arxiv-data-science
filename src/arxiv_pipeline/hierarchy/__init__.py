@@ -13,6 +13,7 @@ from arxiv_pipeline.hierarchy.contracts import (
     VersionHierarchy,
 )
 from arxiv_pipeline.hierarchy.leaf_parser import (
+    clean_figure_formatting,
     clean_latex_formatting,
     normalize_block_formula,
     normalize_inline_math,
@@ -36,6 +37,7 @@ __all__ = [
     "HierarchyStack",
     "HierarchyBuilder",
     "build_hierarchy",
+    "clean_figure_formatting",
     "clean_latex_formatting",
     "normalize_block_formula",
     "normalize_inline_math",
