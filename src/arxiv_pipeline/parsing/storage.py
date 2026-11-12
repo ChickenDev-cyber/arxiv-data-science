@@ -1,6 +1,7 @@
 """Relational storage engine for parsed elements, hierarchy, and BibTeX tables."""
 
 import json
+import hashlib
 from pathlib import Path
 import sqlite3
 from typing import Any, Dict, List, Optional
@@ -51,6 +52,7 @@ class ParsingDatabase:
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS bibtex (
+                bibtex_id TEXT PRIMARY KEY,
                 arxiv_id TEXT NOT NULL,
                 citation_key TEXT NOT NULL,
                 entry_type TEXT NOT NULL,
@@ -59,10 +61,32 @@ class ParsingDatabase:
                 year INTEGER,
                 doi TEXT,
                 journal TEXT,
-                url TEXT,
-                PRIMARY KEY (arxiv_id, citation_key)
+                url TEXT
             );
         """)
+        bibtex_info = cursor.execute("PRAGMA table_info(bibtex)").fetchall()
+        bibtex_columns = {row[1] for row in bibtex_info}
+        if "bibtex_id" not in bibtex_columns:
+            cursor.execute("ALTER TABLE bibtex RENAME TO bibtex_legacy;")
+            cursor.execute("""
+                CREATE TABLE bibtex (
+                    bibtex_id TEXT PRIMARY KEY,
+                    arxiv_id TEXT NOT NULL,
+                    citation_key TEXT NOT NULL,
+                    entry_type TEXT NOT NULL,
+                    title TEXT,
+                    authors TEXT,
+                    year INTEGER,
+                    doi TEXT,
+                    journal TEXT,
+                    url TEXT
+                );
+            """)
+            legacy_rows = cursor.execute("SELECT arxiv_id, citation_key, entry_type, title, authors, year, doi, journal, url FROM bibtex_legacy").fetchall()
+            for row in legacy_rows:
+                stable = hashlib.sha256("\0".join(str(value or "") for value in row).encode("utf-8")).hexdigest()
+                cursor.execute("INSERT OR IGNORE INTO bibtex VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", (stable, *tuple(row)))
+            cursor.execute("DROP TABLE bibtex_legacy;")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_bibtex_arxiv ON bibtex(arxiv_id);")
 
         cursor.execute("""
@@ -108,25 +132,20 @@ class ParsingDatabase:
 
     def insert_bibtex(self, records: List[BibtexRecord]) -> None:
         cursor = self.conn.cursor()
+        rows = []
+        for record in records:
+            values = (
+                record["arxiv_id"], record["citation_key"], record["entry_type"],
+                record.get("title", ""), json.dumps(record.get("authors", []), ensure_ascii=False),
+                record.get("year"), record.get("doi", ""), record.get("journal", ""), record.get("url", ""),
+            )
+            stable = hashlib.sha256("\0".join(str(value or "") for value in values).encode("utf-8")).hexdigest()
+            rows.append((stable, *values))
         cursor.executemany(
-            """
-            INSERT OR REPLACE INTO bibtex (arxiv_id, citation_key, entry_type, title, authors, year, doi, journal, url)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
-            """,
-            [
-                (
-                    r["arxiv_id"],
-                    r["citation_key"],
-                    r["entry_type"],
-                    r.get("title", ""),
-                    json.dumps(r.get("authors", []), ensure_ascii=False),
-                    r.get("year"),
-                    r.get("doi", ""),
-                    r.get("journal", ""),
-                    r.get("url", ""),
-                )
-                for r in records
-            ],
+            """INSERT OR REPLACE INTO bibtex
+               (bibtex_id, arxiv_id, citation_key, entry_type, title, authors, year, doi, journal, url)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);""",
+            rows,
         )
 
     def save_publication(self, result: PublicationParsingResult) -> None:

@@ -56,7 +56,11 @@ class BibtexEntry(TypedDict):
     url: str
 
 
-class PaperReferences(TypedDict):
+class _OptionalReferenceConflicts(TypedDict, total=False):
+    citation_key_conflicts: list[dict[str, object]]
+
+
+class PaperReferences(_OptionalReferenceConflicts):
     arxiv_id: str
     unified_bibtex: list[BibtexEntry]
     citation_remap: dict[int, dict[str, str]]

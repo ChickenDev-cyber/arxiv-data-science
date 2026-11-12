@@ -18,6 +18,35 @@ class TestParsingDatabase(unittest.TestCase):
         self.db.close()
         self.temp_dir.cleanup()
 
+
+    def test_legacy_bibtex_schema_migrates_and_keeps_distinct_records(self):
+        self.db.close()
+        import sqlite3
+        connection = sqlite3.connect(self.db_path)
+        connection.execute("DROP TABLE bibtex")
+        connection.execute("""CREATE TABLE bibtex (
+            arxiv_id TEXT NOT NULL, citation_key TEXT NOT NULL, entry_type TEXT NOT NULL,
+            title TEXT, authors TEXT, year INTEGER, doi TEXT, journal TEXT, url TEXT,
+            PRIMARY KEY (arxiv_id, citation_key)
+        )""")
+        connection.execute(
+            "INSERT INTO bibtex VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("2501.12673", "same", "article", "Old title", "[]", 2020, "", "", ""),
+        )
+        connection.commit()
+        connection.close()
+
+        self.db = ParsingDatabase(self.db_path)
+        records = [
+            {"arxiv_id": "2501.12673", "citation_key": "same", "entry_type": "article", "title": "First work", "authors": [], "year": 2020, "doi": "10.1234/one", "journal": "", "url": ""},
+            {"arxiv_id": "2501.12673", "citation_key": "same__2", "entry_type": "article", "title": "Second work", "authors": [], "year": 2021, "doi": "10.1234/two", "journal": "", "url": ""},
+        ]
+        self.db.insert_bibtex(records)
+        self.db.commit()
+        stored = self.db.get_bibtex("2501.12673")
+        self.assertEqual(len(stored), 3)
+        self.assertIn("Old title", [record["title"] for record in stored])
+
     def test_schema_creation_and_insertion(self):
         """Test tables creation and insertion of publication result."""
         result: PublicationParsingResult = {
@@ -242,7 +271,8 @@ class TestParsingDatabase(unittest.TestCase):
             self.assertEqual(counts["elements"], 3)
             # 3 elements with shard_size=2 -> 2 shards (part-00000.parquet, part-00001.parquet)
             self.assertEqual(mock_pq.write_table.call_count, 2)
-            written_paths = [str(call.args[1]) for call in mock_pq.write_table.call_args_list]
+            from pathlib import Path
+            written_paths = [Path(str(call.args[1])).as_posix() for call in mock_pq.write_table.call_args_list]
             self.assertTrue(written_paths[0].endswith("elements/part-00000.parquet"))
             self.assertTrue(written_paths[1].endswith("elements/part-00001.parquet"))
 

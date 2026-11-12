@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 import json
+import inspect
 import logging
 import re
 import time
@@ -24,7 +25,8 @@ logger = logging.getLogger(__name__)
 
 _BIB_CMD_RE = re.compile(r"\\(?:bibliography|addbibresource)\s*\{([^}]+)\}")
 _CITE_KEY_RE = re.compile(
-    r"(\\(?:cite[pt]?|citealt|citealp|citeauthor|citeyear|autocite|parencite|textcite)\*?\s*(?:\[[^\]]*\]\s*){0,2}\{)([^{}]*)(\})"
+    r"(\\(?:cite[a-z]*|autocite[a-z]*|parencite[a-z]*|textcite[a-z]*)\*?\s*(?:\[[^]]*\]\s*){0,2}\{)([^{}]*)(\})",
+    re.IGNORECASE,
 )
 _NOCITE_ALL_RE = re.compile(r"\\nocite\s*\{\s*\*\s*\}")
 
@@ -39,7 +41,7 @@ class PipelineComponents:
     """Pluggable module hooks implementing M1 -> M4 -> Rewrite -> M2/M3 -> M5."""
 
     gather_fn: Optional[Callable[[Path, str, int], GatheredSource]] = None
-    refs_fn: Optional[Callable[[List[GatheredSource]], PaperReferences]] = None
+    refs_fn: Optional[Callable[..., PaperReferences]] = None
     rewrite_fn: Optional[Callable[[str, Dict[str, str]], str]] = None
     hierarchy_fn: Optional[Callable[[GatheredSource], VersionHierarchy]] = None
 
@@ -47,7 +49,7 @@ class PipelineComponents:
         self,
     ) -> Tuple[
         Callable[[Path, str, int], GatheredSource],
-        Callable[[List[GatheredSource]], PaperReferences],
+        Callable[..., PaperReferences],
         Callable[[str, Dict[str, str]], str],
         Callable[[GatheredSource], VersionHierarchy],
     ]:
@@ -385,57 +387,14 @@ def extract_fallback_references(raw_tex: str, arxiv_id: str) -> PaperReferences:
     return {"arxiv_id": arxiv_id, "unified_bibtex": entries, "citation_remap": {}}
 
 
-def default_extract_references(sources: List[GatheredSource]) -> PaperReferences:
-    """Baseline Module 4 extractor reading .bib files (filtered by cited keys) and \\bibitem."""
-    if not sources:
-        return {"arxiv_id": "", "unified_bibtex": [], "citation_remap": {}}
+def default_extract_references(
+    sources: List[GatheredSource],
+    source_dirs: Optional[Dict[int, Path]] = None,
+) -> PaperReferences:
+    """Use the shared Module 4 parser with explicit per-version source roots."""
+    from arxiv_pipeline.bibtex.service import extract_and_unify_references
 
-    arxiv_id = sources[0]["arxiv_id"]
-    unified_by_key: Dict[str, BibtexEntry] = {}
-    remap: Dict[int, Dict[str, str]] = {}
-
-    for src in sorted(sources, key=lambda s: s["version"]):
-        v_num = src["version"]
-        remap.setdefault(v_num, {})
-        if src.get("status") != "ok":
-            continue
-
-        merged_tex = src.get("merged_tex", "")
-        cited_keys = _cited_keys_in_tex(merged_tex)
-
-        version_entries: List[BibtexEntry] = []
-        for bib_path_str in src.get("bib_files", []):
-            bib_path = Path(bib_path_str)
-            if bib_path.is_file():
-                btxt = bib_path.read_text(encoding="utf-8", errors="replace")
-                version_entries.extend(_parse_bib_file_entries(btxt, arxiv_id, cited_keys=cited_keys))
-
-        # Parse inline \bibitem in merged_tex or auxiliary .bbl files
-        bibitem_texts = [merged_tex]
-        for bbl_str in src.get("bbl_files", []):
-            bbl_path = Path(bbl_str)
-            if bbl_path.is_file():
-                bibitem_texts.append(bbl_path.read_text(encoding="utf-8", errors="replace"))
-
-        seen_v_keys: Set[str] = set()
-        for text in bibitem_texts:
-            bib_res = extract_fallback_references(text, arxiv_id)
-            for item in bib_res["unified_bibtex"]:
-                if item["citation_key"] not in seen_v_keys:
-                    seen_v_keys.add(item["citation_key"])
-                    version_entries.append(item)
-
-        for entry in version_entries:
-            ckey = entry["citation_key"]
-            remap[v_num][ckey] = ckey
-            if ckey not in unified_by_key:
-                unified_by_key[ckey] = entry
-
-    return {
-        "arxiv_id": arxiv_id,
-        "unified_bibtex": list(unified_by_key.values()),
-        "citation_remap": remap,
-    }
+    return extract_and_unify_references(sources, source_dirs=source_dirs)
 
 
 def default_rewrite_citations(text: str, remap: Dict[str, str]) -> str:
@@ -560,7 +519,23 @@ def process_single_publication(
                 empty_versions.append(d_ver)
 
     bib_source_kind = _classify_bib_source(gathered_sources)
-    refs = refs_fn(gathered_sources) if gathered_sources else None
+    source_dirs: Dict[int, Path] = {}
+    if version_subdirs:
+        source_dirs = {
+            int(directory.name[1:]): directory
+            for directory in version_subdirs
+            if directory.name[1:].isdigit()
+        }
+    else:
+        source_dirs = {1: sources_dir}
+    if gathered_sources:
+        try:
+            accepts_source_dirs = "source_dirs" in inspect.signature(refs_fn).parameters
+        except (TypeError, ValueError):
+            accepts_source_dirs = False
+        refs = refs_fn(gathered_sources, source_dirs=source_dirs) if accepts_source_dirs else refs_fn(gathered_sources)
+    else:
+        refs = None
     remap_by_ver = refs.get("citation_remap", {}) if refs else {}
 
     hierarchies: List[VersionHierarchy] = []
