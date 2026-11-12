@@ -7,6 +7,7 @@ can remain exactly as specified by Module 1.
 from __future__ import annotations
 
 import re
+import unicodedata
 from pathlib import Path
 from typing import Iterable
 
@@ -20,11 +21,13 @@ _URL_RE = re.compile(r"https?://[^\s{}<>]+", re.I)
 _YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2}|2100)\b")
 _CITE_COMMANDS = (
     "cite", "citep", "citet", "citealt", "citealp", "autocite",
-    "parencite", "textcite", "nocite",
+    "parencite", "textcite", "nocite", "Citet", "Citep", "Cite",
+    "citeauthor", "citeyear",
 )
 _CITE_RE = re.compile(
-    r"\\(?:" + "|".join(_CITE_COMMANDS) + r")\*?"
-    r"(?:\s*\[[^\]]*\]){0,2}\s*\{([^{}]*)\}"
+    r"\\(?:cite[a-z]*|autocite[a-z]*|parencite[a-z]*|textcite[a-z]*|nocite)\*?"
+    r"(?:\s*\[[^]]*\]){0,2}\s*\{([^{}]*)\}",
+    re.IGNORECASE,
 )
 _BIB_ENTRY_START_RE = re.compile(r"@([a-zA-Z]+)\s*([({])")
 
@@ -60,7 +63,7 @@ def extract_cited_keys(merged_tex: str) -> tuple[set[str], bool]:
             key = key.strip()
             if command == "nocite" and key == "*":
                 include_all = True
-            elif key:
+            elif key and not re.fullmatch(r"#\d+", key):
                 keys.add(key)
     return keys, include_all
 
@@ -101,9 +104,23 @@ def _replace_href(value: str) -> str:
 def _clean_latex(value: str) -> str:
     value = _replace_href(value)
     value = re.sub(r"\\(?:emph|textit|textbf|textrm|mathrm|url)\s*\{([^{}]*)\}", r"\1", value)
+    # Decode common TeX accents and special letters instead of dropping them.
+    accent_marks = {
+        "'": "\u0301", "`": "\u0300", '"': "\u0308", "^": "\u0302",
+        "~": chr(0x0303), "=": chr(0x0304), ".": chr(0x0307),
+        "u": chr(0x0306), "v": chr(0x030C), "H": chr(0x030B), "c": chr(0x0327),
+        "d": "\u0323", "b": "\u0331",
+    }
+    def decode_accent(match: re.Match[str]) -> str:
+        command, letter = match.group(1), match.group(2)
+        mark = accent_marks.get(command)
+        return unicodedata.normalize("NFC", letter + mark) if mark else letter
+    value = re.sub(r"\\(['`\"^~=\.uvHcdb])\s*\{?([A-Za-z])\}?", decode_accent, value)
+    special_letters = {"ss": "ß", "aa": "å", "o": "ø", "O": "Ø", "ae": "æ", "AE": "Æ", "oe": "œ", "OE": "Œ", "l": "ł", "L": "Ł", "i": "ı", "j": "ȷ"}
+    value = re.sub(r"\\(ss|aa|ae|AE|oe|OE|o|O|l|L|i|j)\b", lambda m: special_letters[m.group(1)], value)
     value = re.sub(r"\\\\(?:[,;:!]|\\)", " ", value)
     value = re.sub(r"\\[a-zA-Z@]+\*?(?:\[[^]]*\])?", " ", value)
-    value = value.replace("~", " ").replace("\n", " ")
+    value = value.replace(r"\~", " ").replace("~", " ").replace("\n", " ")
     value = value.replace("{", "").replace("}", "")
     value = re.sub(r"\s+", " ", value)
     return value.strip(" \t\n.,;:")
@@ -128,16 +145,16 @@ def _author_list_prefix(raw: str) -> tuple[list[str], str]:
     ``Wang, W., Zhang, J., and Li, Q.`` without treating initials as sentence
     boundaries. Returns the parsed authors and the remaining bibliography text.
     """
-    text = _replace_href(raw).replace("\n", " ").strip()
+    text = _replace_href(raw).replace("~", " ").replace("\n", " ").strip()
     person = (
         r"(?:"
-        r"(?:[A-Z](?:\.[\s]*)+)[A-Z][A-Za-z'’\-]+"
+        r"(?:[A-Z]\.(?:\s*-\s*[A-Z]\.)*\s*)+[A-Z][A-Za-z'’\-]+"
         r"|[A-Z][A-Za-z'’\-]+,\s*(?:[A-Z](?:\.[\s]*)+)(?:[A-Z](?:\.[\s]*)*)?"
         r"|(?:[A-Z][a-z'’\-]+\s+){1,2}[A-Z][a-z'’\-]+"
         r")"
     )
     pattern = re.compile(
-        rf"^\s*(?P<authors>{person}(?:\s*,\s*(?:and\s+)?{person})*)\s*,\s*(?P<rest>.+)$",
+        rf"^\s*(?P<authors>{person}(?:(?:\s*,\s*(?:and\s+)?|\s+and\s+){person})*)\s*,\s*(?P<rest>.+)$",
         re.DOTALL,
     )
     match = pattern.match(text)
@@ -224,7 +241,10 @@ def parse_bibitem(arxiv_id: str, citation_key: str, raw_entry: str) -> dict[str,
     raw = raw_entry.strip()
     doi_match = _DOI_RE.search(raw)
     url_match = _URL_RE.search(raw)
-    year_match = _YEAR_RE.search(raw)
+    year_source = _URL_RE.sub(" ", raw)
+    year_source = _DOI_RE.sub(" ", year_source)
+    year_matches = list(_YEAR_RE.finditer(year_source))
+    year_match = year_matches[-1] if year_matches else None
     authors = _extract_authors(raw)
     blocks = _split_blocks(raw)
     title = _extract_title(raw, authors)
@@ -250,7 +270,7 @@ def _find_entry_end(text: str, opening_index: int, opening: str) -> int:
     escaped = False
     for index in range(opening_index + 1, len(text)):
         char = text[index]
-        if char == '"' and not escaped:
+        if char == '"' and not escaped and depth == 1:
             in_quote = not in_quote
         elif not in_quote:
             if char == opening:
@@ -272,7 +292,7 @@ def _split_top_level(value: str, delimiter: str = ",") -> list[str]:
     in_quote = False
     escaped = False
     for index, char in enumerate(value):
-        if char == '"' and not escaped:
+        if char == '"' and not escaped and brace_depth == 0:
             in_quote = not in_quote
         elif not in_quote:
             if char == "{":
@@ -303,7 +323,7 @@ def _parse_bib_fields(body: str) -> dict[str, str]:
     return fields
 
 
-def _bib_value(value: str, strings: dict[str, str]) -> str:
+def _bib_value(value: str, strings: dict[str, str], *, clean: bool = True) -> str:
     pieces = _split_top_level(value, "#")
     output = []
     for piece in pieces:
@@ -316,12 +336,30 @@ def _bib_value(value: str, strings: dict[str, str]) -> str:
             output.append(piece)
         else:
             output.append(strings.get(piece.lower(), piece))
-    return _clean_latex("".join(output))
+    combined = "".join(output)
+    return _clean_latex(combined) if clean else combined.strip()
+
+
+def _strip_bib_comments(text: str) -> str:
+    """Strip % comments only between BibTeX entries, never inside an entry."""
+    result: list[str] = []
+    pos = 0
+    while pos < len(text):
+        match = _BIB_ENTRY_START_RE.search(text, pos)
+        segment_end = match.start() if match else len(text)
+        segment = text[pos:segment_end]
+        result.append(_strip_tex_comments(segment))
+        if not match:
+            break
+        end = _find_entry_end(text, match.end() - 1, match.group(2))
+        result.append(text[match.start():min(end + 1, len(text))])
+        pos = min(end + 1, len(text))
+    return "".join(result)
 
 
 def _parse_bibtex_text(text: str) -> tuple[list[tuple[str, str, dict[str, str]]], dict[str, str]]:
     """Parse common BibTeX entries, @String macros, and skip comments/preambles."""
-    clean = _strip_tex_comments(text or "")
+    clean = _strip_bib_comments(text or "")
     entries: list[tuple[str, str, dict[str, str]]] = []
     strings: dict[str, str] = {}
     pos = 0
@@ -339,7 +377,7 @@ def _parse_bibtex_text(text: str) -> tuple[list[tuple[str, str, dict[str, str]]]
         if kind == "string":
             if "=" in body:
                 name, value = body.split("=", 1)
-                strings[name.strip().lower()] = _bib_value(value, strings)
+                strings[name.strip().lower()] = _bib_value(value, strings, clean=False)
             continue
         fields = _parse_bib_fields(body)
         if not fields:
@@ -351,7 +389,7 @@ def _parse_bibtex_text(text: str) -> tuple[list[tuple[str, str, dict[str, str]]]
 
 def _parse_bibtex_entry(arxiv_id: str, key: str, kind: str, fields: dict[str, str],
                         strings: dict[str, str]) -> dict[str, object]:
-    values = {name: _bib_value(value, strings) for name, value in fields.items()}
+    values = {name: _bib_value(value, strings, clean=name != "url") for name, value in fields.items()}
     author_text = values.get("author", "")
     authors = [name.strip() for name in re.split(r"\s+and\s+", author_text, flags=re.I) if name.strip()]
     title = values.get("title", "")
@@ -361,6 +399,11 @@ def _parse_bibtex_entry(arxiv_id: str, key: str, kind: str, fields: dict[str, st
     url_match = _URL_RE.search(url)
     year_text = values.get("year", "")
     year_match = _YEAR_RE.search(year_text)
+    journal_field = next((fields[name] for name in ("journal", "booktitle", "publisher") if name in fields), "")
+    journal_expanded = _bib_value(journal_field, strings, clean=False)
+    journal = values.get("journal", values.get("booktitle", values.get("publisher", "")))
+    if journal_expanded.rstrip().endswith(".") and journal and not journal.endswith("."):
+        journal += "."
     return {
         "arxiv_id": arxiv_id,
         "citation_key": key,
@@ -369,7 +412,7 @@ def _parse_bibtex_entry(arxiv_id: str, key: str, kind: str, fields: dict[str, st
         "authors": authors,
         "year": int(year_match.group(1)) if year_match else None,
         "doi": doi_match.group(1).rstrip(".,;)") if doi_match else doi.strip(),
-        "journal": values.get("journal", values.get("booktitle", values.get("publisher", ""))),
+        "journal": journal,
         "url": url_match.group(0).rstrip(".,;)") if url_match else url,
     }
 

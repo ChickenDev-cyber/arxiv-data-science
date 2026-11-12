@@ -5,10 +5,11 @@ import re
 
 _CITE_COMMANDS = (
     "cite", "citep", "citet", "citealt", "citealp", "autocite",
-    "parencite", "textcite",
+    "parencite", "textcite", "Citet", "Citep", "Cite", "citeauthor", "citeyear",
 )
 _CITE_RE = re.compile(
-    r"(\\(?:" + "|".join(_CITE_COMMANDS) + r")\*?(?:\s*\[[^\]]*\]){0,2}\s*\{)([^{}]*)(\})"
+    r"(\\(?:cite[a-z]*|autocite[a-z]*|parencite[a-z]*|textcite[a-z]*|nocite)\*?(?:\s*\[[^]]*\]){0,2}\s*\{)([^{}]*)(\})",
+    re.IGNORECASE,
 )
 
 
