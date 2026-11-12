@@ -1,0 +1,2 @@
+# Thử nghiệm tùy chọn, chưa dùng cho tokenizer mặc định.
+nltk==3.10.4

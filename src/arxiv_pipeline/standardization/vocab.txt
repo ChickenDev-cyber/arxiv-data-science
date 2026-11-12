@@ -1,0 +1,24 @@
+# Mỗi dòng là một viết tắt dạng chữ thường, không phải regex.
+# Dòng trống và dòng bắt đầu bằng # được bỏ qua.
+# Dấu cách và spacing LaTeX giữa các phần sẽ do tokenizer xử lý.
+i.e.
+e.g.
+eg.
+et al.
+et seq.
+fig.
+figs.
+eq.
+eqs.
+dr.
+prof.
+vs.
+cf.
+vol.
+no.
+sec.
+approx.
+viz.
+ca.
+dept.
+al.

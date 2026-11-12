@@ -27,6 +27,8 @@ from arxiv_pipeline.hierarchy.latex_utils import (
     extract_document_body,
     extract_title,
     strip_comments,
+    strip_comment_environments,
+    strip_prose_markup,
     unwrap_styling_balanced,
 )
 from arxiv_pipeline.hierarchy.leaf_parser import (
@@ -36,6 +38,7 @@ from arxiv_pipeline.hierarchy.leaf_parser import (
 )
 from arxiv_pipeline.hierarchy.stack import HierarchyStack
 from arxiv_pipeline.hierarchy.validation import validate_version_hierarchy
+from arxiv_pipeline.standardization.utils import _group_end
 
 # Comprehensive delimiter scanner across structural commands, math blocks, and figures
 STREAM_DELIMITER_RE = re.compile(
@@ -44,7 +47,8 @@ STREAM_DELIMITER_RE = re.compile(
     # 2. List environments
     r"|(?P<list_begin>\\begin\{(?:itemize|enumerate)\})"
     r"|(?P<list_end>\\end\{(?:itemize|enumerate)\})"
-    r"|(?P<item>\\item(?:\s*\[[^\]]*\])?)"
+    # Tên lệnh phải kết thúc: \itemsep/\itemindent không phải \item.
+    r"|(?P<item>\\item(?![A-Za-z])(?:\s*\[[^\]]*\])?)"
     # 3. Special boundaries & References exclusions
     r"|(?P<appendix>\\appendix\b)"
     r"|(?P<bib_begin>\\begin\{thebibliography\})"
@@ -55,6 +59,7 @@ STREAM_DELIMITER_RE = re.compile(
     # 4. Metadata macros that must not leak into body prose
     r"|(?P<maketitle>\\maketitle\b)"
     r"|(?P<meta_cmd>\\(?:title|author|date)\*?(?:\[[^\]]*\])?\s*\{)"
+    r"|(?P<abstract_cmd>\\abstract(?![A-Za-z])\s*\{)"
     # 5. Block Formulas
     # 5a. Named math environments (both unstarred and starred)
     r"|(?P<block_math_env>\\begin\{(?:equation|align|gather|multline|eqnarray|flalign|alignat|displaymath)\*?\}.*?\\end\{(?:equation|align|gather|multline|eqnarray|flalign|alignat|displaymath)\*?\})"
@@ -108,7 +113,7 @@ class HierarchyBuilder:
             return empty_hierarchy
 
         raw_tex = source.get("merged_tex", "")
-        clean_tex = strip_comments(raw_tex)
+        clean_tex = strip_comment_environments(strip_comments(raw_tex))
 
         doc_title = extract_title(clean_tex) or f"Paper {self.arxiv_id}v{self.version}"
         body_tex = extract_document_body(clean_tex)
@@ -128,7 +133,7 @@ class HierarchyBuilder:
         """Process prose segment and attach sentence leaves to the active container."""
         if not prose_text or not prose_text.strip():
             return
-        sentences = self.prose_processor(prose_text)
+        sentences = self.prose_processor(strip_prose_markup(prose_text))
         for sentence in sentences:
             if sentence.strip():
                 stack.add_leaf("sentence", sentence)
@@ -208,6 +213,23 @@ class HierarchyBuilder:
 
             # If inside references section, skip all internal content
             if in_references:
+                continue
+
+            if match.group("abstract_cmd"):
+                # Abstract dạng command có thể có 1 hoặc nhiều đối số (template A&A).
+                # Chỉ mở lớp bọc, rồi dùng lại scanner để giữ formula/list nếu có.
+                arg = match_end - 1
+                while arg < len(body_tex) and body_tex[arg] == "{":
+                    end = _group_end(body_tex, arg)
+                    if end is None:
+                        self._emit_prose(body_tex[arg:], stack)
+                        pos = len(body_tex)
+                        break
+                    self._parse_stream(body_tex[arg + 1:end - 1], stack)
+                    pos = end
+                    arg = end
+                    while arg < len(body_tex) and body_tex[arg].isspace():
+                        arg += 1
                 continue
 
             # --- 3. List Environments ---

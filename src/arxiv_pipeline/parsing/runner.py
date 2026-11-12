@@ -19,6 +19,7 @@ from arxiv_pipeline.parsing.contracts import (
     VersionHierarchy,
 )
 from arxiv_pipeline.parsing.dedup import deduplicate_publication_elements
+from arxiv_pipeline.hierarchy import build_hierarchy
 from arxiv_pipeline.parsing.storage import ParsingDatabase
 
 logger = logging.getLogger(__name__)
@@ -357,10 +358,10 @@ def parse_fallback_hierarchy(raw_tex: str, arxiv_id: str, version: int) -> Versi
 
 
 def default_build_hierarchy(source: GatheredSource) -> VersionHierarchy:
-    """Default Module 3 baseline adapter."""
+    """Build with Module 2 standardization and the production hierarchy parser."""
     if source.get("status") != "ok" or not source.get("merged_tex", "").strip():
         return {"arxiv_id": source["arxiv_id"], "version": source["version"], "nodes": []}
-    return parse_fallback_hierarchy(source["merged_tex"], source["arxiv_id"], source["version"])
+    return build_hierarchy(source)
 
 
 def extract_fallback_references(raw_tex: str, arxiv_id: str) -> PaperReferences:

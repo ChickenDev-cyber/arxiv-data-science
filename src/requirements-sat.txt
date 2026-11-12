@@ -1,0 +1,2 @@
+# Backend mặc định của Module 2, kiểm chứng trên Python 3.12.
+wtpsplit[onnx-cpu]==2.2.2
