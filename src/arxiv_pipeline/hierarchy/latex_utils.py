@@ -1,6 +1,96 @@
 """LaTeX stream utilities for structural parsing."""
 
 import re
+import logging
+
+from arxiv_pipeline.standardization.utils import _COMMAND, _MATH_ENV, _command_end, _group_end, _math_end
+
+
+def strip_comment_environments(tex: str) -> str:
+    """Bỏ vùng comment trước khi scanner có thể tạo section/item từ nội dung ẩn."""
+    output = []
+    i = depth = 0
+    while i < len(tex):
+        marker = re.match(r"\\(begin|end)\{comment\}", tex[i:]) if tex[i] == "\\" else None
+        if marker:
+            depth += 1 if marker[1] == "begin" else -1 if depth else 0
+            if depth == 0:
+                output.append("\n")  # Không dính từ ở hai phía vùng bị loại.
+            i += marker.end()
+            continue
+        if depth:
+            i += 2 if tex[i] == "\\" else 1
+            continue
+        # Ví dụ lệnh trong verbatim/verb là nội dung literal, không phải comment.
+        literal = re.match(r"\\begin\{(verbatim\*?|lstlisting|minted)\}", tex[i:]) if tex[i] == "\\" else None
+        verb = re.match(r"\\verb\*?(?![A-Za-z])", tex[i:]) if tex[i] == "\\" else None
+        if literal:
+            end = _math_end(tex, i, literal[0], rf"\end{{{literal[1]}}}")
+        elif verb and i + verb.end() < len(tex):
+            delimiter = tex[i + verb.end()]
+            closing = tex.find(delimiter, i + verb.end() + 1)
+            end = closing + 1 if closing != -1 else len(tex)
+        else:
+            end = min(i + 2, len(tex)) if tex[i] == "\\" else i + 1
+        output.append(tex[i:end])
+        i = end
+    if depth:
+        logging.getLogger(__name__).warning("Unclosed comment environment: omitted remaining source")
+    return "".join(output)
+
+
+def strip_prose_markup(text: str) -> str:
+    """Bỏ label và wrapper proof/abstract, giữ prose bên trong để tách câu."""
+    output = []
+    i = 0
+    while i < len(text):
+        delimiters = next(((a, b) for a, b in (("$$", "$$"), ("$", "$"),
+                          (r"\(", r"\)"), (r"\[", r"\]")) if text.startswith(a, i)), None)
+        if delimiters:
+            end = _math_end(text, i, *delimiters)
+            output.append(text[i:end])
+            i = end
+            continue
+        command = _COMMAND.match(text, i)
+        if not command:
+            end = min(i + 2, len(text)) if text[i] == "\\" else i + 1
+            output.append(text[i:end])
+            i = end
+            continue
+        arg = command.end()
+        while arg < len(text) and text[arg].isspace():
+            arg += 1
+        group_end = _group_end(text, arg) if arg < len(text) and text[arg] == "{" else None
+        if group_end:
+            value = text[arg + 1:group_end - 1]
+            if command[1] == "label":
+                output.append(" ")
+                i = group_end
+                continue
+            if command[1] == "begin" and value.rstrip("*") in _MATH_ENV:
+                end = _math_end(text, i, text[i:group_end], rf"\end{{{value}}}")
+                output.append(text[i:end])
+                i = end
+                continue
+            if command[1] in {"begin", "end"} and value in {"proof", "proof*", "abstract"}:
+                end = group_end
+                option = end
+                while option < len(text) and text[option].isspace():
+                    option += 1
+                if command[1] == "begin" and option < len(text) and text[option] == "[":
+                    # Tiêu đề proof là metadata; không trộn vào câu văn đầu tiên.
+                    end = _group_end(text, option)
+                    if end is None:
+                        output.append(text[i:])
+                        break
+                output.append(" ")
+                i = end
+                continue
+        # Không đi vào cite/ref hay command lạ: label ở đó có thể là dữ liệu literal.
+        end = _command_end(text, command.end())
+        output.append(text[i:end])
+        i = end
+    return "".join(output)
 
 
 def strip_comments(tex: str) -> str:

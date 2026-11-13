@@ -1,0 +1,2 @@
+# Backend mặc định Module 2 sau benchmark CPU, kiểm chứng trên Python 3.12.
+spacy==3.8.18

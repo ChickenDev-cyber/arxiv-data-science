@@ -1,0 +1,3 @@
+# Optional full comparison environment; spaCy is the Module 2 default.
+-r requirements-sat.txt
+-r requirements-spacy.txt

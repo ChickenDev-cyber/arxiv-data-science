@@ -1,0 +1,2 @@
+# Backend SaT tùy chọn để đối chiếu, kiểm chứng trên Python 3.12.
+wtpsplit[onnx-cpu]==2.2.2
