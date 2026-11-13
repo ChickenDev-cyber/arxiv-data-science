@@ -157,31 +157,42 @@ class ParsingDatabase:
         cursor.execute("DELETE FROM publications_meta WHERE arxiv_id = ?", (arxiv_id,))
 
     def save_publication(self, result: PublicationParsingResult) -> None:
-        self.delete_publication(result["arxiv_id"])
-        self.insert_elements(result["elements"])
-        self.insert_hierarchy(result["hierarchy"])
-        self.insert_bibtex(result["bibtex"])
-
-        raw_el_count = result.get("raw_element_count", len(result["elements"]))
-        raw_bib_count = result.get("raw_bibtex_count", len(result["bibtex"]))
-        bib_source_kind = result.get("bib_source_kind", "none")
-
         cursor = self.conn.cursor()
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO publications_meta
-                (arxiv_id, version_count, empty_versions, raw_element_count, raw_bibtex_count, bib_source_kind)
-            VALUES (?, ?, ?, ?, ?, ?);
-            """,
-            (
-                result["arxiv_id"],
-                result["version_count"],
-                json.dumps(result["empty_versions"]),
-                raw_el_count,
-                raw_bib_count,
-                bib_source_kind,
-            ),
-        )
+        cursor.execute("SAVEPOINT save_publication")
+        try:
+            self.delete_publication(result["arxiv_id"])
+            self.insert_elements(result["elements"])
+            self.insert_hierarchy(result["hierarchy"])
+            self.insert_bibtex(result["bibtex"])
+
+            raw_el_count = result.get("raw_element_count", len(result["elements"]))
+            raw_bib_count = result.get("raw_bibtex_count", len(result["bibtex"]))
+            bib_source_kind = result.get("bib_source_kind", "none")
+
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO publications_meta
+                    (arxiv_id, version_count, empty_versions, raw_element_count, raw_bibtex_count, bib_source_kind)
+                VALUES (?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    result["arxiv_id"],
+                    result["version_count"],
+                    json.dumps(result["empty_versions"]),
+                    raw_el_count,
+                    raw_bib_count,
+                    bib_source_kind,
+                ),
+            )
+            cursor.execute("RELEASE SAVEPOINT save_publication")
+        except Exception:
+            cursor.execute("ROLLBACK TO SAVEPOINT save_publication")
+            cursor.execute("RELEASE SAVEPOINT save_publication")
+            raise
+
+    def rollback(self) -> None:
+        """Rollback active transaction on database connection."""
+        self.conn.rollback()
 
     def commit(self) -> None:
         self.conn.commit()

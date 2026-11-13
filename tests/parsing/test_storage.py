@@ -175,6 +175,80 @@ class TestParsingDatabase(unittest.TestCase):
         keys = [b["citation_key"] for b in bibs]
         self.assertEqual(keys, ["new_ref"])
 
+    def test_save_publication_failure_rolls_back_and_preserves_old_data(self):
+        """Verify that when save_publication fails midway, the delete is rolled back and old data is preserved."""
+        res_initial: PublicationParsingResult = {
+            "arxiv_id": "2409.03594",
+            "elements": [
+                {"element_id": "2409.03594#root1", "arxiv_id": "2409.03594", "kind": "document", "content": "Root V1"},
+                {"element_id": "2409.03594#s1", "arxiv_id": "2409.03594", "kind": "sentence", "content": "Original sentence."},
+            ],
+            "hierarchy": [
+                {"arxiv_id": "2409.03594", "version": 1, "element_id": "2409.03594#s1", "parent_id": "2409.03594#root1"}
+            ],
+            "bibtex": [
+                {
+                    "arxiv_id": "2409.03594",
+                    "citation_key": "orig_ref",
+                    "entry_type": "article",
+                    "title": "Original Work",
+                    "authors": ["Author Orig"],
+                    "year": 2020,
+                    "doi": "",
+                    "journal": "",
+                    "url": "",
+                }
+            ],
+            "version_count": 1,
+            "empty_versions": [],
+        }
+        self.db.save_publication(res_initial)
+        self.db.commit()
+
+        # Simulate update that fails midway (e.g. malformed hierarchy record)
+        res_broken = {
+            "arxiv_id": "2409.03594",
+            "elements": [
+                {"element_id": "2409.03594#root1", "arxiv_id": "2409.03594", "kind": "document", "content": "Root V1"},
+                {"element_id": "2409.03594#s2", "arxiv_id": "2409.03594", "kind": "sentence", "content": "Broken sentence."},
+            ],
+            "hierarchy": [{"broken_field": "error"}],  # Will raise KeyError when accessing 'parent_id'
+            "bibtex": [],
+            "version_count": 1,
+            "empty_versions": [],
+        }
+
+        with self.assertRaises(KeyError):
+            self.db.save_publication(res_broken)  # type: ignore[arg-type]
+
+        # Simulate runner continuing and committing the batch
+        res_other: PublicationParsingResult = {
+            "arxiv_id": "2409.99999",
+            "elements": [
+                {"element_id": "2409.99999#root1", "arxiv_id": "2409.99999", "kind": "document", "content": "Other Paper Root"},
+            ],
+            "hierarchy": [],
+            "bibtex": [],
+            "version_count": 1,
+            "empty_versions": [],
+        }
+        self.db.save_publication(res_other)
+        self.db.commit()
+
+        # The first paper's original data must be completely preserved!
+        elements = self.db.get_elements("2409.03594")
+        contents = [e["content"] for e in elements]
+        self.assertIn("Original sentence.", contents)
+        self.assertNotIn("Broken sentence.", contents)
+
+        hierarchy = self.db.get_hierarchy("2409.03594")
+        self.assertEqual(len(hierarchy), 1)
+        self.assertEqual(hierarchy[0]["element_id"], "2409.03594#s1")
+
+        bibtex = self.db.get_bibtex("2409.03594")
+        self.assertEqual(len(bibtex), 1)
+        self.assertEqual(bibtex[0]["citation_key"], "orig_ref")
+
     def test_export_to_parquet_missing_pyarrow(self):
         """Verify RuntimeError when pyarrow is not installed."""
         out_dir = os.path.join(self.temp_dir.name, "parquet_out")
