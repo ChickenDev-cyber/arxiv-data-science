@@ -312,6 +312,48 @@ class TestParsingRunner(unittest.TestCase):
         self.assertIn("db_size_mb", stats)
         self.assertGreater(stats["db_size_mb"], 0.0)
 
+    def test_gather_expands_input_files_in_order(self):
+        r"""Issue 1 reproduction: verify \input files are expanded and sentences are not lost."""
+        p_input = self.corpus_path / "2409.01111"
+        v1 = p_input / "v1"
+        v1.mkdir(parents=True, exist_ok=True)
+        (v1 / "main.tex").write_text(
+            r"\documentclass{article}\begin{document}\section{Intro}Main sent. \input{body.tex}\end{document}",
+            encoding="utf-8",
+        )
+        (v1 / "body.tex").write_text(
+            r"Body sentence one. Body sentence two.",
+            encoding="utf-8",
+        )
+        res = process_single_publication("2409.01111", p_input)
+        contents = [e["content"] for e in res["elements"]]
+        self.assertIn("Body sentence one.", contents)
+        self.assertIn("Body sentence two.", contents)
+        for c in contents:
+            self.assertNotIn(r"\input{body.tex}", c)
+
+    def test_relative_corpus_path_extracts_bibtex(self):
+        """Issue 3 reproduction: verify relative corpus paths do not drop bibtex due to path doubling."""
+        import shutil
+        rel_dir = Path("tmp_test_rel_runner_corpus")
+        try:
+            p_rel = rel_dir / "2409.02222"
+            v1 = p_rel / "v1"
+            v1.mkdir(parents=True, exist_ok=True)
+            (v1 / "main.tex").write_text(
+                r"\documentclass{article}\begin{document}We cite \cite{k1}.\bibliography{refs}\end{document}",
+                encoding="utf-8",
+            )
+            (v1 / "refs.bib").write_text(
+                r"@article{k1, title={Relative Paper}, author={Author One}, year={2021}}",
+                encoding="utf-8",
+            )
+            res = process_single_publication("2409.02222", p_rel)
+            self.assertEqual(len(res["bibtex"]), 1)
+            self.assertEqual(res["bibtex"][0]["citation_key"], "k1")
+        finally:
+            shutil.rmtree(rel_dir, ignore_errors=True)
+
 
 if __name__ == "__main__":
     unittest.main()

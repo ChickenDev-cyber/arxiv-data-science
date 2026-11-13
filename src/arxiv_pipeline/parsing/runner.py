@@ -84,7 +84,10 @@ def _resolve_bib_paths(source_dir: Path, root_dir: Path, merged_nocomment: str) 
                 matched_path = next((b for b in all_bibs if b.name == target_name), None)
 
             if matched_path is not None:
-                resolved_str = str(matched_path)
+                try:
+                    resolved_str = matched_path.relative_to(source_dir).as_posix()
+                except ValueError:
+                    resolved_str = str(matched_path)
                 if resolved_str not in seen:
                     seen.add(resolved_str)
                     resolved.append(resolved_str)
@@ -92,20 +95,8 @@ def _resolve_bib_paths(source_dir: Path, root_dir: Path, merged_nocomment: str) 
     return resolved
 
 
-def default_gather_source(source_dir: Path, arxiv_id: str, version: int) -> GatheredSource:
-    """Default baseline Module 1 gatherer supporting .tex, active .bib, and .bbl files."""
-    if not source_dir.exists() or not source_dir.is_dir():
-        return {
-            "arxiv_id": arxiv_id,
-            "version": version,
-            "root_file": None,
-            "compilation_path": [],
-            "merged_tex": "",
-            "bib_files": [],
-            "bbl_files": [],
-            "status": "empty_source",
-        }
-
+def _fallback_gather_source(source_dir: Path, arxiv_id: str, version: int) -> GatheredSource:
+    """Fallback naive gathering for fragments or mock directories without root TeX document."""
     tex_files = sorted(source_dir.rglob("*.tex"))
     if not tex_files or sum(f.stat().st_size for f in tex_files) == 0:
         return {
@@ -132,7 +123,7 @@ def default_gather_source(source_dir: Path, arxiv_id: str, version: int) -> Gath
     merged_tex = "\n".join(parts)
     merged_nocomment = _strip_tex_comments(merged_tex)
     bib_files = _resolve_bib_paths(source_dir, root_path.parent, merged_nocomment)
-    bbl_files = sorted(str(f) for f in source_dir.rglob("*.bbl"))
+    bbl_files = sorted(f.relative_to(source_dir).as_posix() for f in source_dir.rglob("*.bbl"))
 
     return {
         "arxiv_id": arxiv_id,
@@ -144,6 +135,41 @@ def default_gather_source(source_dir: Path, arxiv_id: str, version: int) -> Gath
         "bbl_files": bbl_files,
         "status": "ok",
     }
+
+
+def default_gather_source(source_dir: Path, arxiv_id: str, version: int) -> GatheredSource:
+    """Default Module 1 gatherer with input expansion and fallback support."""
+    if not source_dir.exists() or not source_dir.is_dir():
+        return {
+            "arxiv_id": arxiv_id,
+            "version": version,
+            "root_file": None,
+            "compilation_path": [],
+            "merged_tex": "",
+            "bib_files": [],
+            "bbl_files": [],
+            "status": "empty_source",
+        }
+
+    try:
+        from arxiv_pipeline.gathering.service import SourceGatherer
+        from arxiv_pipeline.identifiers import is_valid_arxiv_id
+
+        norm_id = arxiv_id.replace("-", ".")
+        probe_id = norm_id if is_valid_arxiv_id(norm_id) else "2401.00001"
+        safe_version = version if isinstance(version, int) and version >= 1 else 1
+        gathered = SourceGatherer().gather(source_dir, probe_id, safe_version)
+        gathered["arxiv_id"] = arxiv_id
+        gathered["version"] = version
+
+        if gathered.get("status") == "ok":
+            return gathered
+        if gathered.get("status") == "empty_source":
+            return gathered
+    except Exception as exc:
+        logger.debug("SourceGatherer failed on %s: %s; falling back", arxiv_id, exc)
+
+    return _fallback_gather_source(source_dir, arxiv_id, version)
 
 
 def _extract_balanced_block(text: str, open_idx: int) -> Tuple[str, int]:

@@ -148,7 +148,16 @@ class ParsingDatabase:
             rows,
         )
 
+    def delete_publication(self, arxiv_id: str) -> None:
+        """Remove all records associated with a publication to ensure idempotent saves."""
+        cursor = self.conn.cursor()
+        cursor.execute("DELETE FROM hierarchy WHERE arxiv_id = ?", (arxiv_id,))
+        cursor.execute("DELETE FROM bibtex WHERE arxiv_id = ?", (arxiv_id,))
+        cursor.execute("DELETE FROM elements WHERE arxiv_id = ?", (arxiv_id,))
+        cursor.execute("DELETE FROM publications_meta WHERE arxiv_id = ?", (arxiv_id,))
+
     def save_publication(self, result: PublicationParsingResult) -> None:
+        self.delete_publication(result["arxiv_id"])
         self.insert_elements(result["elements"])
         self.insert_hierarchy(result["hierarchy"])
         self.insert_bibtex(result["bibtex"])

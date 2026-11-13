@@ -417,6 +417,25 @@ def _parse_bibtex_entry(arxiv_id: str, key: str, kind: str, fields: dict[str, st
     }
 
 
+def _resolve_source_path(filename: str | Path, base_dir: Path | None) -> Path | None:
+    """Safely resolve a bib or bbl path against base_dir without path doubling."""
+    path = Path(filename)
+    if path.is_absolute():
+        return path if path.is_file() else None
+    if base_dir is None:
+        return None
+    cand = base_dir / path
+    if cand.is_file():
+        return cand
+    try:
+        cand_rel = base_dir / path.relative_to(base_dir)
+        if cand_rel.is_file():
+            return cand_rel
+    except ValueError:
+        pass
+    return None
+
+
 def extract_from_gathered_source(
     source: dict[str, object], source_dir: str | Path | None = None
 ) -> list[dict[str, object]]:
@@ -434,13 +453,8 @@ def extract_from_gathered_source(
     parsed_bibs: list[tuple[str, str, dict[str, str], dict[str, str]]] = []
     for filename in source.get("bib_files", []) or []:
         try:
-            path = Path(str(filename))
-            if not path.is_absolute():
-                if base_dir is None:
-                    # Relative paths cannot safely be resolved from an unknown CWD.
-                    continue
-                path = base_dir / path
-            if path.is_file():
+            path = _resolve_source_path(filename, base_dir)
+            if path is not None and path.is_file():
                 entries, strings = _parse_bibtex_text(path.read_text(encoding="utf-8", errors="replace"))
                 parsed_bibs.extend((kind, key, fields, strings) for kind, key, fields in entries)
         except (OSError, ValueError, TypeError):
@@ -462,12 +476,8 @@ def extract_from_gathered_source(
     texts: list[str] = [merged_tex]
     for filename in source.get("bbl_files", []) or []:
         try:
-            path = Path(str(filename))
-            if not path.is_absolute():
-                if base_dir is None:
-                    continue
-                path = base_dir / path
-            if path.is_file():
+            path = _resolve_source_path(filename, base_dir)
+            if path is not None and path.is_file():
                 texts.append(path.read_text(encoding="utf-8", errors="replace"))
         except (OSError, ValueError, TypeError):
             continue

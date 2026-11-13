@@ -107,6 +107,74 @@ class TestParsingDatabase(unittest.TestCase):
         elements = self.db.get_elements("2409.03594")
         self.assertEqual(len(elements), 1)
 
+    def test_save_publication_idempotent_replaces_stale_data(self):
+        """Issue 2 reproduction: verify re-running save_publication replaces stale elements, edges, and bibtex."""
+        res1: PublicationParsingResult = {
+            "arxiv_id": "2409.03594",
+            "elements": [
+                {"element_id": "2409.03594#root1", "arxiv_id": "2409.03594", "kind": "document", "content": "Root V1"},
+                {"element_id": "2409.03594#s1", "arxiv_id": "2409.03594", "kind": "sentence", "content": "Old sentence."},
+            ],
+            "hierarchy": [
+                {"arxiv_id": "2409.03594", "version": 1, "element_id": "2409.03594#s1", "parent_id": "2409.03594#root1"}
+            ],
+            "bibtex": [
+                {
+                    "arxiv_id": "2409.03594",
+                    "citation_key": "old_ref",
+                    "entry_type": "article",
+                    "title": "Old Work",
+                    "authors": ["Author Old"],
+                    "year": 2019,
+                    "doi": "",
+                    "journal": "",
+                    "url": "",
+                }
+            ],
+            "version_count": 1,
+            "empty_versions": [],
+        }
+        self.db.save_publication(res1)
+        self.db.commit()
+
+        # Update paper content and re-save
+        res2: PublicationParsingResult = {
+            "arxiv_id": "2409.03594",
+            "elements": [
+                {"element_id": "2409.03594#root1", "arxiv_id": "2409.03594", "kind": "document", "content": "Root V1"},
+                {"element_id": "2409.03594#s1", "arxiv_id": "2409.03594", "kind": "sentence", "content": "New sentence."},
+            ],
+            "hierarchy": [
+                {"arxiv_id": "2409.03594", "version": 1, "element_id": "2409.03594#s1", "parent_id": "2409.03594#root1"}
+            ],
+            "bibtex": [
+                {
+                    "arxiv_id": "2409.03594",
+                    "citation_key": "new_ref",
+                    "entry_type": "article",
+                    "title": "New Work",
+                    "authors": ["Author New"],
+                    "year": 2024,
+                    "doi": "",
+                    "journal": "",
+                    "url": "",
+                }
+            ],
+            "version_count": 1,
+            "empty_versions": [],
+        }
+        self.db.save_publication(res2)
+        self.db.commit()
+
+        elements = self.db.get_elements("2409.03594")
+        contents = [e["content"] for e in elements]
+        self.assertIn("New sentence.", contents)
+        self.assertNotIn("Old sentence.", contents)
+
+        bibs = self.db.get_bibtex("2409.03594")
+        keys = [b["citation_key"] for b in bibs]
+        self.assertEqual(keys, ["new_ref"])
+
     def test_export_to_parquet_missing_pyarrow(self):
         """Verify RuntimeError when pyarrow is not installed."""
         out_dir = os.path.join(self.temp_dir.name, "parquet_out")

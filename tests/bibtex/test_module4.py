@@ -315,6 +315,36 @@ class TestModule4(unittest.TestCase):
             result = extract_and_unify_references([source])
             self.assertEqual(result["unified_bibtex"], [])
 
+    def test_relative_bib_files_with_relative_source_dir_and_doubled_paths(self):
+        import shutil
+        rel_base = Path("tmp_rel_bib_test")
+        try:
+            rel_src = rel_base / "2409.00001" / "v1"
+            rel_src.mkdir(parents=True, exist_ok=True)
+            (rel_src / "refs.bib").write_text("@misc{rel_key, title={Relative Title}}", encoding="utf-8")
+
+            # 1. Standard relative path relative to source_dir
+            source1 = {
+                "arxiv_id": "2409.00001", "version": 1,
+                "merged_tex": r"\nocite{*}", "bib_files": ["refs.bib"],
+                "bbl_files": [], "status": "ok",
+            }
+            res1 = extract_and_unify_references([source1], source_dirs={1: rel_src})
+            self.assertEqual(len(res1["unified_bibtex"]), 1)
+            self.assertEqual(res1["unified_bibtex"][0]["citation_key"], "rel_key")
+
+            # 2. Path that already has source_dir prefix (path doubling protection)
+            source2 = {
+                "arxiv_id": "2409.00001", "version": 1,
+                "merged_tex": r"\nocite{*}", "bib_files": [str(rel_src / "refs.bib")],
+                "bbl_files": [], "status": "ok",
+            }
+            res2 = extract_and_unify_references([source2], source_dirs={1: rel_src})
+            self.assertEqual(len(res2["unified_bibtex"]), 1)
+            self.assertEqual(res2["unified_bibtex"][0]["citation_key"], "rel_key")
+        finally:
+            shutil.rmtree(rel_base, ignore_errors=True)
+
     def test_empty_input_returns_empty_contract(self):
         self.assertEqual(extract_and_unify_references([]), {
             "arxiv_id": "", "unified_bibtex": [], "citation_remap": {},
