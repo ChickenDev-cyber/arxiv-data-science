@@ -17,10 +17,10 @@ def local_model(monkeypatch):
     tokenizer = Path(os.environ.get("ARXIV_SAT_TOKENIZER", "data/models/xlm-roberta-base-tokenizer"))
     if not (path / "model_optimized.onnx").is_file() or not (tokenizer / "tokenizer.json").is_file():
         pytest.skip("Cần chạy standardization.download_models trước test SaT thật")
-    monkeypatch.delenv("ARXIV_SENTENCE_BACKEND", raising=False)
+    monkeypatch.setenv("ARXIV_SENTENCE_BACKEND", "sat")
 
 
-def test_default_uses_cpu_model():
+def test_optional_sat_uses_cpu_model():
     assert sat_model().model.ort_session.get_providers() == ["CPUExecutionProvider"]
 
 

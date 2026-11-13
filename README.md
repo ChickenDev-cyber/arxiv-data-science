@@ -1077,11 +1077,11 @@ Unit test không thay thế kiểm thử trên corpus. Theo Definition of Done c
 - **Module 4 → Module 5:** `unified_bibtex` để ghi bảng `bibtex`.
 - **Module 3:** không đưa bibliography vào cây hierarchy; phần references được Module 4 xử lý riêng.
 
-## Milestone 2 — Khang: standardization and SaT
+## Milestone 2 — Khang: standardization and spaCy
 
 Module 2 provides `clean_latex`, `normalize_math`, `tokenize_sentences`, and
-`process_prose`. Sentence segmentation defaults to SaT on CPU with pinned local
-model/tokenizer revisions. See the [setup and API guide](src/arxiv_pipeline/standardization/README.md)
+`process_prose`. Sentence segmentation defaults to spaCy `senter` on CPU with pinned
+`en_core_web_sm` 3.8.0. SaT remains optional after the range benchmark. See the [setup and API guide](src/arxiv_pipeline/standardization/README.md)
 and [Punkt/spaCy/SaT comparison](reports/module2-tokenizer-comparison.md), including
 known split/merge limitations. Download models explicitly before running the parser;
 no model binaries or corpus files are stored in this repository.

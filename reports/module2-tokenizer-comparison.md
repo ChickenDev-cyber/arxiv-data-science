@@ -1,6 +1,8 @@
 # So sánh Punkt, spaCy và SaT — Module 2 của Khang
 
-Cập nhật: **2026-11-13**. Triển khai chọn **SaT** theo quyết định của Khang; lựa chọn này không có nghĩa SaT thắng mọi test hoặc tốt nhất trên corpus của nhóm.
+Trạng thái hiện tại (2026-11-13): **spaCy senter mặc định** sau benchmark 100 ID. Quyết định SaT được giữ bên dưới như lịch sử thử nghiệm; không còn là backend mặc định.
+
+Quyết định ban đầu (trước benchmark dải ID): chọn **SaT** theo quyết định của Khang; lựa chọn này không có nghĩa SaT thắng mọi test hoặc tốt nhất trên corpus của nhóm.
 
 ## Phạm vi và phương pháp
 
@@ -38,9 +40,9 @@ Các adapter không mất/thêm ký tự khi so chuỗi bỏ whitespace trên m�
 - Mask dài bằng x có thể làm mất ngữ cảnh cho model. Kết quả là chất lượng **adapter hybrid trong dự án**, không phải kết luận về model thuần.
 - Không chỉnh threshold/LoRA hoặc thêm initials vào vocab để tối ưu riêng cho mẫu.
 
-## Quyết định triển khai
+## Quyết định SaT trước benchmark (lịch sử)
 
-- **SaT là backend mặc định theo lựa chọn của Khang ngày 2026-11-13**, dù spaCy đạt cao hơn trên 12 ca chẩn đoán và baseline đạt cao hơn trên 40 kỳ vọng cũ.
+- **SaT từng được chọn làm mặc định trước khi benchmark dải ID**, dù spaCy đạt cao hơn trên 12 ca chẩn đoán và baseline đạt cao hơn trên 40 kỳ vọng cũ.
 - Dùng `sat-3l-sm`, revision `137da054051ad9f1eac42025f758db4ac9f22535`; tokenizer XLM-R revision `e73636d4f797dec63c3081bb6ed5c7b0bb3f2089`; chạy CPU/offline sau bước setup.
 - Không gọi model “SOTA trên corpus của nhóm”. SaT được giới thiệu là model hiện đại trong [repo tác giả](https://github.com/segment-any-text/wtpsplit); kết quả ở đây chưa chứng minh đạt SOTA.
 - Giữ rule backend để regression/đối chiếu. Thiếu model/dependency phải báo lỗi, không tự chuyển thuật toán và không tải mạng trong parser.
@@ -61,3 +63,13 @@ Các adapter không mất/thêm ký tự khi so chuỗi bỏ whitespace trên m�
 - Chạy publication pipeline mặc định trên source thật 2506.20791v1: có 115 sentence, 13 formula, 9 figure; giữ đúng `I.-M.I. was supported ...`. Đây là phần tử sau dedup của một bài, không phải benchmark toàn corpus.
 - 13/40 kỳ vọng legacy vẫn không đạt khi chọn SaT như đã ghi trong thử nghiệm; không đổi expected output hoặc tuyên bố tất cả compatibility test đã pass.
 - Model/corpus không có trong commit. Cần setup model một lần theo README trước khi dùng backend mặc định.
+
+## Quyết định mới sau benchmark dải ID — 2026-11-13
+
+Khang chọn chuyển sang **spaCy senter** để đáp ứng quy mô 40.000+ bản trên CPU. Trên 93 bài TeX trong 100 ID: spaCy gọi từng đoạn mất 17,28 s và peak RSS 152 MiB; batch 32 trong harness mất 9,70 s và 164 MiB. SaT cấu hình thử 1/1 mất 1.283,91 s, peak RSS 1.310 MiB. Xem [benchmark dải ID](module2-range-benchmark-2026-11-13.md).
+
+Code production chuyển backend mặc định sang spaCy nhưng vẫn gọi từng đoạn; chưa tích hợp batch 32. Ngoại suy tương ứng là khoảng **2,1 giờ tokenizer/40.000 bản TeX** tương tự mẫu, chưa gồm toàn pipeline và các version bổ sung. SaT giữ làm backend tùy chọn. Không sửa expected output để giấu 5/40 kỳ vọng legacy spaCy chưa đạt.
+
+Kiểm chứng cập nhật spaCy mặc định: regression với rule **189 tests pass, 2 skip, 10 subtests pass**; smoke spaCy thật **3 tests pass**. Setup dùng model 3.8.0 đã cài và không tải lại khi đúng version.
+
+Publication pipeline mặc định spaCy đã chạy trên 2506.20791v1: 114 sentence elements sau dedup, 13 formula, 9 figure; giữ đúng cụm I.-M.I. was supported. Backend SaT tùy chọn vẫn đạt 3 smoke tests sau khi thay mặc định.

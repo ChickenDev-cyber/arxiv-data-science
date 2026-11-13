@@ -1,4 +1,4 @@
-"""Adapter SaT mặc định và spaCy đối chiếu; bảo toàn nội dung gốc."""
+"""Adapter spaCy mặc định và SaT đối chiếu; bảo toàn nội dung gốc."""
 
 import os
 from functools import lru_cache
@@ -9,14 +9,20 @@ from .segmentation_utils import masked_view, split_at_ends
 
 @lru_cache(maxsize=1)
 def spacy_model():
-    import spacy
+    try:
+        import spacy
+    except ImportError as exc:
+        raise RuntimeError("spaCy requires: python -m pip install -r src/requirements-spacy.txt") from exc
 
     spacy.require_cpu()
     # Chỉ bật senter: không dùng NER, parser, tagger hoặc lemmatizer.
     # Model tắt senter sẵn trong config; bật sau khi load để tránh xung đột enable.
-    nlp = spacy.load("en_core_web_sm", disable=[
-        "tok2vec", "tagger", "parser", "attribute_ruler", "lemmatizer", "ner",
-    ])
+    try:
+        nlp = spacy.load("en_core_web_sm", disable=[
+            "tok2vec", "tagger", "parser", "attribute_ruler", "lemmatizer", "ner",
+        ])
+    except OSError as exc:
+        raise RuntimeError("Missing spaCy model. Run: PYTHONPATH=src python -m arxiv_pipeline.standardization.download_models") from exc
     nlp.enable_pipe("senter")
     assert nlp.pipe_names == ["senter"]
     return nlp
@@ -42,7 +48,7 @@ def sat_model():
     path = Path(os.environ.get("ARXIV_SAT_MODEL", "data/models/sat-3l-sm")).resolve()
     tokenizer_path = Path(os.environ.get("ARXIV_SAT_TOKENIZER", "data/models/xlm-roberta-base-tokenizer")).resolve()
     if not (path / "model_optimized.onnx").is_file() or not (path / "config.json").is_file() or not (tokenizer_path / "tokenizer.json").is_file():
-        raise RuntimeError("Missing local SaT model/tokenizer. Run: PYTHONPATH=src python -m arxiv_pipeline.standardization.download_models")
+        raise RuntimeError("Missing local SaT model/tokenizer. Run: PYTHONPATH=src python -m arxiv_pipeline.standardization.download_models --backend sat")
     options = ort.SessionOptions()
     # Cố định số thread để các đoạn ngắn không tạo overhead từ quá nhiều core.
     options.intra_op_num_threads = 2

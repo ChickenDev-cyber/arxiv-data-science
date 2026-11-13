@@ -4,4 +4,4 @@ psutil>=5.9.0
 pytest>=8.0.0
 
 # Module 2 default sentence segmentation (model setup is a separate command):
--r requirements-sat.txt
+-r requirements-spacy.txt

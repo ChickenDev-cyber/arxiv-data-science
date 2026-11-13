@@ -1,8 +1,8 @@
 # Module 2 — Khang: LaTeX standardization
 
 Clean prose, normalize math and return sentence leaves. The default sentence
-backend is **SaT `sat-3l-sm` on ONNX CPU**, selected by the project owner.
-This is a deployment choice, not a claim that SaT wins our evaluation.
+backend is **spaCy `senter` on CPU**, selected after the 100-ID range benchmark.
+SaT, Punkt and rule-based segmentation remain available for comparison.
 See [comparison](../../../reports/module2-tokenizer-comparison.md).
 
 ## Setup
@@ -14,11 +14,12 @@ python -m pip install -r src/requirements.txt
 PYTHONPATH=src python -m arxiv_pipeline.standardization.download_models
 ```
 
-The explicit download command pins model/tokenizer revisions. It stores about
-422 MiB under gitignored `data/models/`. Parser calls use local files and do not
-download models or silently fall back to another algorithm.
-For custom locations, set both `ARXIV_SAT_MODEL` and `ARXIV_SAT_TOKENIZER` before
-setup and execution. Default paths are relative to the working directory.
+The explicit setup command installs the pinned official `en_core_web_sm` **3.8.0**
+wheel only when that version is missing. Parser calls use the installed model,
+run only `senter`, and never download models or silently fall back.
+SaT is optional: install `src/requirements-sat.txt` and run the same setup command
+with `--backend sat`. Its local paths can be configured with `ARXIV_SAT_MODEL`
+and `ARXIV_SAT_TOKENIZER`.
 
 ## API
 
@@ -36,7 +37,7 @@ sentences = process_prose(r"\textbf{Our method} works. Another result follows.")
   preserve math, citations and unfamiliar commands. Caption text is cleaned recursively.
 - `normalize_math(text: str) -> str`: inline math becomes `$...$`, display math
   becomes an `equation` environment; mathematical expressions remain intact.
-- `tokenize_sentences(text: str, *, backend=None) -> list[str]`: default SaT;
+- `tokenize_sentences(text: str, *, backend=None) -> list[str]`: default spaCy `senter`;
   return slices of original text, keeping punctuation. Protect math/commands,
   known abbreviations and URLs/emails; accept only period boundaries.
 - `process_prose(text, custom_tokenizer=None) -> list[str]`: cleanup → normalize
@@ -60,24 +61,30 @@ ARXIV_SENTENCE_BACKEND=rule PYTHONPATH=src python -m pytest -q \
   tests/test_hierarchy_corpus.py tests/test_review_fixes.py tests/parsing
 
 # Real selected backend smoke tests, after model setup:
-PYTHONPATH=src python -m pytest -q tests/test_sat_backend.py
+PYTHONPATH=src python -m pytest -q tests/test_spacy_backend.py
 
-# Check SaT against all legacy expectations; known failures are reported honestly.
-PYTHONPATH=src python tools/evaluate_tokenizer_compatibility.py sat
+# Check spaCy against all legacy expectations; known failures are reported honestly.
+PYTHONPATH=src python tools/evaluate_tokenizer_compatibility.py spacy
 ```
 
-`ARXIV_SENTENCE_BACKEND` supports `sat` (default), `rule`, `punkt`, `spacy`.
+`ARXIV_SENTENCE_BACKEND` supports `spacy` (default), `rule`, `punkt`, `sat`.
 Explicit `tokenize_sentences(text, backend="rule")` overrides the environment.
-Punkt/spaCy need their optional requirements and model setup documented in the
+Punkt/SaT need their optional requirements and model setup documented in the
 experiment reports. An invalid backend raises an error.
 
 ## Known limitations
 
-SaT scored 9/12 diagnostic cases and passed 27/40 legacy expectations in the saved
-hybrid experiment. It can merge sentences after initials at sentence end, decimal
-numbers and math. Masking technical spans may remove useful context; the test
-sample is small and is not a held-out corpus benchmark. Sequential inference on
-the sample was slow; batching has not been benchmarked.
+spaCy scored 10/12 diagnostic cases and passed 35/40 legacy expectations in the
+saved hybrid experiment. It can merge sentences after sentence-final initials,
+U.S., or a method name ending in a period. Masking technical spans may remove
+useful context. The sample is small and is not a held-out corpus benchmark.
+
+On 93 TeX versions from the 100-ID range sample, per-block spaCy took 17.3 seconds;
+batch 32 in the benchmark harness took 9.7 seconds. **Production still calls the
+model per block**, so use the per-block result (about 2.1 tokenizer-hours for
+40,000 similar TeX versions) when planning. This excludes the rest of the pipeline
+and is an extrapolation, not a guaranteed runtime. See the
+[range benchmark](../../../reports/module2-range-benchmark-2026-11-13.md).
 
 Unknown theorem/algorithm environments, metadata, legacy font declarations and
 formatting nested in commands such as resizebox are not fully interpreted.
