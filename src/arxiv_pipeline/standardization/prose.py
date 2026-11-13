@@ -2,7 +2,7 @@
 
 from typing import Callable
 
-from .cleaner import clean_text, normalize_math
+from .cleaner import clean_latex, normalize_math
 from .tokenizer import tokenize_sentences
 
 
@@ -16,7 +16,7 @@ def process_prose(
     Citation key đã được rewrite ở bước trước; hàm này giữ nguyên các key đó.
     """
     # Bỏ định dạng trước để lệnh bọc chữ không che mất ranh giới câu bên trong.
-    cleaned = clean_text(text)
+    cleaned = clean_latex(text)
     # Thống nhất math trước khi tách câu để output dùng cùng một biểu diễn.
     normalized = normalize_math(cleaned)
     # Giữ điểm tùy biến đang có của hierarchy; mặc định dùng tokenizer Module 2.

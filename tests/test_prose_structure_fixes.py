@@ -4,7 +4,7 @@ import pytest
 
 from arxiv_pipeline.hierarchy import build_hierarchy
 from arxiv_pipeline.hierarchy.latex_utils import strip_comment_environments, strip_prose_markup
-from arxiv_pipeline.standardization import clean_text
+from arxiv_pipeline.standardization import clean_latex
 
 
 def parse(body):
@@ -69,9 +69,9 @@ def test_abstract_preserves_math_structure_and_citations():
 
 def test_caption_cleaned_without_splitting_figure():
     raw = r"\begin{figure}\caption*[\emph{Short}]{\textbf{Main \emph{result}.} Use $\mathbf{x}$ and \cite{k}.}\end{figure}"
-    cleaned = clean_text(raw)
+    cleaned = clean_latex(raw)
     assert r"\caption*[Short]{Main result. Use $\mathbf{x}$ and \cite{k}.}" in cleaned
-    assert clean_text(cleaned) == cleaned
+    assert clean_latex(cleaned) == cleaned
     nodes = parse(raw)
     assert not prose(nodes)
     assert sum(n["kind"] == "figure" for n in nodes) == 1
@@ -79,7 +79,7 @@ def test_caption_cleaned_without_splitting_figure():
 
 def test_unknown_command_and_malformed_caption_preserved():
     for raw in [r"\unknown{\textbf{Keep}}", r"\caption[unfinished", r"\caption{unfinished"]:
-        assert clean_text(raw) == raw
+        assert clean_latex(raw) == raw
 
 
 def test_proof_and_label_removed_without_breaking_sentence():

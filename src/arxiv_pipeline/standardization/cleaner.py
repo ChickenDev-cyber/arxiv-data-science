@@ -61,7 +61,7 @@ def normalize_math(text: str) -> str:
     return "".join(output)
 
 
-def clean_text(text: str) -> str:
+def clean_latex(text: str) -> str:
     r"""Remove known layout commands and unwrap prose styles.
     """
     output: list[str] = []
@@ -136,7 +136,7 @@ def clean_text(text: str) -> str:
                     previous = i
                     for start_group, end_group in groups:
                         output.append(text[previous:start_group + 1])
-                        output.append(clean_text(text[start_group + 1:end_group - 1]))
+                        output.append(clean_latex(text[start_group + 1:end_group - 1]))
                         output.append(text[end_group - 1:end_group])
                         previous = end_group
                     i = end_caption
@@ -150,7 +150,7 @@ def clean_text(text: str) -> str:
                     break
 
                 if name in _UNWRAP:
-                    output.append(clean_text(text[arg_start + 1:group_end - 1]))
+                    output.append(clean_latex(text[arg_start + 1:group_end - 1]))
                 elif output and not output[-1].endswith(" "):
                     output.append(" ")
 

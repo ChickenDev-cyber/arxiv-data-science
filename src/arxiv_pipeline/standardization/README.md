@@ -25,10 +25,10 @@ and `ARXIV_SAT_TOKENIZER`.
 
 ```python
 from arxiv_pipeline.standardization import (
-    clean_latex, clean_text, normalize_math, tokenize_sentences, process_prose,
+    clean_latex, normalize_math, tokenize_sentences, process_prose,
 )
 
-clean_latex(r"\textbf{Result}")  # 'Result'; clean_text is the same API
+clean_latex(r"\textbf{Result}")  # 'Result'
 normalize_math(r"Use \( x \).")  # 'Use $x$.'
 sentences = process_prose(r"\textbf{Our method} works. Another result follows.")
 ```
@@ -90,3 +90,11 @@ Unknown theorem/algorithm environments, metadata, legacy font declarations and
 formatting nested in commands such as resizebox are not fully interpreted.
 Malformed syntax is handled conservatively. This is not a TeX compiler.
 Model/corpus binaries and local experiment outputs are not committed.
+
+`clean_latex` is defined directly in `cleaner.py` and re-exported by the package.
+Both imports work; the former `clean_text` name has been removed:
+
+```python
+from arxiv_pipeline.standardization import clean_latex
+# Or: from arxiv_pipeline.standardization.cleaner import clean_latex
+```

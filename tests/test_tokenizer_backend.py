@@ -2,8 +2,8 @@
 
 import pytest
 
-from arxiv_pipeline.standardization import clean_latex, clean_text, tokenize_sentences
-from arxiv_pipeline.standardization import neural_adapter
+from arxiv_pipeline.standardization import clean_latex, tokenize_sentences
+from arxiv_pipeline.standardization import cleaner, neural_adapter
 
 
 def test_default_routes_to_spacy(monkeypatch):
@@ -38,5 +38,6 @@ def test_missing_spacy_model_does_not_fall_back(monkeypatch):
 
 
 def test_assignment_cleanup_name():
-    assert clean_latex is clean_text
+    assert clean_latex is cleaner.clean_latex
+    assert clean_latex.__name__ == "clean_latex"
     assert clean_latex(r"\textbf{Result}") == "Result"

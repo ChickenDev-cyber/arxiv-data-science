@@ -9,7 +9,7 @@ from collections import Counter
 from pathlib import Path
 
 from arxiv_pipeline.hierarchy import build_hierarchy
-from arxiv_pipeline.standardization import clean_text, normalize_math
+from arxiv_pipeline.standardization import clean_latex, normalize_math
 from arxiv_pipeline.standardization.rule_tokenizer import tokenize_sentences
 from arxiv_pipeline.standardization.punkt_adapter import _model, tokenize_sentences_punkt
 
@@ -47,7 +47,7 @@ def main():
         blocks = []
 
         def process(raw):
-            normalized = normalize_math(clean_text(raw))
+            normalized = normalize_math(clean_latex(raw))
             start = time.perf_counter()
             rule = tokenize_sentences(normalized)
             rule_time = time.perf_counter() - start

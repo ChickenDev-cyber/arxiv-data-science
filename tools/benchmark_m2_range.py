@@ -16,7 +16,7 @@ from pathlib import Path
 
 from arxiv_pipeline.gathering import SourceGatherer
 from arxiv_pipeline.hierarchy import build_hierarchy
-from arxiv_pipeline.standardization import clean_text, normalize_math
+from arxiv_pipeline.standardization import clean_latex, normalize_math
 
 ROOT = Path("data/module2-range-benchmark-2026-11-13")
 
@@ -106,7 +106,7 @@ def prepare():
             extract(archive, dest)
             report = SourceGatherer().inspect(dest, paper, 1)
             def capture(raw):
-                text = normalize_math(clean_text(raw))
+                text = normalize_math(clean_latex(raw))
                 if text.strip():
                     blocks.append(dict(paper=paper, text=text))
                 # Chỉ thu thập prose; chưa chạy NLP trong giai đoạn chuẩn bị.

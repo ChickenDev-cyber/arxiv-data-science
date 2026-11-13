@@ -16,16 +16,16 @@ Adheres strictly to the granularity and exclusion rules in parsing.md:
 
 from typing import Callable
 
-from arxiv_pipeline.standardization import clean_text, normalize_math, process_prose, tokenize_sentences
+from arxiv_pipeline.standardization import clean_latex, normalize_math, process_prose, tokenize_sentences
 
 def clean_latex_formatting(text: str) -> str:
     """Clean prose using the shared Module 2 cleaner."""
-    return clean_text(text)
+    return clean_latex(text)
 
 
 def clean_figure_formatting(text: str) -> str:
     """Clean figure/table layout without removing arbitrary bracketed text."""
-    return clean_text(text)
+    return clean_latex(text)
 
 
 def normalize_inline_math(text: str) -> str:
