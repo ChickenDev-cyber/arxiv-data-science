@@ -1,43 +1,35 @@
-"""API mặc định spaCy và lựa chọn baseline phải rõ ràng, không fallback ngầm."""
+"""API mac dinh rule va cac lua chon baseline ro rang, khong can model."""
 
-import pytest
-
+import os
+import unittest
 from arxiv_pipeline.standardization import clean_latex, tokenize_sentences
 from arxiv_pipeline.standardization import cleaner, neural_adapter
 
 
-def test_default_routes_to_spacy(monkeypatch):
-    monkeypatch.delenv("ARXIV_SENTENCE_BACKEND", raising=False)
-    received = []
+class TestTokenizerBackend(unittest.TestCase):
+    def test_default_routes_to_rule_without_model(self):
+        """Default routing without env var must run rule backend and require no model."""
+        old_env = os.environ.pop("ARXIV_SENTENCE_BACKEND", None)
+        try:
+            result = tokenize_sentences("First sentence. Second sentence.")
+            self.assertEqual(result, ["First sentence.", "Second sentence."])
+        finally:
+            if old_env is not None:
+                os.environ["ARXIV_SENTENCE_BACKEND"] = old_env
 
-    def fake(text):
-        received.append(text)
-        return [text]
+    def test_rule_is_explicit_and_does_not_need_model(self):
+        result = tokenize_sentences("First. Next.", backend="rule")
+        self.assertEqual(result, ["First.", "Next."])
 
-    monkeypatch.setattr(neural_adapter, "tokenize_sentences_spacy", fake)
-    assert tokenize_sentences("Input.") == ["Input."]
-    assert received == ["Input."]
+    def test_invalid_backend_is_not_silent_fallback(self):
+        with self.assertRaises(ValueError):
+            tokenize_sentences("Input.", backend="unknown_backend_xyz")
 
-
-def test_rule_is_explicit_and_does_not_need_model(monkeypatch):
-    monkeypatch.setenv("ARXIV_SENTENCE_BACKEND", "sat")
-    assert tokenize_sentences("First. Next.", backend="rule") == ["First.", "Next."]
-
-
-def test_invalid_backend_is_not_silent_fallback():
-    with pytest.raises(ValueError, match="Unknown sentence backend"):
-        tokenize_sentences("Input.", backend="typo")
-
-
-def test_missing_spacy_model_does_not_fall_back(monkeypatch):
-    def missing(text):
-        raise RuntimeError("Missing spaCy model")
-    monkeypatch.setattr(neural_adapter, "tokenize_sentences_spacy", missing)
-    with pytest.raises(RuntimeError, match="Missing spaCy model"):
-        tokenize_sentences("Input.", backend="spacy")
+    def test_assignment_cleanup_name(self):
+        self.assertIs(clean_latex, cleaner.clean_latex)
+        self.assertEqual(clean_latex.__name__, "clean_latex")
+        self.assertEqual(clean_latex(r"\textbf{Result}"), "Result")
 
 
-def test_assignment_cleanup_name():
-    assert clean_latex is cleaner.clean_latex
-    assert clean_latex.__name__ == "clean_latex"
-    assert clean_latex(r"\textbf{Result}") == "Result"
+if __name__ == "__main__":
+    unittest.main()

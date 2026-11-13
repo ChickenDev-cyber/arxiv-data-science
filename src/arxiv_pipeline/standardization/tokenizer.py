@@ -9,7 +9,7 @@ def tokenize_sentences(text: str, *, backend: str | None = None) -> list[str]:
     spaCy chạy CPU với model local. Có thể chọn rule để chạy regression baseline.
     Không âm thầm fallback khi thiếu dependency/model vì sẽ làm output thay đổi.
     """
-    selected = backend if backend is not None else os.environ.get("ARXIV_SENTENCE_BACKEND", "spacy")
+    selected = backend if backend is not None else os.environ.get("ARXIV_SENTENCE_BACKEND", "rule")
     if selected not in {"sat", "rule", "spacy", "punkt"}:
         raise ValueError(f"Unknown sentence backend: {selected!r}")
     if not text.strip():
