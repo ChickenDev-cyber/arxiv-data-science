@@ -1,0 +1,3 @@
+# Dependencies for Huynhnhi (Metadata, Sources TeX, Quality & Schemas)
+pandas>=2.0.0
+matplotlib>=3.7.0

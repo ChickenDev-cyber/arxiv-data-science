@@ -1,0 +1,5 @@
+# Dependencies for Mannhi (Overview, Discovery, References, Limitations)
+# Add your custom python packages here:
+# Phần xử lý CSV dùng thư viện chuẩn Python.
+# Nếu sinh biểu đồ SVG bằng mannhi_charts.py, cài matplotlib:
+matplotlib>=3.8

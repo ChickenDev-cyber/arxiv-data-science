@@ -1,0 +1,3 @@
+-r reqs/hoang.txt
+-r reqs/mannhi.txt
+-r reqs/huynhnhi.txt
