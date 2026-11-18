@@ -28,7 +28,11 @@ class BibtexEntry(TypedDict):
     url: str
 
 
-class PaperReferences(TypedDict):
+class _ReferenceMetrics(TypedDict, total=False):
+    raw_entry_count: int
+
+
+class PaperReferences(_ReferenceMetrics):
     arxiv_id: str
     unified_bibtex: list[BibtexEntry]
     citation_remap: dict[int, dict[str, str]]

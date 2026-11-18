@@ -418,6 +418,51 @@ class TestParsingDatabase(unittest.TestCase):
             self.assertTrue(written_paths[0].endswith("elements/part-00000.parquet"))
             self.assertTrue(written_paths[1].endswith("elements/part-00001.parquet"))
 
+    def test_export_to_parquet_single_file_with_mock(self):
+        """Verify export with single_file=True outputs standalone .parquet files."""
+        result: PublicationParsingResult = {
+            "arxiv_id": "2409.03594",
+            "elements": [
+                {"element_id": "2409.03594#root1", "arxiv_id": "2409.03594", "kind": "document", "content": "Root V1"},
+            ],
+            "hierarchy": [
+                {"arxiv_id": "2409.03594", "version": 1, "element_id": "2409.03594#root1", "parent_id": ""}
+            ],
+            "bibtex": [
+                {
+                    "arxiv_id": "2409.03594",
+                    "citation_key": "ref1",
+                    "entry_type": "article",
+                    "title": "A Title",
+                    "authors": ["Author One"],
+                    "year": 2020,
+                    "doi": "",
+                    "journal": "",
+                    "url": "",
+                }
+            ],
+            "version_count": 1,
+            "empty_versions": [],
+        }
+        self.db.save_publication(result)
+        self.db.commit()
+
+        mock_pa = MagicMock()
+        mock_pq = MagicMock()
+        mock_pa.parquet = mock_pq
+        out_dir = os.path.join(self.temp_dir.name, "single_parquet_out")
+
+        with patch.dict(sys.modules, {"pyarrow": mock_pa, "pyarrow.parquet": mock_pq}):
+            counts = self.db.export_to_single_parquet(out_dir)
+            self.assertEqual(counts["elements"], 1)
+            self.assertEqual(counts["hierarchy"], 1)
+            self.assertEqual(counts["bibtex"], 1)
+            self.assertEqual(mock_pq.ParquetWriter.call_count, 3)
+            written_paths = [call.args[0] for call in mock_pq.ParquetWriter.call_args_list]
+            self.assertTrue(written_paths[0].endswith("elements.parquet"))
+            self.assertTrue(written_paths[1].endswith("hierarchy.parquet"))
+            self.assertTrue(written_paths[2].endswith("bibtex.parquet"))
+
 
 if __name__ == "__main__":
     unittest.main()

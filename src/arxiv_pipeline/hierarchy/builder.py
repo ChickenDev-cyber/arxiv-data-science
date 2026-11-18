@@ -39,26 +39,29 @@ from arxiv_pipeline.hierarchy.leaf_parser import (
 from arxiv_pipeline.hierarchy.stack import HierarchyStack
 from arxiv_pipeline.hierarchy.validation import validate_version_hierarchy
 from arxiv_pipeline.standardization.utils import _group_end
+from arxiv_pipeline.standardization import clean_latex
 
 # Comprehensive delimiter scanner across structural commands, math blocks, and figures
 STREAM_DELIMITER_RE = re.compile(
     # 1. Structural sectioning commands supporting \section[short]{long}
     r"(?P<section>\\(?:chapter|section|subsection|subsubsection|paragraph)\*?\s*(?:\[[^\]]*\])?\s*\{)"
     # 2. List environments
-    r"|(?P<list_begin>\\begin\{(?:itemize|enumerate)\})"
-    r"|(?P<list_end>\\end\{(?:itemize|enumerate)\})"
+    r"|(?P<list_begin>\\begin\s*\{(?:itemize|enumerate)\})"
+    r"|(?P<list_end>\\end\s*\{(?:itemize|enumerate)\})"
     # Tên lệnh phải kết thúc: \itemsep/\itemindent không phải \item.
     r"|(?P<item>\\item(?![A-Za-z])(?:\s*\[[^\]]*\])?)"
     # 3. Special boundaries & References exclusions
     r"|(?P<appendix>\\appendix\b)"
-    r"|(?P<bib_begin>\\begin\{thebibliography\})"
-    r"|(?P<bib_cmd>\\bibliography\{)"
-    r"|(?P<bib_style>\\bibliographystyle\{)"
-    r"|(?P<add_bib>\\addbibresource(?:\[[^\]]*\])?\{)"
+    r"|(?P<bib_begin>\\begin\s*\{(?P<bib_env>thebibliography|bibdiv|biblist)\})"
+    r"|(?P<direct_bib>\\thebibliography(?![A-Za-z@])\s*\{[^{}\\]*\})"
+    r"|(?P<bib_cmd>\\(?:bibliography|defaultbibliography)\s*\{)"
+    r"|(?P<bib_style>\\bibliographystyle\s*\{)"
+    r"|(?P<add_bib>\\addbibresource\s*(?:\[[^\]]*\]\s*)?\{)"
     r"|(?P<print_bib>\\printbibliography\b)"
+    r"|(?P<put_bib>\\putbib(?![A-Za-z@])\s*(?:\[[^\]]*\])?)"
     # 4. Metadata macros that must not leak into body prose
     r"|(?P<maketitle>\\maketitle\b)"
-    r"|(?P<meta_cmd>\\(?:title|author|date)\*?(?:\[[^\]]*\])?\s*\{)"
+    r"|(?P<meta_cmd>\\(?:title|author|date|address|email|ead|affiliation|institute|titlerunning|authorrunning)\*?\s*(?:\[[^\]]*\]\s*)?\{)"
     r"|(?P<abstract_cmd>\\abstract(?![A-Za-z])\s*\{)"
     # 5. Block Formulas
     # 5a. Named math environments (both unstarred and starred)
@@ -68,7 +71,7 @@ STREAM_DELIMITER_RE = re.compile(
     # 5c. Display math $$ ... $$ (requires non-empty content and rejects unescaped $ to avoid bridging adjacent inline math)
     r"|(?P<block_math_dollar>(?<!\\)\$\$(?!\$)(?:[^\$]|\\\$)+?(?<!\\)\$\$)"
     # 6. Figures & Tables
-    r"|(?P<figure_env>\\begin\{(?:figure|table)\*?\}(?:\[[^\]]*\])?.*?\\end\{(?:figure|table)\*?\})",
+    r"|(?P<figure_env>\\begin\s*\{(?P<float_env>(?:figure|table|wrapfigure|wraptable|tabular)\*?|longtable)\}.*?\\end\s*\{(?P=float_env)\})",
     re.DOTALL,
 )
 
@@ -115,8 +118,10 @@ class HierarchyBuilder:
         raw_tex = source.get("merged_tex", "")
         clean_tex = strip_comment_environments(strip_comments(raw_tex))
 
-        doc_title = extract_title(clean_tex) or f"Paper {self.arxiv_id}v{self.version}"
-        body_tex = extract_document_body(clean_tex)
+        doc_title = clean_latex(extract_title(clean_tex) or f"Paper {self.arxiv_id}v{self.version}")
+        # Remove declarations before scanning: a macro definition can contain
+        # section/list commands that are not part of the rendered document.
+        body_tex = clean_latex(extract_document_body(clean_tex))
 
         stack = HierarchyStack(root_title=doc_title)
         self._parse_stream(body_tex, stack)
@@ -135,6 +140,10 @@ class HierarchyBuilder:
             return
         sentences = self.prose_processor(strip_prose_markup(prose_text))
         for sentence in sentences:
+            # A bare environment boundary has no sentence content. Retain
+            # unknown wrappers when attached to prose or inside arguments.
+            if re.fullmatch(r"\\(?:begin|end)\s*\{[A-Za-z@][A-Za-z0-9@*_-]*\}", sentence.strip()):
+                continue
             if sentence.strip():
                 stack.add_leaf("sentence", sentence)
 
@@ -159,11 +168,16 @@ class HierarchyBuilder:
             pos = match_end
 
             # --- 1. References Handling & Exclusions ---
+            if match.group('direct_bib'):
+                end_bib = re.search(r"\\endthebibliography(?![A-Za-z@])|\\end\s*\{thebibliography\}|(?=\\appendix\b)", body_tex[match_end:])
+                pos = match_end + end_bib.end() if end_bib else len(body_tex)
+                in_references = False
+                continue
             if match.group("bib_begin"):
                 in_references = True
-                end_bib = body_tex.find(r"\end{thebibliography}", match_end)
-                if end_bib != -1:
-                    pos = end_bib + len(r"\end{thebibliography}")
+                end_bib = re.search(r"\\end\s*\{" + re.escape(match.group('bib_env')) + r"\}", body_tex[match_end:])
+                if end_bib is not None:
+                    pos = match_end + end_bib.end()
                     in_references = False
                 continue
 
@@ -173,13 +187,21 @@ class HierarchyBuilder:
                 pos = close_pos + 1
                 continue
 
-            if match.group("print_bib") or match.group("maketitle"):
+            if match.group("print_bib") or match.group("put_bib") or match.group("maketitle"):
                 continue
 
             if match.group("meta_cmd"):
                 open_pos = match_end - 1
                 _, close_pos = extract_balanced_braces(body_tex, open_pos)
                 pos = close_pos + 1
+                if re.match(r"\\author\b", match.group("meta_cmd")):
+                    # Separators between author declarations belong to the
+                    # author list, not to body prose. Require another author
+                    # command so a genuine following sentence is untouched.
+                    separator = re.match(r"\s*(?:,\s*)?(?:and\s+|\\and\b\s*)?"
+                                         r"(?=\\author\b)", body_tex[pos:])
+                    if separator:
+                        pos += separator.end()
                 continue
 
             if match.group("appendix"):
@@ -234,13 +256,13 @@ class HierarchyBuilder:
 
             # --- 3. List Environments ---
             if match.group("list_begin"):
-                list_match = re.search(r"\\begin\{(itemize|enumerate)\}", match.group("list_begin"))
+                list_match = re.search(r"\\begin\s*\{(itemize|enumerate)\}", match.group("list_begin"))
                 if list_match:
                     stack.push_list_container(list_match.group(1))  # type: ignore[arg-type]
                 continue
 
             if match.group("list_end"):
-                list_match = re.search(r"\\end\{(itemize|enumerate)\}", match.group("list_end"))
+                list_match = re.search(r"\\end\s*\{(itemize|enumerate)\}", match.group("list_end"))
                 if list_match:
                     stack.pop_list_container(list_match.group(1))  # type: ignore[arg-type]
                 continue

@@ -24,16 +24,19 @@ def extract_and_unify_references(
 
     arxiv_id = str(versions_sources[0].get("arxiv_id", ""))
     entries: list[tuple[int, dict[str, object]]] = []
+    raw_entry_count = 0
     for source in sorted(versions_sources, key=lambda item: int(item.get("version", 0))):
         source_id = str(source.get("arxiv_id", ""))
         if arxiv_id and source_id and source_id != arxiv_id:
             raise ValueError(f"Mixed arXiv IDs: expected {arxiv_id}, got {source_id}")
         version = int(source.get("version", 1))
         source_dir = (source_dirs or {}).get(version)
+        metrics: dict[str, int] = {}
         entries.extend(
             (version, entry)
-            for entry in extract_from_gathered_source(source, source_dir=source_dir)
+            for entry in extract_from_gathered_source(source, source_dir=source_dir, metrics=metrics)
         )
+        raw_entry_count += metrics['raw_entry_count']
 
     conflicts: list[dict[str, object]] = []
     unified, remap = unify_entries(entries, conflicts=conflicts)
@@ -44,4 +47,5 @@ def extract_and_unify_references(
         "unified_bibtex": unified,  # type: ignore[typeddict-item]
         "citation_remap": remap,
         "citation_key_conflicts": conflicts,
+        "raw_entry_count": raw_entry_count,
     }

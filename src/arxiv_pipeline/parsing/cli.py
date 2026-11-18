@@ -56,10 +56,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional directory to export Parquet tables (if pyarrow available).",
     )
     parser.add_argument(
+        "--single-parquet",
+        action="store_true",
+        help="Export to 3 single Parquet files (elements.parquet, hierarchy.parquet, bibtex.parquet) instead of sharded directories.",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Enable verbose debug logging.",
     )
+    parser.add_argument("--no-python-heap-tracing", action="store_true",
+                        help="Disable tracemalloc overhead when measuring process RSS externally.")
+    parser.add_argument('--resume', action='store_true',
+                        help='Enable verified per-paper checkpoints (rule backend only).')
+    parser.add_argument('--backup-db', type=Path, help='Write a consistent checkpoint snapshot; choose persistent storage.')
+    parser.add_argument('--backup-every', type=int, default=100, help='Backup every N newly processed papers, and on graceful exit.')
     return parser
 
 
@@ -83,12 +94,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         db_path=args.db,
         limit=args.limit,
         batch_size=args.batch_size,
+        track_python_memory=not args.no_python_heap_tracing,
+        resume=args.resume, backup_path=args.backup_db, backup_every=args.backup_every,
     )
 
     if args.parquet_dir:
         try:
             with ParsingDatabase(args.db) as db:
-                export_counts = db.export_to_parquet(args.parquet_dir)
+                if getattr(args, "single_parquet", False):
+                    export_counts = db.export_to_parquet(args.parquet_dir, single_file=True)
+                else:
+                    export_counts = db.export_to_parquet(args.parquet_dir)
                 summary["parquet_export"] = export_counts
             pq_dir = Path(args.parquet_dir)
             pq_bytes = sum(f.stat().st_size for f in pq_dir.rglob("*.parquet")) if pq_dir.exists() else 0

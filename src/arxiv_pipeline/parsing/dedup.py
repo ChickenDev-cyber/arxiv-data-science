@@ -129,7 +129,7 @@ def deduplicate_publication_elements(
 
             child_canon_id = temp_to_canonical[temp_id]
             parent_canon_id = temp_to_canonical.get(parent_temp_id)
-            if parent_canon_id is not None:
+            if parent_canon_id is not None and child_canon_id != parent_canon_id:
                 hierarchy_edges.append({
                     "arxiv_id": arxiv_id,
                     "version": version_num,
@@ -154,7 +154,11 @@ def deduplicate_publication_elements(
 
     remap_dict = references.get("citation_remap", {}) if references else {}
     raw_bib_from_remap = sum(len(v_map) for v_map in remap_dict.values()) if remap_dict else 0
-    raw_bibtex_count = max(raw_bib_from_remap, len(bibtex_records))
+    # The extractor counts eligible occurrences before any duplicate-key or
+    # cross-version merge. Keep the approximation only for legacy/custom hooks.
+    raw_bibtex_count = (references['raw_entry_count']
+                        if references and 'raw_entry_count' in references
+                        else max(raw_bib_from_remap, len(bibtex_records)))
 
     all_versions = {h["version"] for h in hierarchies}.union(empty_versions)
 

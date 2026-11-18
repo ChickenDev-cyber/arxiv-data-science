@@ -24,11 +24,9 @@ class TestHierarchyItemBoundary(unittest.TestCase):
         items = [n for n in nodes if n["kind"] == "item"]
         self.assertEqual(len(items), 3)
         sentences = [n for n in nodes if n["kind"] == "sentence"]
-        self.assertEqual(sentences[0]["content"], r"\setlength{\itemsep}{0pt}")
-        self.assertEqual(
-            sentences[0]["parent_temp_id"],
-            next(n["temp_id"] for n in nodes if n["kind"] == "itemize"),
-        )
+        # Layout declarations must not become sentences or fake list items.
+        self.assertEqual(len(sentences), 3)
+        self.assertFalse(any(r"\setlength" in n["content"] for n in sentences))
         for item, expected in zip(items, ["First sentence.", "Second sentence.", "{Third sentence.}"]):
             with self.subTest(expected=expected):
                 self.assertEqual(

@@ -58,6 +58,7 @@ class BibtexEntry(TypedDict):
 
 class _OptionalReferenceConflicts(TypedDict, total=False):
     citation_key_conflicts: list[dict[str, object]]
+    raw_entry_count: int
 
 
 class PaperReferences(_OptionalReferenceConflicts):

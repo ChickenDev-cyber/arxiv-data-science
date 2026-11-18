@@ -61,6 +61,17 @@ def strip_prose_markup(text: str) -> str:
         while arg < len(text) and text[arg].isspace():
             arg += 1
         group_end = _group_end(text, arg) if arg < len(text) and text[arg] == "{" else None
+        if command[1] == "input":
+            # A .bbl is bibliography input, not body prose. Missing .tex
+            # includes remain visible; gathering reports their source gaps.
+            filename = (text[arg + 1:group_end - 1].strip() if group_end else
+                        re.match(r"[^\s{}\\]+", text[arg:]))
+            if not group_end and filename is not None:
+                filename = filename[0]
+            if isinstance(filename, str) and filename.endswith(".bbl"):
+                output.append(" ")
+                i = group_end if group_end else arg + len(filename)
+                continue
         if group_end:
             value = text[arg + 1:group_end - 1]
             if command[1] == "label":
@@ -72,7 +83,7 @@ def strip_prose_markup(text: str) -> str:
                 output.append(text[i:end])
                 i = end
                 continue
-            if command[1] in {"begin", "end"} and value in {"proof", "proof*", "abstract"}:
+            if command[1] in {"begin", "end"} and value in {"proof", "proof*", "abstract", "frontmatter", "bibunit", "center"}:
                 end = group_end
                 option = end
                 while option < len(text) and text[option].isspace():

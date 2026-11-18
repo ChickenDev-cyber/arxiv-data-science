@@ -11,14 +11,22 @@ import unicodedata
 from pathlib import Path
 from typing import Iterable
 
+from .deduplicator import _merge_entry
+
 _BIBLIOGRAPHY_RE = re.compile(
     r"\\begin\s*\{thebibliography\}\s*(.*?)\\end\s*\{thebibliography\}",
     re.IGNORECASE | re.DOTALL,
 )
+_DIRECT_BIBLIOGRAPHY_RE = re.compile(
+    r"\\thebibliography(?![A-Za-z@])\s*\{[^{}\\]*\}\s*(.*?)"
+    r"(?=\\endthebibliography(?![A-Za-z@])|\\end\s*\{(?:thebibliography|document)\}|\\appendix\b|\Z)",
+    re.DOTALL,
+)
 _BIBITEM_START_RE = re.compile(r"\\bibitem\s*(?:\[[^\]]*\]\s*)?\{([^{}]+)\}")
 _DOI_RE = re.compile(r"\b(?:https?://(?:dx\.)?doi\.org/|doi\s*:\s*)?(10\.\d{4,9}/[-._;()/:A-Z0-9]+)", re.I)
 _URL_RE = re.compile(r"https?://[^\s{}<>]+", re.I)
-_YEAR_RE = re.compile(r"\b(19\d{2}|20\d{2}|2100)\b")
+# A modern arXiv identifier/decimal such as 1906.11238 is not a year.
+_YEAR_RE = re.compile(r"(?<![\d.])\b(19\d{2}|20\d{2}|2100)\b(?!\.\d)")
 _CITE_COMMANDS = (
     "cite", "citep", "citet", "citealt", "citealp", "autocite",
     "parencite", "textcite", "nocite", "Citet", "Citep", "Cite",
@@ -30,6 +38,9 @@ _CITE_RE = re.compile(
     re.IGNORECASE,
 )
 _BIB_ENTRY_START_RE = re.compile(r"@([a-zA-Z]+)\s*([({])")
+_AMSREFS_BLOCK_RE = re.compile(r"\\begin\s*\{biblist\}(.*?)\\end\s*\{biblist\}", re.DOTALL)
+_AMSREFS_ENTRY_RE = re.compile(r"(?<!\\)\\bib(?![A-Za-z@])")
+_AMSREFS_FIELD_RE = re.compile(r"([A-Za-z][A-Za-z0-9_-]*)\s*=\s*")
 
 
 def _strip_tex_comments(text: str) -> str:
@@ -87,6 +98,18 @@ def extract_bibitems(text: str) -> list[tuple[str, str]]:
     found: list[tuple[str, str]] = []
     clean_text = _strip_tex_comments(text or "")
     for block in _BIBLIOGRAPHY_RE.findall(clean_text):
+        found.extend(_balanced_bibitems(block))
+    # Direct TeX calls occur in real sources without an environment wrapper.
+    # Mask wrapped blocks to avoid counting the same entries twice and restrict
+    # direct calls to the document body so preamble definitions are not entries.
+    direct = _BIBLIOGRAPHY_RE.sub(lambda match: ' ' * len(match[0]), clean_text)
+    begin = re.search(r"\\begin\s*\{document\}", direct)
+    if begin:
+        direct = direct[begin.end():]
+    end = re.search(r"\\end\s*\{document\}", direct)
+    if end:
+        direct = direct[:end.start()]
+    for block in _DIRECT_BIBLIOGRAPHY_RE.findall(direct):
         found.extend(_balanced_bibitems(block))
     return found
 
@@ -153,6 +176,16 @@ def _author_list_prefix(raw: str) -> tuple[list[str], str]:
         r"|(?:[A-Z][a-z'’\-]+\s+){1,2}[A-Z][a-z'’\-]+"
         r")"
     )
+    abbreviated = re.match(
+        rf"^(?P<person>{person})\s+(?:\\(?:textit|emph)\s*\{{\s*)?"
+        r"et\s+al\.\s*\}?(?:\s*\[(?P<collaboration>[^]]+)\])?\s*,\s*(?P<rest>.+)$",
+        text, re.DOTALL,
+    )
+    if abbreviated:
+        authors = [abbreviated['person'].strip(), 'others']
+        if abbreviated['collaboration']:
+            authors.append(_clean_latex(abbreviated['collaboration']))
+        return authors, abbreviated['rest'].strip()
     pattern = re.compile(
         rf"^\s*(?P<authors>{person}(?:(?:\s*,\s*(?:and\s+)?|\s+and\s+){person})*)\s*,\s*(?P<rest>.+)$",
         re.DOTALL,
@@ -181,6 +214,10 @@ def _extract_title(raw: str, authors: list[str]) -> str:
     parsed_authors, remainder = _author_list_prefix(raw)
     if parsed_authors and remainder:
         remainder = _clean_latex(remainder)
+        # These title-less journal citations occur in INSPIRE exports. Do not
+        # turn the author/journal fragment into an identity for deduplication.
+        if re.match(r"^(?:Astrophys\.?\s+J\.?|Phys\.?\s+(?:Rev|Lett)\.?)(?:\s|[.,])", remainder):
+            return ''
         # A journal tail commonly ends in volume/pages followed by a year.
         # Remove that tail first, then use the preceding comma as the title
         # boundary. This avoids splitting initials such as ``W.`` or ``J.``.
@@ -250,6 +287,13 @@ def parse_bibitem(arxiv_id: str, citation_key: str, raw_entry: str) -> dict[str,
     title = _extract_title(raw, authors)
     entry_type = _entry_type_from_text(raw)
     journal = _clean_latex(blocks[2]) if len(blocks) >= 3 else ""
+    if not title and not journal:
+        _, remainder = _author_list_prefix(raw)
+        remainder = _clean_latex(remainder)
+        if re.match(r"^(?:Astrophys\.?\s+J\.?|Phys\.?\s+(?:Rev|Lett)\.?)(?:\s|[.,])", remainder):
+            volume = re.search(r"\s+\d", remainder)
+            if volume:
+                journal = remainder[:volume.start()].strip()
     return {
         "arxiv_id": arxiv_id,
         "citation_key": citation_key.strip(),
@@ -436,10 +480,110 @@ def _resolve_source_path(filename: str | Path, base_dir: Path | None) -> Path | 
     return None
 
 
+def _tex_group(text: str, start: int) -> tuple[str, int] | None:
+    """Read one braced TeX argument, including nested and escaped braces."""
+    while start < len(text) and text[start].isspace():
+        start += 1
+    if start == len(text) or text[start] != '{':
+        return None
+    depth = 1
+    pos = start + 1
+    while pos < len(text):
+        if text[pos] == '\\':
+            pos += 2
+            continue
+        if text[pos] == '{':
+            depth += 1
+        elif text[pos] == '}':
+            depth -= 1
+            if depth == 0:
+                return text[start + 1:pos], pos + 1
+        pos += 1
+    return None
+
+
+def _amsrefs_fields(body: str) -> dict[str, list[str]]:
+    """AMS fields may repeat and braced assignments need not have commas."""
+    fields: dict[str, list[str]] = {}
+    pos = 0
+    while pos < len(body):
+        match = _AMSREFS_FIELD_RE.match(body, pos)
+        if match is None:
+            group = _tex_group(body, pos) if body[pos] == '{' else None
+            pos = group[1] if group else pos + 1
+            continue
+        start = match.end()
+        if start == len(body):
+            break
+        if body[start] == '{':
+            group = _tex_group(body, start)
+            if group is None:
+                break
+            end = group[1]
+        else:
+            value = re.match(r'"(?:\\.|[^"\\])*"|[^\s,]+', body[start:])
+            if value is None:
+                pos = start + 1
+                continue
+            end = start + value.end()
+        fields.setdefault(match[1].lower(), []).append(body[start:end])
+        pos = end
+    return fields
+
+
+def _extract_amsrefs_entries(text: str, arxiv_id: str) -> list[dict[str, object]]:
+    """Read structured \\bib{key}{type}{fields} only inside AMS biblist blocks."""
+    entries: list[dict[str, object]] = []
+    for block in _AMSREFS_BLOCK_RE.finditer(_strip_tex_comments(text)):
+        body = block[1]
+        pos = 0
+        while match := _AMSREFS_ENTRY_RE.search(body, pos):
+            pos = match.end()
+            arguments = []
+            for _ in range(3):
+                group = _tex_group(body, pos)
+                if group is None:
+                    break
+                arguments.append(group[0])
+                pos = group[1]
+            if len(arguments) != 3:
+                continue
+            key, kind, raw = arguments
+            repeated = _amsrefs_fields(raw)
+            if not key.strip() or not kind.strip() or not repeated:
+                continue
+            fields = {name: values[0] for name, values in repeated.items()}
+            if not fields.get('year') and fields.get('date'):
+                fields['year'] = fields['date']
+            if not fields.get('url') and fields.get('eprint'):
+                eprint = _bib_value(fields['eprint'], {}, clean=False)
+                url = _URL_RE.search(eprint)
+                if url:
+                    fields['url'] = '{' + url[0] + '}'
+            entry = _parse_bibtex_entry(arxiv_id, key.strip(), kind.strip(), fields, {})
+            # A structured year/ISO date can safely preserve historical years;
+            # do not apply the loose prose year heuristic to this explicit field.
+            year = re.fullmatch(r'([1-9]\d{3})(?:-\d{2}(?:-\d{2})?)?',
+                                _bib_value(fields.get('year', ''), {}))
+            if year:
+                entry['year'] = int(year[1])
+            # AMS assigns one author per field; an organization may contain "and".
+            entry['authors'] = list(dict.fromkeys(
+                value for raw_author in repeated.get('author', [])
+                if (value := _bib_value(raw_author, {}))))
+            if not entry['doi']:
+                doi = _DOI_RE.search(str(entry['url']))
+                if doi:
+                    entry['doi'] = doi[1].rstrip('.,;)')
+            entries.append(entry)
+    return entries
+
+
 def extract_from_gathered_source(
-    source: dict[str, object], source_dir: str | Path | None = None
+    source: dict[str, object], source_dir: str | Path | None = None,
+    *, metrics: dict[str, int] | None = None,
 ) -> list[dict[str, object]]:
-    """Read cited .bib entries plus .bibitem entries from merged TeX and .bbl."""
+    """Read cited .bib entries and inline thebibliography/AMS refs from TeX/BBL."""
     arxiv_id = str(source.get("arxiv_id", ""))
     merged_tex = str(source.get("merged_tex", "") or "")
     cited_keys, include_all = extract_cited_keys(merged_tex)
@@ -447,6 +591,8 @@ def extract_from_gathered_source(
     base_dir = Path(base_dir_value) if base_dir_value else None
 
     results: list[dict[str, object]] = []
+    if metrics is not None:
+        metrics['raw_entry_count'] = 0
     seen_keys: dict[str, dict[str, object]] = {}
 
     # Read only .bib files explicitly discovered by Module 1.
@@ -464,6 +610,8 @@ def extract_from_gathered_source(
         if not (include_all or key in cited_keys):
             continue
         entry = _parse_bibtex_entry(arxiv_id, key, kind, fields, strings)
+        if metrics is not None:
+            metrics['raw_entry_count'] += 1
         previous = seen_keys.get(key)
         if previous is None:
             results.append(entry)
@@ -472,6 +620,8 @@ def extract_from_gathered_source(
             # Preserve conflicting entries; downstream remapping must treat
             # this key as ambiguous rather than silently discarding one.
             results.append(entry)
+        else:
+            _merge_entry(previous, entry)
 
     texts: list[str] = [merged_tex]
     for filename in source.get("bbl_files", []) or []:
@@ -483,14 +633,20 @@ def extract_from_gathered_source(
             continue
 
     for text in texts:
-        for key, raw in extract_bibitems(text):
-            entry = parse_bibitem(arxiv_id, key, raw)
+        inline = [parse_bibitem(arxiv_id, key, raw) for key, raw in extract_bibitems(text)]
+        inline.extend(_extract_amsrefs_entries(text, arxiv_id))
+        for entry in inline:
+            key = str(entry['citation_key'])
+            if metrics is not None:
+                metrics['raw_entry_count'] += 1
             previous = seen_keys.get(key)
             if previous is None:
                 results.append(entry)
                 seen_keys[key] = entry
             elif not _same_reference(previous, entry):
                 results.append(entry)
+            else:
+                _merge_entry(previous, entry)
     return results
 
 

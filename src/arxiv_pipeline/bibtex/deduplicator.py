@@ -49,7 +49,7 @@ def unify_entries(
     ``conflicts`` is an optional collector to preserve the public two-value
     return contract while exposing citation-key collisions to the service.
     """
-    canonical_by_identity: dict[str, dict[str, object]] = {}
+    canonical_by_identity: dict[str, list[dict[str, object]]] = {}
     unique: list[dict[str, object]] = []
     remap: dict[int, dict[str, str]] = {}
     keys_seen: dict[tuple[int, str], dict[str, object]] = {}
@@ -91,16 +91,35 @@ def unify_entries(
              normalize_title(str(previous_key_entry.get("title", ""))) == normalize_title(str(entry.get("title", ""))))
         ):
             identities = [identity for identity in identities if not identity.startswith("key:")]
-        canonical = next((canonical_by_identity[i] for i in identities if i in canonical_by_identity), None)
+        # DOI equality is decisive. A title may refer to multiple works, and
+        # a DOI-less record must not bridge two conflicting DOI identities.
+        doi = normalize_doi(str(entry.get('doi', '')))
+        candidates = canonical_by_identity.get(f'doi:{doi}', []) if doi else []
+        canonical = candidates[0] if candidates else None
+        if canonical is None:
+            candidates = []
+            for identity in identities:
+                for candidate in canonical_by_identity.get(identity, []):
+                    candidate_doi = normalize_doi(str(candidate.get('doi', '')))
+                    if doi and candidate_doi and doi != candidate_doi:
+                        continue
+                    if not any(candidate is existing for existing in candidates):
+                        candidates.append(candidate)
+            if len(candidates) == 1:
+                canonical = candidates[0]
         if canonical is None:
             canonical = deepcopy(entry)
             unique.append(canonical)
         else:
             _merge_entry(canonical, entry)
         for identity in identities:
-            canonical_by_identity[identity] = canonical
+            bucket = canonical_by_identity.setdefault(identity, [])
+            if not any(canonical is existing for existing in bucket):
+                bucket.append(canonical)
         for identity in _identities(canonical):
-            canonical_by_identity[identity] = canonical
+            bucket = canonical_by_identity.setdefault(identity, [])
+            if not any(canonical is existing for existing in bucket):
+                bucket.append(canonical)
         canonical_for_key_slot[key_slot] = canonical
         if key_slot not in ambiguous:
             remap.setdefault(version, {})[key] = str(canonical.get("citation_key", key))

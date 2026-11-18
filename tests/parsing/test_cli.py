@@ -135,6 +135,29 @@ class TestParsingCLI(unittest.TestCase):
         out_data = json.loads(stdout_capture.getvalue())
         self.assertEqual(out_data["parquet_export"], {"elements": 10, "hierarchy": 5, "bibtex": 2})
 
+    def test_main_with_single_parquet_mock(self):
+        parquet_dir = self.base_path / "parquet"
+        stdout_capture = io.StringIO()
+        with patch("arxiv_pipeline.parsing.cli.ParsingDatabase") as mock_db_cls, patch(
+            "sys.stdout", stdout_capture
+        ):
+            mock_inst = MagicMock()
+            mock_inst.__enter__.return_value = mock_inst
+            mock_inst.export_to_parquet.return_value = {"elements": 10, "hierarchy": 5, "bibtex": 2}
+            mock_db_cls.return_value = mock_inst
+
+            exit_code = main([
+                "--corpus",
+                str(self.corpus_path),
+                "--db",
+                str(self.db_path),
+                "--parquet-dir",
+                str(parquet_dir),
+                "--single-parquet",
+            ])
+            self.assertEqual(exit_code, 0)
+            mock_inst.export_to_parquet.assert_called_once_with(str(parquet_dir), single_file=True)
+
 
 if __name__ == "__main__":
     unittest.main()

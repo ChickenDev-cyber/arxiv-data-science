@@ -20,11 +20,13 @@ from arxiv_pipeline.parsing.contracts import (
 )
 from arxiv_pipeline.parsing.dedup import deduplicate_publication_elements
 from arxiv_pipeline.hierarchy import build_hierarchy
+from arxiv_pipeline.hierarchy.latex_utils import extract_document_body
 from arxiv_pipeline.parsing.storage import ParsingDatabase
+from arxiv_pipeline.gathering.latex_scan import find_bib_names
 
 logger = logging.getLogger(__name__)
 
-_BIB_CMD_RE = re.compile(r"\\(?:bibliography|addbibresource)\s*\{([^}]+)\}")
+_BIB_CMD_RE = re.compile(r"\\(?:bibliography|addbibresource|putbib)(?![A-Za-z@])")
 _CITE_KEY_RE = re.compile(
     r"(\\(?:cite[a-z]*|autocite[a-z]*|parencite[a-z]*|textcite[a-z]*)\*?\s*(?:\[[^]]*\]\s*){0,2}\{)([^{}]*)(\})",
     re.IGNORECASE,
@@ -68,29 +70,24 @@ def _resolve_bib_paths(source_dir: Path, root_dir: Path, merged_nocomment: str) 
     seen: Set[str] = set()
     all_bibs: Optional[List[Path]] = None
 
-    for group in _BIB_CMD_RE.findall(merged_nocomment):
-        for raw_item in group.split(","):
-            ref = raw_item.strip()
-            if not ref:
-                continue
-            name = ref if ref.lower().endswith(".bib") else f"{ref}.bib"
+    for ref in find_bib_names(merged_nocomment):
+        name = ref if ref.lower().endswith(".bib") else f"{ref}.bib"
+        candidates = [root_dir / name, source_dir / name]
+        matched_path = next((c for c in candidates if c.is_file()), None)
+        if matched_path is None:
+            if all_bibs is None:
+                all_bibs = sorted(source_dir.rglob("*.bib"))
+            target_name = Path(name).name
+            matched_path = next((b for b in all_bibs if b.name == target_name), None)
 
-            candidates = [root_dir / name, source_dir / name]
-            matched_path = next((c for c in candidates if c.is_file()), None)
-            if matched_path is None:
-                if all_bibs is None:
-                    all_bibs = sorted(source_dir.rglob("*.bib"))
-                target_name = Path(name).name
-                matched_path = next((b for b in all_bibs if b.name == target_name), None)
-
-            if matched_path is not None:
-                try:
-                    resolved_str = matched_path.relative_to(source_dir).as_posix()
-                except ValueError:
-                    resolved_str = str(matched_path)
-                if resolved_str not in seen:
-                    seen.add(resolved_str)
-                    resolved.append(resolved_str)
+        if matched_path is not None:
+            try:
+                resolved_str = matched_path.relative_to(source_dir).as_posix()
+            except ValueError:
+                resolved_str = str(matched_path)
+            if resolved_str not in seen:
+                seen.add(resolved_str)
+                resolved.append(resolved_str)
 
     return resolved
 
@@ -445,7 +442,9 @@ def _classify_bib_source(sources: List[GatheredSource]) -> str:
 
     has_bib_files = any(bool(s.get("bib_files")) for s in active)
     has_bibitem = any(
-        ("thebibliography" in _strip_tex_comments(s.get("merged_tex", ""))) or bool(s.get("bbl_files"))
+        bool(re.search(r"\\begin\s*\{(?:thebibliography|biblist)\}|\\thebibliography(?![A-Za-z@])\s*\{[^{}\\]*\}",
+                       extract_document_body(_strip_tex_comments(s.get("merged_tex", "")))))
+        or bool(s.get("bbl_files"))
         for s in active
     )
     if has_bib_files and has_bibitem:
@@ -590,8 +589,16 @@ def run_parsing_pipeline(
     limit: Optional[int] = None,
     batch_size: int = 100,
     components: Optional[PipelineComponents] = None,
+    track_python_memory: bool = True,
+    resume: bool = False,
+    backup_path: Path | str | None = None,
+    backup_every: int = 100,
 ) -> Dict[str, Any]:
     """Execute the end-to-end parsing pipeline with streaming commits and memory tracking."""
+    from .resume import ParsingCheckpoints, input_fingerprint
+    from arxiv_pipeline.runner.state import OutputLock
+    if resume and components is not None:
+        raise ValueError('Verified resume does not accept custom pipeline hooks')
     corpus_path = Path(corpus_dir)
     paper_dirs = discover_paper_dirs(corpus_path)
     if limit is not None:
@@ -599,19 +606,30 @@ def run_parsing_pipeline(
 
     total = len(paper_dirs)
     processed = 0
+    skipped = 0
     t0 = time.time()
     already_tracing = tracemalloc.is_tracing()
-    if not already_tracing:
+    if track_python_memory and not already_tracing:
         tracemalloc.start()
 
     logger.info("Starting pipeline on %d publications...", total)
 
-    with ParsingDatabase(db_path) as db:
+    with OutputLock(Path(db_path).parent), ParsingDatabase(db_path) as db, ParsingCheckpoints(
+        db, enabled=resume, backup_path=backup_path, backup_every=backup_every
+    ) as checkpoints:
         for i, p_dir in enumerate(paper_dirs, start=1):
             arxiv_id = p_dir.name
+            input_sha = input_fingerprint(p_dir) if resume else None
+            if resume and checkpoints.reusable(p_dir.name, input_sha):
+                skipped += 1
+                continue
             try:
                 res = process_single_publication(arxiv_id, p_dir, components=components)
+                if resume and input_fingerprint(p_dir) != input_sha:
+                    raise RuntimeError('Source changed during processing; previous result retained')
                 db.save_publication(res)
+                if resume:
+                    checkpoints.mark(p_dir.name, res['arxiv_id'], input_sha)
                 processed += 1
             except Exception as e:
                 logger.error("Failed processing %s: %s", arxiv_id, e)
@@ -635,7 +653,7 @@ def run_parsing_pipeline(
     db_file = Path(db_path)
     db_size_mb = db_file.stat().st_size / (1024 * 1024) if db_file.exists() else 0.0
 
-    if not already_tracing:
+    if track_python_memory and not already_tracing:
         tracemalloc.stop()
 
     summary: Dict[str, Any] = {
@@ -643,7 +661,13 @@ def run_parsing_pipeline(
         "processed_publications": processed,
         "total_wall_time_sec": total_time,
         "avg_time_per_paper_sec": avg_time,
-        "peak_ram_mb": peak / (1024 * 1024),
+        # Legacy alias is Python heap only, never process RSS.
+        "peak_ram_mb": peak / (1024 * 1024) if track_python_memory else None,
+        "python_heap_peak_mb": peak / (1024 * 1024) if track_python_memory else None,
+        "failed_publications": total - processed - skipped,
+        "skipped_publications": skipped,
+        "resume_enabled": resume,
+        "checkpoint_backup_seconds": checkpoints.backup_seconds,
         "db_size_mb": db_size_mb,
         "db_path": str(db_path),
     }

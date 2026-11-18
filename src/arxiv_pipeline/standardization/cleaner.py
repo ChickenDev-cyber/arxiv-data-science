@@ -5,8 +5,99 @@ import re
 from .utils import _COMMAND, _MATH_ENV, _command_end, _group_end, _math_end
 
 _DROP =     {"centering", "raggedright", "clearpage", "newpage",
-            "midrule", "toprule", "bottomrule"}
+            "midrule", "toprule", "bottomrule", "flushbottom", "raggedbottom",
+            "noindent", "smallskip", "medskip", "bigskip", "selectfont",
+            "tiny", "scriptsize", "footnotesize", "small", "normalsize",
+            "large", "Large", "LARGE", "huge", "Huge",
+            "IEEEoverridecommandlockouts", "IEEEpeerreviewmaketitle"}
+# Consume exactly the known arguments; a following group may contain real prose.
+_LAYOUT_ARITY = {"setlength": 2, "addtolength": 2, "setcounter": 2,
+                 "addtocounter": 2, "fontsize": 2,
+                 "pagestyle": 1, "thispagestyle": 1,
+                 "bstctlcite": 1, "SetKwComment": 3, "SetKwProg": 4,
+                 "SetKwInOut": 2}
 _UNWRAP =   {"textbf", "emph", "textit", "textrm", "textnormal", "underline"}
+
+
+def _layout_body(text: str, name: str, start: int) -> tuple[str, int] | None:
+    """Expose the content of complete, known layout wrappers only."""
+    if name == "twocolumn":
+        if start >= len(text) or text[start] != "[":
+            return None
+        end = _group_end(text, start)
+        if end is None:
+            return None
+        body = text[start + 1:end - 1].strip()
+        # The common \twocolumn[{...}] idiom adds one scope-only group.
+        if body.startswith("{") and _group_end(body, 0) == len(body):
+            body = body[1:-1]
+        return body, end
+    if name not in {"resizebox", "scalebox"}:
+        return None
+    pos = start
+    for _ in range(2 if name == "resizebox" else 1):
+        if pos >= len(text) or text[pos] != "{":
+            return None
+        end = _group_end(text, pos)
+        if end is None:
+            return None
+        pos = end
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+    if name == "scalebox" and pos < len(text) and text[pos] == "[":
+        end = _group_end(text, pos)
+        if end is None:
+            return None
+        pos = end
+        while pos < len(text) and text[pos].isspace():
+            pos += 1
+    if pos < len(text) and text[pos] == "{":
+        end = _group_end(text, pos)
+        if end is not None:
+            return text[pos + 1:end - 1], end
+    return None
+
+
+def _definition_end(text: str, name: str, start: int) -> int | None:
+    """Skip a complete macro definition, never interpret its replacement as prose.
+
+    Incomplete/unknown forms are retained. Macro uses are still preserved; this
+    is not TeX expansion and does not guess the meaning of an unknown command.
+    """
+    if name not in {"newcommand", "renewcommand", "providecommand", "DeclareRobustCommand",
+                    "def", "gdef", "edef", "xdef"}:
+        return None
+    pos = start
+    if pos < len(text) and text[pos] == "{":
+        end = _group_end(text, pos)
+        if end is None:
+            return None
+        pos = end
+    else:
+        command = _COMMAND.match(text, pos)
+        if command is None:
+            return None
+        pos = command.end()
+    if name in {"def", "gdef", "edef", "xdef"}:
+        # Parameters (#1, delimiters, ...) precede the replacement group.
+        while pos < len(text) and text[pos] != "{":
+            if text[pos] == "\\":
+                return None
+            pos += 1
+    else:
+        for _ in range(2):  # optional argument count and default value
+            while pos < len(text) and text[pos].isspace():
+                pos += 1
+            if pos < len(text) and text[pos] == "[":
+                end = _group_end(text, pos)
+                if end is None:
+                    return None
+                pos = end
+    while pos < len(text) and text[pos].isspace():
+        pos += 1
+    return _group_end(text, pos) if pos < len(text) and text[pos] == "{" else None
+
+
 def normalize_math(text: str) -> str:
     r"""Normalize inline math to $...$ and display math to equation.
     """
@@ -110,6 +201,48 @@ def clean_latex(text: str) -> str:
         arg_start = end
         while arg_start < len(text) and text[arg_start].isspace():
             arg_start += 1
+
+        # A TeX dimension assignment is layout, not a prose sentence. Only
+        # recognize a complete literal dimension; retain unsupported forms.
+        if name == "parindent":
+            dimension = re.match(r"=?\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)\s*"
+                                 r"(?:pt|pc|in|bp|cm|mm|dd|cc|sp|em|ex)\b", text[arg_start:])
+            if dimension:
+                if output and not output[-1].endswith(" "):
+                    output.append(" ")
+                i = arg_start + dimension.end()
+                continue
+
+        definition_end = _definition_end(text, name, arg_start)
+        layout_end = arg_start
+        if name in _LAYOUT_ARITY:
+            for index in range(_LAYOUT_ARITY[name]):
+                while layout_end < len(text) and text[layout_end].isspace():
+                    layout_end += 1
+                group_end = (_group_end(text, layout_end)
+                             if layout_end < len(text) and text[layout_end] == "{" else None)
+                if group_end is None and index == 0 and name in {"setlength", "addtolength"}:
+                    register = _COMMAND.match(text, layout_end)
+                    if register is not None:
+                        group_end = register.end()
+                if group_end is None:
+                    layout_end = None
+                    break
+                layout_end = group_end
+        else:
+            layout_end = None
+        if definition_end is not None or layout_end is not None:
+            if output and not output[-1].endswith(" "):
+                output.append(" ")
+            i = definition_end if definition_end is not None else layout_end
+            continue
+
+        wrapper = _layout_body(text, name, arg_start)
+        if wrapper is not None:
+            body, wrapper_end = wrapper
+            output.append(clean_latex(body))
+            i = wrapper_end
+            continue
 
         if name in _DROP:
             if output and not output[-1].endswith(" "):

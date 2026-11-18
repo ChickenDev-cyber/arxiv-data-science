@@ -293,15 +293,47 @@ class ParsingDatabase:
     def _stream_table_to_parquet(
         self,
         sql: str,
-        table_dir: Path,
+        target_path: Path,
         build_table_fn: Any,
         pq_mod: Any,
         shard_size: int,
+        single_file: bool = False,
     ) -> int:
-        """Stream SQL query results in chunks into sharded Parquet files."""
+        """Stream SQL query results in chunks into single or sharded Parquet files."""
         cursor = self.conn.cursor()
         cursor.execute(sql)
         total_rows = 0
+
+        if single_file:
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            writer = None
+            try:
+                while True:
+                    batch = cursor.fetchmany(shard_size)
+                    if not batch:
+                        break
+                    arrow_table = build_table_fn(batch)
+                    if writer is None:
+                        if hasattr(pq_mod, "ParquetWriter"):
+                            writer = pq_mod.ParquetWriter(
+                                str(target_path), arrow_table.schema, compression="snappy"
+                            )
+                            writer.write_table(arrow_table)
+                        else:
+                            pq_mod.write_table(arrow_table, target_path, compression="snappy")
+                    else:
+                        writer.write_table(arrow_table)
+                    total_rows += len(batch)
+            finally:
+                if writer is not None and hasattr(writer, "close"):
+                    writer.close()
+            if total_rows == 0:
+                # Empty versions/corpora still need three readable files with
+                # the same schema as a nonempty export.
+                pq_mod.write_table(build_table_fn([]), target_path, compression="snappy")
+            return total_rows
+
+        table_dir = target_path
         shard_idx = 0
 
         while True:
@@ -324,8 +356,17 @@ class ParsingDatabase:
         self,
         output_dir: Path | str,
         shard_size: int = 250_000,
+        single_file: bool = False,
     ) -> Dict[str, int]:
-        """Export SQLite tables to Hugging Face-ready sharded Parquet files."""
+        """Export SQLite tables to Hugging Face-ready Parquet files.
+        
+        Args:
+            output_dir: Destination directory.
+            shard_size: Maximum rows per chunk/file.
+            single_file: If True, writes 3 standalone files ('elements.parquet',
+                         'hierarchy.parquet', 'bibtex.parquet').
+                         If False, writes partitioned shards under subdirectories.
+        """
         if shard_size <= 0:
             raise ValueError("shard_size must be a positive integer.")
 
@@ -393,23 +434,34 @@ class ParsingDatabase:
         return {
             "elements": self._stream_table_to_parquet(
                 "SELECT element_id, arxiv_id, kind, content FROM elements",
-                out_path / "elements",
+                out_path / "elements.parquet" if single_file else out_path / "elements",
                 build_elements,
                 pq,
                 shard_size,
+                single_file=single_file,
             ),
             "hierarchy": self._stream_table_to_parquet(
                 "SELECT arxiv_id, version, element_id, parent_id FROM hierarchy",
-                out_path / "hierarchy",
+                out_path / "hierarchy.parquet" if single_file else out_path / "hierarchy",
                 build_hierarchy,
                 pq,
                 shard_size,
+                single_file=single_file,
             ),
             "bibtex": self._stream_table_to_parquet(
                 "SELECT arxiv_id, citation_key, entry_type, title, authors, year, doi, journal, url FROM bibtex",
-                out_path / "bibtex",
+                out_path / "bibtex.parquet" if single_file else out_path / "bibtex",
                 build_bibtex,
                 pq,
                 shard_size,
+                single_file=single_file,
             ),
         }
+
+    def export_to_single_parquet(
+        self,
+        output_dir: Path | str,
+        chunk_size: int = 100_000,
+    ) -> Dict[str, int]:
+        """Export SQLite tables directly into 3 single Parquet files."""
+        return self.export_to_parquet(output_dir, shard_size=chunk_size, single_file=True)

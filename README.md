@@ -997,6 +997,8 @@ Theo hợp đồng Module 1, các đường dẫn trong `root_file`, `compilatio
 4. Parser `.bib` tách author theo ` and ` để giữ nguyên dạng tên như `Last, First`. Các trường đầu ra gồm `citation_key`, `entry_type`, `title`, `authors`, `year`, `doi`, `journal` và `url`.
 5. Parser `\bibitem` xử lý nhiều mục, label tùy chọn, `\newblock`, tiêu đề trong cặp dấu ngoặc kép LaTeX ``...'', chữ viết tắt tên tác giả và `\href{url}{visible text}`. Việc suy luận trường từ `\bibitem` là heuristic vì nội dung entry không có schema cố định.
 
+Pipeline cũng nhận `.bib` được gọi qua `\putbib[...]` của bibunits; `\defaultbibliography` cung cấp tên mặc định khi gọi `\putbib` không đối số. References inline hỗ trợ cả lệnh trực tiếp `\thebibliography{...}` và AMSRefs `biblist`/`\bib{key}{type}{fields}` trong TeX hoặc BBL: giữ các tác giả lặp, lấy năm từ `date` khi thiếu `year`, dùng `eprint` có URL khi thiếu `url`, không suy metadata từ citation key. Các block bibliography được loại khỏi hierarchy; nội dung thân bài, acknowledgements và appendix được giữ. Nhóm thống kê `bibitem` bao gồm cả bibliography inline AMSRefs.
+
 ### Đường dẫn và cách gọi từ Python
 
 Ví dụ một bài có hai phiên bản. `versions_sources` là hai `GatheredSource` nhận từ Module 1; `source_dirs` phải trỏ đúng thư mục chứa dữ liệu của từng version:
@@ -1080,8 +1082,10 @@ Unit test không thay thế kiểm thử trên corpus. Theo Definition of Done c
 ## Milestone 2 — Khang: standardization and spaCy
 
 Module 2 provides `clean_latex`, `normalize_math`, `tokenize_sentences`, and
-`process_prose`. Sentence segmentation defaults to spaCy `senter` on CPU with pinned
-`en_core_web_sm` 3.8.0. SaT remains optional after the range benchmark. See the [setup and API guide](src/arxiv_pipeline/standardization/README.md)
+`process_prose`. The pipeline defaults to the `rule` sentence backend. spaCy `senter`
+on CPU with pinned `en_core_web_sm` 3.8.0 is available when explicitly selected.
+Verified parsing checkpoints currently support `rule` only. SaT remains optional
+after the range benchmark. See the [setup and API guide](src/arxiv_pipeline/standardization/README.md)
 and [Punkt/spaCy/SaT comparison](reports/module2-tokenizer-comparison.md), including
 known split/merge limitations. Download models explicitly before running the parser;
 no model binaries or corpus files are stored in this repository.

@@ -18,8 +18,9 @@ _DOCUMENTCLASS_RE = re.compile(
 _BEGIN_DOCUMENT_RE = re.compile(r"\\begin\s*\{document\}")
 _END_DOCUMENT_RE = re.compile(r"\\end\s*\{document\}")
 _BIB_RE = re.compile(
-    r"\\(?P<cmd>bibliography|addbibresource|addglobalbib|addsectionbib)(?![A-Za-z@])"
+    r"\\(?P<cmd>bibliography|addbibresource|addglobalbib|addsectionbib|defaultbibliography)(?![A-Za-z@])"
     r"\s*(?:\[[^\]]*\])?\s*\{(?P<names>[^{}]*)\}"
+    r"|\\putbib(?![A-Za-z@])\s*(?:\[(?P<put_names>[^\]]*)\])?"
 )
 _SIMPLE_MACRO_RE = re.compile(
     r"\\(?:re)?newcommand\*?\s*\{?\s*\\(?P<a>[A-Za-z@]+)\s*\}?\s*\{(?P<av>[^{}#\\]*)\}"
@@ -99,17 +100,26 @@ def endinput_cut(masked: str) -> int | None:
 
 
 def find_bib_names(masked: str) -> list[str]:
-    r"""Names listed by \bibliography{a, b} and \addbibresource[opts]{c.bib}.
+    r"""Names requested by bibliography commands, including bibunits' putbib.
 
     Order of appearance, duplicates kept (the caller removes them). Remote
     resources (http..., with a colon) are skipped, they cannot be read from disk.
     """
     names = []
+    defaults: list[str] = []
     for match in _BIB_RE.finditer(masked):
-        for part in match["names"].split(","):
+        raw = match['names'] if match['cmd'] else match['put_names']
+        requested = []
+        for part in (raw or '').split(','):
             name = part.strip()
             if name and ":" not in name:
-                names.append(name)
+                requested.append(name)
+        if match['cmd'] == 'defaultbibliography':
+            defaults = requested
+        elif match['cmd'] is None and raw is None:
+            names.extend(defaults)
+        else:
+            names.extend(requested)
     return names
 
 

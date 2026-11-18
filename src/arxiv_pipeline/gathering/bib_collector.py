@@ -7,7 +7,7 @@ from .source_tree import SourceTree
 
 
 class BibCollector:
-    r"""List .bib files named by \bibliography{...} / \addbibresource{...}.
+    r"""List .bib files requested by bibliography/addbibresource/putbib commands.
 
     Only commands that are not in a comment count, and only files that exist
     in source_dir. Nothing is globbed: a template's leftover sample.bib that
