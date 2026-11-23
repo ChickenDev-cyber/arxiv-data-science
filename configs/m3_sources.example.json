@@ -1,0 +1,19 @@
+{
+  "owners": {
+    "huynh-nhi": {
+      "m1_corpus": "/content/m1/m1-colab-huynh-nhi-01.zip",
+      "m2_run_dir": "/content/drive/MyDrive/arXiv-data/milestone 2/huynh-nhi/fresh-01"
+    },
+    "trong": {
+      "m1_corpus": "/content/m1/m1-colab-trong-01.zip",
+      "m2_run_dir": "/content/drive/MyDrive/arXiv-data/milestone 2/trong/<RUN>"
+    }
+  },
+  "_help": {
+    "m1_corpus": "M1 zip (read in place) or an extracted folder holding raw/<owner>/<paper>/metadata.json",
+    "m2_run_dir": "milestone 2/<owner>/<run> folder with handoff.json; the verified result-*/parquet is used",
+    "m2_parquet": "optional instead of m2_run_dir: a parquet/ folder with elements/, hierarchy/, bibtex/",
+    "papers / references": "optional: existing Parquet to use instead of converting M1",
+    "m1_snapshot / m2_label": "optional labels written to inventory.json"
+  }
+}
