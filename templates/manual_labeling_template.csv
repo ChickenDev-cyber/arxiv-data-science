@@ -1,0 +1,4 @@
+arxiv_id,citation_key,groundtruth_arxiv_id,label_method,labeler,label_status,evidence,heuristic_version,_bib_title,_bib_authors,_bib_year,_candidate_ref_ids
+2501.12345,vaswani2017attention,1706.03762,manual,man-nhi,matched,manual_verified_title_and_author_match,,Attention is all you need,Ashish Vaswani and Noam Shazeer,2017,"1706.03762,1810.04805,1909.11942"
+2501.12345,knuth1984texbook,,manual,man-nhi,no_match,book_not_on_arxiv_no_reference_candidate,,The TeXbook,Donald E. Knuth,1984,"1706.03762,1810.04805,1909.11942"
+2501.12345,smith2023preliminary,,manual,man-nhi,unreviewed,unreviewed_entry,,Preliminary investigations into transformers,John Smith,2023,"1706.03762,1810.04805,1909.11942"
