@@ -645,10 +645,14 @@ def validate_labels(
 
     # 3. Check (arxiv_id, citation_key) existence in BibTeX
     valid_bibtex_keys: Optional[Set[Tuple[str, str]]] = None
-    if bibtex_df is not None and not bibtex_df.empty:
-        valid_bibtex_keys = set(
-            zip(bibtex_df["arxiv_id"].astype(str), bibtex_df["citation_key"].astype(str))
-        )
+    if bibtex_df is not None:
+        if not bibtex_df.empty and "arxiv_id" in bibtex_df.columns and "citation_key" in bibtex_df.columns:
+            valid_bibtex_keys = set(
+                zip(bibtex_df["arxiv_id"].astype(str), bibtex_df["citation_key"].astype(str))
+            )
+        else:
+            valid_bibtex_keys = set()
+
         non_existent_keys = []
         for row in labels_df.to_dict(orient="records"):
             key = (str(row["arxiv_id"]), str(row["citation_key"]))
@@ -840,6 +844,65 @@ def _resolve_shard_path(raw_path: str | Path, base_dir: Optional[Path] = None) -
     return p.resolve()
 
 
+def _normalize_cell_for_comparison(val: Any) -> Any:
+    """Normalize a cell value (scalars, NaN, lists, ndarrays, dicts) for exact equivalence checking."""
+    if val is None:
+        return None
+    if isinstance(val, (float, np.floating)):
+        return None if np.isnan(val) else float(val)
+    if isinstance(val, (np.ndarray, list)):
+        return tuple(_normalize_cell_for_comparison(x) for x in val)
+    if isinstance(val, dict):
+        return tuple(sorted((k, _normalize_cell_for_comparison(v)) for k, v in val.items()))
+    return val
+
+
+def deduplicate_or_raise_conflict(
+    df: pd.DataFrame,
+    table_name: str,
+    pk_cols: List[str],
+) -> pd.DataFrame:
+    """Only merge records that are completely identical; if metadata differs on same PK, raise ValueError.
+    
+    Never uses drop_duplicates(..., keep='first') blindly to discard conflicting metadata.
+    """
+    for col in pk_cols:
+        if col not in df.columns:
+            return df
+
+    dup_mask = df.duplicated(subset=pk_cols, keep=False)
+    if not dup_mask.any():
+        return df
+
+    dup_df = df[dup_mask]
+    compare_cols = list(df.columns)
+    conflicts = []
+
+    pk_groups: Dict[Tuple, List[Any]] = {}
+    for idx, row in dup_df.iterrows():
+        pk = tuple(str(row[c]) for c in pk_cols)
+        pk_groups.setdefault(pk, []).append(idx)
+
+    for pk, indices in pk_groups.items():
+        sub = dup_df.loc[indices]
+        signatures = set()
+        for _, row in sub.iterrows():
+            sig = tuple(_normalize_cell_for_comparison(row[c]) for c in compare_cols)
+            signatures.add(sig)
+        if len(signatures) > 1:
+            conflicts.append(f"{pk_cols}={pk}")
+
+    if conflicts:
+        raise ValueError(
+            f"Conflict in table '{table_name}': found {len(conflicts)} primary key entries with differing metadata "
+            f"(e.g. {conflicts[:5]}). "
+            "Only completely identical records may be merged; records with differing metadata must be reported as conflicts."
+        )
+
+    # All duplicate occurrences on pk_cols have completely identical metadata across all columns
+    return df.drop_duplicates(subset=pk_cols, keep="first").reset_index(drop=True)
+
+
 def load_table_from_inventory(
     inventory_data: dict,
     table_name: str,
@@ -901,13 +964,13 @@ def load_table_from_inventory(
 
         if dfs:
             merged = pd.concat(dfs, ignore_index=True)
-            # Deduplicate rows by primary key
+            # Deduplicate rows by primary key with strict conflict checking
             if table_name == "bibtex" and "arxiv_id" in merged.columns and "citation_key" in merged.columns:
-                merged = merged.drop_duplicates(subset=["arxiv_id", "citation_key"], keep="first")
+                merged = deduplicate_or_raise_conflict(merged, table_name, ["arxiv_id", "citation_key"])
             elif table_name == "references" and "arxiv_id" in merged.columns and "ref_arxiv_id" in merged.columns:
-                merged = merged.drop_duplicates(subset=["arxiv_id", "ref_arxiv_id"], keep="first")
+                merged = deduplicate_or_raise_conflict(merged, table_name, ["arxiv_id", "ref_arxiv_id"])
             elif table_name == "papers" and "arxiv_id" in merged.columns:
-                merged = merged.drop_duplicates(subset=["arxiv_id"], keep="first")
+                merged = deduplicate_or_raise_conflict(merged, table_name, ["arxiv_id"])
             return merged
 
     # Fallback to direct check on inputs/<owner>/<table_name>
@@ -918,7 +981,11 @@ def load_table_from_inventory(
             dfs = [pd.read_parquet(f) for f in found]
             merged = pd.concat(dfs, ignore_index=True)
             if table_name == "bibtex" and "arxiv_id" in merged.columns and "citation_key" in merged.columns:
-                merged = merged.drop_duplicates(subset=["arxiv_id", "citation_key"], keep="first")
+                merged = deduplicate_or_raise_conflict(merged, table_name, ["arxiv_id", "citation_key"])
+            elif table_name == "references" and "arxiv_id" in merged.columns and "ref_arxiv_id" in merged.columns:
+                merged = deduplicate_or_raise_conflict(merged, table_name, ["arxiv_id", "ref_arxiv_id"])
+            elif table_name == "papers" and "arxiv_id" in merged.columns:
+                merged = deduplicate_or_raise_conflict(merged, table_name, ["arxiv_id"])
             return merged
 
     raise FileNotFoundError(

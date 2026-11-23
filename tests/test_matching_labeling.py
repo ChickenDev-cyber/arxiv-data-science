@@ -399,3 +399,77 @@ class TestBuildLabelsAndInventoryShards:
         inv_data = {"tables": {"bibtex": ["bib.parquet"]}}
         loaded = load_table_from_inventory(inv_data, "bibtex", inventory_dir=sub_dir)
         assert len(loaded) == 1
+
+    def test_empty_bibtex_still_validates_citation_keys_and_fails_quota(self):
+        pool_df = pd.DataFrame([
+            {"arxiv_id": f"2501.0000{i}", "owner": "man-nhi", "label_method": "manual"}
+            for i in range(1, 6)
+        ])
+        labels_rows = []
+        for i in range(1, 6):
+            for j in range(1, 25):
+                labels_rows.append({
+                    "arxiv_id": f"2501.0000{i}",
+                    "citation_key": f"key_{j}",
+                    "groundtruth_arxiv_id": "2401.99999",
+                    "label_method": "manual",
+                    "labeler": "man-nhi",
+                    "label_status": "matched",
+                    "evidence": "manual_verified",
+                    "heuristic_version": None,
+                })
+        labels_df = pd.DataFrame(labels_rows)
+        refs_df = pd.DataFrame([
+            {"arxiv_id": f"2501.0000{i}", "ref_arxiv_id": "2401.99999"}
+            for i in range(1, 6)
+        ])
+
+        # Empty bibtex table!
+        empty_bibtex = pd.DataFrame(columns=["arxiv_id", "citation_key"])
+
+        report = validate_labels(
+            labels_df=labels_df,
+            pool_df=pool_df,
+            references_df=refs_df,
+            bibtex_df=empty_bibtex,
+        )
+
+        # Must NOT pass validation: all keys must be reported missing from bibtex
+        assert not report["passed"]
+        assert any("DO NOT exist in bibtex table" in e for e in report["errors"])
+        # Quota must fail because entries not existing in bibtex cannot count as matched
+        assert not report["quota_report"]["manual"]["passed"]
+
+    def test_conflicting_metadata_on_same_pk_raises_conflict_error(self, tmp_path):
+        # Shard 1
+        s1 = tmp_path / "shard1.parquet"
+        pd.DataFrame([
+            {"arxiv_id": "p1", "citation_key": "k1", "title": "Paper One Version A", "year": 2021}
+        ]).to_parquet(s1)
+
+        # Shard 2 with same PK ('p1', 'k1') but DIFFERENT metadata
+        s2 = tmp_path / "shard2.parquet"
+        pd.DataFrame([
+            {"arxiv_id": "p1", "citation_key": "k1", "title": "Paper One Version B", "year": 2022}
+        ]).to_parquet(s2)
+
+        inv_data = {
+            "tables": {"bibtex": [str(s1), str(s2)]}
+        }
+
+        # Must raise ValueError reporting metadata conflict, NOT keep="first" silently!
+        with pytest.raises(ValueError, match="Conflict in table 'bibtex'"):
+            load_table_from_inventory(inv_data, "bibtex", inventory_dir=tmp_path)
+
+        # But if metadata is 100% identical, it merges cleanly into 1 row
+        s2_identical = tmp_path / "shard2_identical.parquet"
+        pd.DataFrame([
+            {"arxiv_id": "p1", "citation_key": "k1", "title": "Paper One Version A", "year": 2021}
+        ]).to_parquet(s2_identical)
+
+        inv_data_clean = {
+            "tables": {"bibtex": [str(s1), str(s2_identical)]}
+        }
+        clean_loaded = load_table_from_inventory(inv_data_clean, "bibtex", inventory_dir=tmp_path)
+        assert len(clean_loaded) == 1
+        assert clean_loaded.iloc[0]["title"] == "Paper One Version A"
