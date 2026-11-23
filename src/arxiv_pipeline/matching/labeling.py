@@ -97,24 +97,33 @@ def extract_arxiv_id(text: Optional[str]) -> Optional[str]:
 
 
 def extract_part_spec(title: Optional[str]) -> Optional[str]:
-    """Extract multi-part paper numeral ('Part I', 'Part II', 'Part 1', 'Part 2', etc.).
+    """Extract multi-part paper numeral ('Part I', 'Part II', 'Part 1', 'Part 2', or trailing 'I', 'II', etc.).
     
     Returns normalized arabic numeral string (e.g. '1', '2') or None.
+    Handles trailing roman numerals and digits directly at end of title (e.g. 'black holes II' -> '2').
     """
     if not title or not isinstance(title, str):
         return None
-    # Check explicit "Part I", "Part 2", "Paper I", "Pt. 1"
-    m = re.search(r"\b(?:part|paper|pt\.?)\s*([ivx]+|\d+)\b", title, re.IGNORECASE)
+    clean = title.strip()
+    # 1. Explicit keyword: Part/Paper/Pt/Section/Chapter
+    m = re.search(r"\b(?:part|paper|pt\.?|section|chapter)\s*([ivx]+|\d+)\b", clean, re.IGNORECASE)
     if m:
         val = m.group(1).lower()
         return _ROMAN_MAP.get(val, val)
-    # Check ending numeral like "Title: I" or "Title - II" or "Title, Part 1"
-    m = re.search(r"[:\-,]\s*([ivx]+|\d+)\s*$", title, re.IGNORECASE)
+    # 2. In parentheses e.g. "(I)", "(II)", "(1)", "(2)"
+    m = re.search(r"\(([ivx]+|\d+)\)\s*[\.\?!]?\s*$", clean, re.IGNORECASE)
     if m:
         val = m.group(1).lower()
         return _ROMAN_MAP.get(val, val)
-    # Check roman numeral in parentheses like "(I)", "(II)"
-    m = re.search(r"\(([ivx]+|\d+)\)", title, re.IGNORECASE)
+    # 3. After colon/dash/comma e.g. ": I", "- II", ", 1"
+    m = re.search(r"[:\-,]\s*([ivx]+|\d+)\s*[\.\?!]?\s*$", clean, re.IGNORECASE)
+    if m:
+        val = m.group(1).lower()
+        return _ROMAN_MAP.get(val, val)
+    # 4. Standalone Roman numeral or digit at the very end of title!
+    # e.g. "Linear waves in the interior of extremal black holes I" -> "1"
+    # "Linear waves in the interior of extremal black holes II" -> "2"
+    m = re.search(r"\b(i{1,3}|iv|v|vi{0,3}|ix|x|\d{1,2})\s*[\.\?!]?\s*$", clean, re.IGNORECASE)
     if m:
         val = m.group(1).lower()
         return _ROMAN_MAP.get(val, val)
@@ -183,7 +192,6 @@ def extract_author_lastnames(authors: Any) -> List[str]:
         if item is None or (isinstance(item, float) and pd.isna(item)):
             continue
         if isinstance(item, dict):
-            # Dict representation like {"name": "Emparan, Roberto"} or Semantic Scholar author dict
             name = str(item.get("name", ""))
         elif isinstance(item, str):
             name = item
@@ -239,8 +247,7 @@ def match_bibtex_entry_to_candidates(
     if not candidate_refs:
         return "no_match", None, "no_candidates_available"
 
-    # Step 1: Direct arXiv ID extraction from BibTeX metadata
-    # (url, doi, journal, title)
+    # Step 1: Direct arXiv ID extraction from BibTeX metadata (url, doi, journal, title)
     extracted_arxiv_id = (
         extract_arxiv_id(bib_row.get("url"))
         or extract_arxiv_id(bib_row.get("doi"))
@@ -294,7 +301,7 @@ def match_bibtex_entry_to_candidates(
         if norm_ref_title and norm_ref_title == norm_bib_title:
             # Check part numeral consistency
             ref_part = extract_part_spec(ref_title_raw)
-            if bib_part and ref_part and bib_part != ref_part:
+            if (bib_part or ref_part) and (bib_part != ref_part):
                 continue
             exact_title_matches.append(ref)
 
@@ -326,7 +333,7 @@ def match_bibtex_entry_to_candidates(
         ref_title_raw = str(ref.get("ref_title", "")) if ref.get("ref_title") else ""
         ref_part = extract_part_spec(ref_title_raw)
 
-        # Multi-part veto: Part I vs Part II must NEVER match!
+        # Multi-part veto: Part I vs Part II or presence/absence mismatch must NEVER match!
         if (bib_part or ref_part) and (bib_part != ref_part):
             continue
 
@@ -553,7 +560,6 @@ def generate_manual_template(
     if output_path.suffix.lower() == ".csv":
         res_df.to_csv(output_path, index=False, encoding="utf-8")
     else:
-        # Save as parquet
         table = pa.Table.from_pandas(res_df)
         pq.write_table(table, output_path)
 
@@ -568,6 +574,7 @@ def validate_labels(
     labels_df: pd.DataFrame,
     pool_df: pd.DataFrame,
     references_df: pd.DataFrame,
+    bibtex_df: Optional[pd.DataFrame] = None,
     official_counts: Optional[Dict[str, int]] = None,
 ) -> Dict[str, Any]:
     """Perform rigorous validation and quota checking on the unified labels DataFrame.
@@ -577,8 +584,12 @@ def validate_labels(
     2. Key uniqueness and conflict check:
        (arxiv_id, citation_key) must be unique. Duplicate keys with conflicting GT
        or different methods are strictly flagged as fatal errors.
-    3. Completeness: every paper in the pool must have its entries represented.
-    4. Isolation: manual papers must have label_method == 'manual' and heuristic_version is null.
+    3. BibTeX existence check:
+       (arxiv_id, citation_key) must exist in bibtex table. Non-existent keys trigger
+       errors and are NOT counted as matched towards quota.
+    4. Isolation & Provenance:
+       manual papers must have label_method == 'manual', heuristic_version is null,
+       and correct labeler matching owner.
     5. Ground truth integrity:
        - Every 'matched' row must have groundtruth_arxiv_id existing in references of that paper.
        - Every non-'matched' row must have null groundtruth_arxiv_id.
@@ -632,12 +643,29 @@ def validate_labels(
             + "; ".join(conflicts[:5])
         )
 
+    # 3. Check (arxiv_id, citation_key) existence in BibTeX
+    valid_bibtex_keys: Optional[Set[Tuple[str, str]]] = None
+    if bibtex_df is not None and not bibtex_df.empty:
+        valid_bibtex_keys = set(
+            zip(bibtex_df["arxiv_id"].astype(str), bibtex_df["citation_key"].astype(str))
+        )
+        non_existent_keys = []
+        for row in labels_df.to_dict(orient="records"):
+            key = (str(row["arxiv_id"]), str(row["citation_key"]))
+            if key not in valid_bibtex_keys:
+                non_existent_keys.append(key)
+        if non_existent_keys:
+            errors.append(
+                f"Found {len(non_existent_keys)} entries in labels that DO NOT exist in bibtex table: "
+                + "; ".join([f"({p}, {k})" for p, k in non_existent_keys[:5]])
+            )
+
     # Build reference lookup: (arxiv_id, ref_arxiv_id)
     ref_lookup: Set[Tuple[str, str]] = set()
     for row in references_df[["arxiv_id", "ref_arxiv_id"]].to_dict(orient="records"):
         ref_lookup.add((str(row["arxiv_id"]), str(row["ref_arxiv_id"])))
 
-    # 3. Ground truth consistency
+    # 4. Ground truth consistency
     matched_mask = labels_df["label_status"] == "matched"
     non_matched_mask = ~matched_mask
 
@@ -662,7 +690,7 @@ def validate_labels(
             f"Found {invalid_gt_refs} 'matched' entries where groundtruth_arxiv_id does NOT exist in candidate references of that paper"
         )
 
-    # 4. Isolation: manual papers must not be processed by automatic heuristic
+    # 5. Isolation: manual papers must not be processed by automatic heuristic
     pool_methods = dict(zip(pool_df["arxiv_id"], pool_df["label_method"]))
 
     manual_papers_in_pool = {p for p, m in pool_methods.items() if m == "manual"}
@@ -681,7 +709,7 @@ def validate_labels(
     if len(manual_with_heuristic_ver) > 0:
         errors.append(f"Found {len(manual_with_heuristic_ver)} manual entries with non-null heuristic_version")
 
-    # 5. Quota Verification
+    # 6. Quota Verification
     quota_report: Dict[str, Any] = {
         "manual": {"passed": True, "by_owner": {}},
         "automatic": {"passed": True, "by_owner": {}},
@@ -698,8 +726,18 @@ def validate_labels(
         ]["arxiv_id"].unique()
 
         owner_labels = labels_df[labels_df["arxiv_id"].isin(owner_pool_manual)]
+
+        # Valid matched entries MUST exist in bibtex (if bibtex provided)
+        valid_matched_mask = (owner_labels["label_status"] == "matched")
+        if valid_bibtex_keys is not None:
+            in_bib = owner_labels.apply(
+                lambda r: (str(r["arxiv_id"]), str(r["citation_key"])) in valid_bibtex_keys,
+                axis=1
+            )
+            valid_matched_mask = valid_matched_mask & in_bib
+
         matched_counts_per_paper = (
-            owner_labels[owner_labels["label_status"] == "matched"]
+            owner_labels[valid_matched_mask]
             .groupby("arxiv_id")
             .size()
             .to_dict()
@@ -791,18 +829,15 @@ def load_inventory(inventory_input: Path | dict) -> dict:
 
 
 def _resolve_shard_path(raw_path: str | Path, base_dir: Optional[Path] = None) -> Path:
-    """Resolve a shard path against base directory if relative and not found at cwd."""
+    """Resolve a shard path relative to base directory (inventory dir) first."""
     p = Path(raw_path)
-    if p.is_absolute() and p.exists():
+    if p.is_absolute():
         return p
-    if p.exists():
-        return p.resolve()
-    if base_dir:
+    # Relative path: ALWAYS resolve relative to base_dir (inventory directory) first!
+    if base_dir is not None:
         cand = (base_dir / p).resolve()
-        if cand.exists():
-            return cand
         return cand
-    return p
+    return p.resolve()
 
 
 def load_table_from_inventory(
@@ -811,9 +846,13 @@ def load_table_from_inventory(
     inventory_dir: Optional[Path] = None,
     owner: Optional[str] = None,
 ) -> pd.DataFrame:
-    """Load a table DataFrame from inventory paths, verifying all shards exist."""
+    """Load a table DataFrame from inventory paths.
+    
+    Resolves relative paths according to inventory_dir (without prioritizing CWD).
+    Reads shared shards declared across multiple owners only once to avoid duplication.
+    """
     dfs = []
-    shard_paths: List[str] = []
+    raw_shard_paths: List[str] = []
 
     # Structure 1: inventory["owners"][owner]["tables"][table_name]
     if "owners" in inventory_data:
@@ -824,39 +863,63 @@ def load_table_from_inventory(
                 paths = owners_dict[o]["tables"].get(table_name, [])
                 if isinstance(paths, str):
                     paths = [paths]
-                shard_paths.extend(paths)
+                raw_shard_paths.extend(paths)
 
     # Structure 2: inventory["tables"][table_name]
     elif "tables" in inventory_data:
         paths = inventory_data["tables"].get(table_name, [])
         if isinstance(paths, str):
             paths = [paths]
-        shard_paths.extend(paths)
+        raw_shard_paths.extend(paths)
 
     # Structure 3: direct key
     elif table_name in inventory_data:
         paths = inventory_data[table_name]
         if isinstance(paths, str):
             paths = [paths]
-        shard_paths.extend(paths)
+        raw_shard_paths.extend(paths)
 
-    if shard_paths:
-        for p in shard_paths:
-            resolved = _resolve_shard_path(p, base_dir=inventory_dir)
+    if raw_shard_paths:
+        # Read each unique resolved shard path ONLY ONCE
+        unique_shards: List[Tuple[str, Path]] = []
+        seen_canonical_paths: Set[str] = set()
+
+        for raw_p in raw_shard_paths:
+            resolved = _resolve_shard_path(raw_p, base_dir=inventory_dir)
+            canon_str = str(resolved.resolve()) if resolved.exists() else str(resolved)
+            if canon_str not in seen_canonical_paths:
+                seen_canonical_paths.add(canon_str)
+                unique_shards.append((raw_p, resolved))
+
+        for raw_p, resolved in unique_shards:
             if not resolved.exists():
                 raise FileNotFoundError(
-                    f"Missing required shard: '{p}' (resolved to '{resolved}') for table '{table_name}'. "
+                    f"Missing required shard: '{raw_p}' (resolved to '{resolved}') for table '{table_name}'. "
                     "All declared shards must exist."
                 )
             dfs.append(pd.read_parquet(resolved))
-        return pd.concat(dfs, ignore_index=True)
+
+        if dfs:
+            merged = pd.concat(dfs, ignore_index=True)
+            # Deduplicate rows by primary key
+            if table_name == "bibtex" and "arxiv_id" in merged.columns and "citation_key" in merged.columns:
+                merged = merged.drop_duplicates(subset=["arxiv_id", "citation_key"], keep="first")
+            elif table_name == "references" and "arxiv_id" in merged.columns and "ref_arxiv_id" in merged.columns:
+                merged = merged.drop_duplicates(subset=["arxiv_id", "ref_arxiv_id"], keep="first")
+            elif table_name == "papers" and "arxiv_id" in merged.columns:
+                merged = merged.drop_duplicates(subset=["arxiv_id"], keep="first")
+            return merged
 
     # Fallback to direct check on inputs/<owner>/<table_name>
-    inputs_dir = Path("inputs")
+    inputs_dir = (inventory_dir / "inputs") if inventory_dir else Path("inputs")
     if inputs_dir.exists():
         found = list(inputs_dir.glob(f"*/{table_name}/*.parquet"))
         if found:
-            return pd.concat([pd.read_parquet(f) for f in found], ignore_index=True)
+            dfs = [pd.read_parquet(f) for f in found]
+            merged = pd.concat(dfs, ignore_index=True)
+            if table_name == "bibtex" and "arxiv_id" in merged.columns and "citation_key" in merged.columns:
+                merged = merged.drop_duplicates(subset=["arxiv_id", "citation_key"], keep="first")
+            return merged
 
     raise FileNotFoundError(
         f"Could not load table '{table_name}' from inventory. Verify inventory.json paths."
@@ -872,6 +935,7 @@ def build_labels(
     """Milestone 3 Contract Function: Build unified labels.parquet and label_report.json.
     
     Halts export if validation fails or conflicting duplicate labels exist.
+    Validates provenance strictly without overwriting label_method, labeler, or heuristic_version.
     """
     inventory_path = Path(inventory)
     pool_path = Path(pool)
@@ -923,26 +987,54 @@ def build_labels(
             m_df["arxiv_id"] = m_df["arxiv_id"].astype(str)
             m_df["citation_key"] = m_df["citation_key"].astype(str)
 
+            # STRICT PROVENANCE VALIDATION (DO NOT OVERWRITE INPUT VALUES)
+            if "label_method" in m_df.columns:
+                invalid_method_mask = m_df["label_method"] != "manual"
+                if invalid_method_mask.any():
+                    raise ValueError(
+                        f"Provenance error in manual file for '{owner}': found {invalid_method_mask.sum()} rows "
+                        f"with label_method != 'manual' (values: {m_df.loc[invalid_method_mask, 'label_method'].unique()}). "
+                        "Manual input files must declare label_method='manual' and will not be overwritten."
+                    )
+            else:
+                raise ValueError(f"Manual file for '{owner}' is missing required column 'label_method'.")
+
+            if "heuristic_version" in m_df.columns:
+                non_null_h = m_df[
+                    m_df["heuristic_version"].notna()
+                    & (m_df["heuristic_version"] != "")
+                    & (m_df["heuristic_version"] != "nan")
+                ]
+                if len(non_null_h) > 0:
+                    raise ValueError(
+                        f"Provenance error in manual file for '{owner}': found {len(non_null_h)} rows with non-null "
+                        f"heuristic_version='{non_null_h['heuristic_version'].unique()}'. "
+                        "Manual input labels must have null heuristic_version and will not be overwritten."
+                    )
+
+            if "labeler" in m_df.columns:
+                invalid_labeler_mask = m_df["labeler"] != owner
+                if invalid_labeler_mask.any():
+                    raise ValueError(
+                        f"Provenance error in manual file for '{owner}': found {invalid_labeler_mask.sum()} rows "
+                        f"with labeler != '{owner}' (found: {m_df.loc[invalid_labeler_mask, 'labeler'].unique()}). "
+                        "Provenance labeler must match the declared owner and will not be overwritten."
+                    )
+            else:
+                raise ValueError(f"Manual file for '{owner}' is missing required column 'labeler'.")
+
             # Filter to manual papers of this owner in the pool
             owner_manual_ids = set(
                 manual_pool[manual_pool["owner"] == owner]["arxiv_id"].unique()
             )
             m_df = m_df[m_df["arxiv_id"].isin(owner_manual_ids)].copy()
 
-            # Enforce schema fields
-            m_df["label_method"] = "manual"
-            m_df["heuristic_version"] = None
-            if "labeler" not in m_df.columns or m_df["labeler"].isna().all():
-                m_df["labeler"] = owner
-
-            # Clean groundtruth_arxiv_id: only non-null if matched
-            m_df.loc[m_df["label_status"] != "matched", "groundtruth_arxiv_id"] = None
-
             # Clean empty strings to None
             m_df["groundtruth_arxiv_id"] = m_df["groundtruth_arxiv_id"].where(
                 m_df["groundtruth_arxiv_id"].notna() & (m_df["groundtruth_arxiv_id"] != "") & (m_df["groundtruth_arxiv_id"] != "nan"),
                 None
             )
+            m_df["heuristic_version"] = None
 
             manual_dfs.append(m_df)
 
@@ -1027,11 +1119,12 @@ def build_labels(
                 if n_val is not None:
                     official_counts[o] = int(n_val)
 
-    # 7. Run full validation & quota checking
+    # 7. Run full validation & quota checking (including bibtex existence check)
     report = validate_labels(
         labels_df=unified_df,
         pool_df=pool_df,
         references_df=references_df,
+        bibtex_df=bibtex_df,
         official_counts=official_counts,
     )
 
@@ -1040,7 +1133,7 @@ def build_labels(
     with open(label_report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, ensure_ascii=False)
 
-    # 8. HALT IF VALIDATION FAILS
+    # 8. HALT IF VALIDATION FAILS (Never export labels.parquet if validation has errors)
     if not report["passed"]:
         error_msg = f"Validation failed with {len(report['errors'])} error(s). labels.parquet export was ABORTED.\n" + "\n".join(report["errors"])
         raise ValueError(error_msg)
