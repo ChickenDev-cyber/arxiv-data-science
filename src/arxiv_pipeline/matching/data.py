@@ -16,7 +16,9 @@ import argparse
 import hashlib
 import json
 import os
+import math
 import random
+import re
 import sys
 import zipfile
 from datetime import datetime, timezone
@@ -28,43 +30,18 @@ import pyarrow.parquet as pq
 
 from ..config import ASSIGNED_RANGES
 from ..identifiers import normalize_arxiv_id
+from .contracts import OWNERS, SCHEMAS as CONTRACT_SCHEMAS, TABLES
+from .contracts import load_inventory as contract_load_inventory
 
-INVENTORY_VERSION = "m3-inputs-1"
-OWNERS = ("trong", "huynh-nhi", "man-nhi", "khang", "hoang")
-TABLES = ("papers", "references", "elements", "hierarchy", "bibtex")
+INVENTORY_SCHEMA_VERSION = 1  # contracts.load_inventory (module E) requires 1
 M2_TABLES = ("elements", "hierarchy", "bibtex")
 SHARD_ROWS = 200_000
-
 _STR = pa.string()
-_LIST = pa.list_(pa.string())
 _DICT = pa.dictionary(pa.int32(), pa.string())
+INT32_MIN, INT32_MAX = -(2 ** 31), 2 ** 31 - 1
 
-SCHEMAS: dict[str, pa.Schema] = {
-    "papers": pa.schema([
-        pa.field("arxiv_id", _STR, nullable=False), pa.field("title", _STR),
-        pa.field("authors", _LIST), pa.field("submission_date", _STR),
-        pa.field("revised_dates", _LIST), pa.field("venue", _STR),
-    ]),
-    "references": pa.schema([
-        pa.field("arxiv_id", _STR, nullable=False), pa.field("ref_arxiv_id", _STR, nullable=False),
-        pa.field("ref_title", _STR), pa.field("ref_authors", _LIST),
-        pa.field("ref_submission_date", _STR), pa.field("ref_s2_id", _STR),
-    ]),
-    "elements": pa.schema([
-        pa.field("element_id", _STR, nullable=False), pa.field("arxiv_id", _STR, nullable=False),
-        pa.field("kind", _DICT), pa.field("content", _STR),
-    ]),
-    "hierarchy": pa.schema([
-        pa.field("arxiv_id", _STR, nullable=False), pa.field("version", pa.int32()),
-        pa.field("element_id", _STR, nullable=False), pa.field("parent_id", _STR, nullable=False),
-    ]),
-    "bibtex": pa.schema([
-        pa.field("arxiv_id", _STR, nullable=False), pa.field("citation_key", _STR, nullable=False),
-        pa.field("entry_type", _DICT), pa.field("title", _STR), pa.field("authors", _LIST),
-        pa.field("year", pa.int32()), pa.field("doi", _STR), pa.field("journal", _STR),
-        pa.field("url", _STR),
-    ]),
-}
+# Output schemas come from module E's shared contract, never a private copy.
+SCHEMAS: dict[str, pa.Schema] = {t: CONTRACT_SCHEMAS[t] for t in TABLES}
 
 # Key columns; duplicates on these are collapsed (identical) or reported (conflicting).
 KEYS: dict[str, tuple[str, ...]] = {
@@ -79,6 +56,28 @@ NOT_NULL = {t: [f.name for f in s if not f.nullable] for t, s in SCHEMAS.items()
 # Columns holding paper IDs that must be canonical (version suffix removed).
 ID_COLUMNS = {"papers": ("arxiv_id",), "references": ("arxiv_id", "ref_arxiv_id"),
               "elements": ("arxiv_id",), "hierarchy": ("arxiv_id",), "bibtex": ("arxiv_id",)}
+INT_COLUMNS = {t: tuple(f.name for f in s if pa.types.is_integer(f.type)) for t, s in SCHEMAS.items()}
+_INT_TEXT = re.compile(r"[+-]?[0-9]+")
+_INVALID = object()
+
+
+def safe_int(value: Any) -> Any:
+    """Exact int32 conversion; returns _INVALID instead of truncating 1.9 to 1."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return _INVALID
+    if isinstance(value, int):
+        number = value
+    elif isinstance(value, float):
+        if not math.isfinite(value) or not value.is_integer():
+            return _INVALID
+        number = int(value)
+    elif isinstance(value, str) and _INT_TEXT.fullmatch(value.strip()):
+        number = int(value.strip())
+    else:
+        return _INVALID
+    return number if INT32_MIN <= number <= INT32_MAX else _INVALID
 
 
 # ---------------------------------------------------------------------------
@@ -184,8 +183,13 @@ class TableWriter:
     """Validates rows of one table for one owner and writes Parquet shards."""
 
     def __init__(self, table: str, owner: str, out_dir: Path, issues: Issues,
-                 paper_ids: set[str] | None, shard_rows: int = SHARD_ROWS) -> None:
+                 paper_ids: set[str] | None, shard_rows: int = SHARD_ROWS,
+                 element_papers: dict[str, str] | None = None) -> None:
         self.table, self.owner, self.out_dir, self.issues = table, owner, out_dir, issues
+        # hierarchy: element_id -> arxiv_id of accepted elements, to check both ends of an edge.
+        self.element_papers = element_papers
+        # elements: filled while writing, handed to the hierarchy writer.
+        self.collected_elements: dict[str, str] = {}
         self.schema = SCHEMAS[table]
         self.paper_ids = paper_ids
         self.shard_rows = shard_rows
@@ -216,6 +220,18 @@ class TableWriter:
                 self.issues.add("warning", f"normalized_{col}",
                                 f"{col} normalized (version suffix/prefix removed)", example=raw)
             row[col] = norm
+        for col in INT_COLUMNS[self.table]:
+            value = safe_int(row.get(col))
+            if value is _INVALID:
+                nullable = SCHEMAS[self.table].field(col).nullable
+                self.issues.add("error", f"invalid_{col}",
+                                f"{col} is not an exact int32"
+                                + ("; set to null" if nullable else "; row dropped"),
+                                example=repr(row.get(col)))
+                if not nullable:
+                    return None
+                value = None
+            row[col] = value
         for col in NOT_NULL[self.table]:
             if row.get(col) in (None, ""):
                 self.issues.add("error", f"null_{col}", f"{col} is null/empty; row dropped",
@@ -227,8 +243,22 @@ class TableWriter:
                             f"arxiv_id outside the {self.owner} range; row dropped", example=aid)
             return None
         if self.paper_ids is not None and self.table != "papers" and aid not in self.paper_ids:
-            self.issues.add("warning", "paper_not_in_papers",
-                            "arxiv_id is in range but missing from papers (kept)", example=aid)
+            self.issues.add("error", "paper_not_in_papers",
+                            "citing arxiv_id is not in this owner's papers; row dropped", example=aid)
+            return None
+        if self.table == "hierarchy" and self.element_papers is not None:
+            for col in ("element_id", "parent_id"):
+                owner_paper = self.element_papers.get(row[col])
+                if owner_paper is None:
+                    self.issues.add("error", f"{col.split('_')[0]}_not_in_elements",
+                                    f"hierarchy.{col} does not exist in elements; row dropped",
+                                    example=row[col])
+                    return None
+                if owner_paper != aid:
+                    self.issues.add("error", f"{col.split('_')[0]}_other_paper",
+                                    f"hierarchy.{col} belongs to another paper; row dropped",
+                                    example=[aid, row[col], owner_paper])
+                    return None
         key = tuple(row.get(c) for c in KEYS[self.table])
         fingerprint = _digest(json.dumps(row, sort_keys=True, ensure_ascii=False, default=str))
         key_hash = _digest(json.dumps(key, ensure_ascii=False, default=str))
@@ -244,6 +274,8 @@ class TableWriter:
                                 example=list(key))
             return None
         self.seen[key_hash] = fingerprint
+        if self.table == "elements":
+            self.collected_elements[row["element_id"]] = sys.intern(aid)
         return row
 
     def write_rows(self, rows: Iterable[dict[str, Any]]) -> None:
@@ -627,25 +659,7 @@ def check_relations(tables: dict[str, dict[str, Any]], issues: dict[str, Issues]
     if not files("papers"):
         return
     paper_ids = _column_values(files("papers"), "arxiv_id")
-    if files("elements") and files("hierarchy"):
-        element_ids = _column_values(files("elements"), "element_id")
-        orphan = parent_missing = 0
-        examples: list[str] = []
-        for f in files("hierarchy"):
-            t = pq.read_table(f, columns=["element_id", "parent_id"])
-            for e, p in zip(t.column("element_id").to_pylist(), t.column("parent_id").to_pylist()):
-                if e not in element_ids:
-                    orphan += 1
-                    if len(examples) < 5:
-                        examples.append(e)
-                if p not in element_ids:
-                    parent_missing += 1
-        if orphan:
-            issues["hierarchy"].add("error", "element_not_in_elements",
-                                    "hierarchy.element_id missing from elements", orphan, examples[0])
-        if parent_missing:
-            issues["hierarchy"].add("warning", "parent_not_in_elements",
-                                    "hierarchy.parent_id missing from elements", parent_missing)
+    # hierarchy edges are checked row by row in TableWriter (both ends, same paper).
     for t in ("elements", "bibtex", "references"):
         if files(t):
             ids = _column_values(files(t), "arxiv_id")
@@ -679,11 +693,16 @@ def load_source_config(source_config: Path) -> tuple[Path, dict[str, Any]]:
     return source_config.resolve().parent, config
 
 
+def _issue_lines(items: list[dict[str, Any]], level: str, prefix: str = "") -> list[str]:
+    return [f"{prefix}{i['code']} x{i['count']}: {i['message']}" for i in items if i["level"] == level]
+
+
 def _prepare_owner(owner: str, spec: dict[str, Any], base: Path, out_root: Path,
                    inventory_dir: Path, shard_rows: int, verify_checksums: bool) -> dict[str, Any]:
     m1_corpus = _resolve(base, spec.get("m1_corpus"))
     m2_run = _resolve(base, spec.get("m2_run_dir"))
     m2_dir = _resolve(base, spec.get("m2_parquet"))
+    prebuilt = {t: _resolve(base, spec.get(t)) for t in TABLES}
     issues = {t: Issues() for t in TABLES}
     owner_issues = Issues()
     tables: dict[str, dict[str, Any]] = {}
@@ -691,18 +710,23 @@ def _prepare_owner(owner: str, spec: dict[str, Any], base: Path, out_root: Path,
     dirs: list[tuple[str, M1Paper]] = []
     m2_info: dict[str, Any] | None = None
 
-    if m1_corpus is None:
-        owner_issues.add("error", "m1_not_configured", "m1_corpus not set in source config")
-    else:
+    # M1 is only needed for papers/references that are not given as Parquet.
+    needs_m1 = prebuilt["papers"] is None or prebuilt["references"] is None
+    if m1_corpus is not None:
         papers, papers_location = open_m1(m1_corpus, owner, owner_issues)
         dirs = resolve_m1_ids(papers, issues["papers"])
+    elif needs_m1:
+        owner_issues.add("error", "m1_not_configured",
+                         "m1_corpus not set and papers/references Parquet not given")
 
-    if m2_dir is None and m2_run is not None:
+    needs_m2 = any(prebuilt[t] is None for t in M2_TABLES)
+    if m2_dir is None and m2_run is not None and needs_m2:
         m2_dir, m2_info = resolve_m2_run(m2_run, owner_issues, verify_checksums)
 
     def run(table: str, rows: Iterator[dict[str, Any]] | None, source: list[Path] | str | None,
-            paper_ids: set[str] | None) -> set[str]:
-        writer = TableWriter(table, owner, out_root / table, issues[table], paper_ids, shard_rows)
+            paper_ids: set[str] | None, element_papers: dict[str, str] | None = None) -> TableWriter:
+        writer = TableWriter(table, owner, out_root / table, issues[table], paper_ids, shard_rows,
+                             element_papers)
         missing = rows is None
         if not missing:
             writer.write_rows(rows)
@@ -714,29 +738,30 @@ def _prepare_owner(owner: str, spec: dict[str, Any], base: Path, out_root: Path,
             "source": [str(s) for s in source] if isinstance(source, list) else source,
             "_files": written,
         }
-        return writer.arxiv_ids
+        return writer
 
     # papers / references: prebuilt Parquet if configured, else converted from M1.
     paper_ids: set[str] | None = None
     for table, builder in (("papers", papers_rows), ("references", references_rows)):
-        prebuilt = _resolve(base, spec.get(table))
-        if prebuilt is not None:
-            files = parquet_files(prebuilt) if prebuilt.exists() else []
+        given = prebuilt[table]
+        if given is not None:
+            files = parquet_files(given) if given.exists() else []
             if not files:
-                issues[table].add("error", "source_not_found", "configured Parquet not found", example=str(prebuilt))
-                ids = run(table, None, str(prebuilt), paper_ids)
+                issues[table].add("error", "source_not_found", "configured Parquet not found", example=str(given))
+                writer = run(table, None, str(given), paper_ids)
             else:
-                ids = run(table, parquet_rows(files, table, issues[table]), files, paper_ids)
+                writer = run(table, parquet_rows(files, table, issues[table]), files, paper_ids)
         elif papers_location is not None:
-            ids = run(table, builder(dirs, issues[table]), papers_location, paper_ids)
+            writer = run(table, builder(dirs, issues[table]), papers_location, paper_ids)
         else:
             issues[table].add("error", "source_not_found", "no M1 corpus and no prebuilt Parquet")
-            ids = run(table, None, None, paper_ids)
+            writer = run(table, None, None, paper_ids)
         if table == "papers" and tables["papers"]["status"] != "missing":
-            paper_ids = ids
+            paper_ids = writer.arxiv_ids
 
+    element_papers: dict[str, str] | None = None
     for table in M2_TABLES:
-        explicit = _resolve(base, spec.get(table))
+        explicit = prebuilt[table]
         located = explicit if explicit is not None else (find_m2_table(m2_dir, table) if m2_dir else None)
         if located is None or not located.exists():
             issues[table].add("error", "source_not_found",
@@ -751,7 +776,20 @@ def _prepare_owner(owner: str, spec: dict[str, Any], base: Path, out_root: Path,
                               example=str(located))
             run(table, None, str(located), paper_ids)
             continue
-        run(table, parquet_rows(files, table, issues[table]), files, paper_ids)
+        if table == "hierarchy" and element_papers is None:
+            issues[table].add("error", "relations_unchecked",
+                              "elements unavailable, hierarchy edges cannot be verified")
+        writer = run(table, parquet_rows(files, table, issues[table]), files, paper_ids,
+                     element_papers if table == "hierarchy" else None)
+        if table == "elements":
+            element_papers = writer.collected_elements
+    element_papers = None  # free memory before relation summary
+
+    # N is the number of distinct paper IDs actually written to papers.
+    n_papers = tables["papers"]["rows"] or 0
+    if dirs and tables["papers"]["status"] != "missing" and len(dirs) != n_papers:
+        owner_issues.add("error", "n_mismatch",
+                         f"M1 has {len(dirs)} paper folders but papers has {n_papers} IDs")
 
     check_relations(tables, issues)
     for t in TABLES:
@@ -760,21 +798,27 @@ def _prepare_owner(owner: str, spec: dict[str, Any], base: Path, out_root: Path,
             tables[t]["status"] = "error"
         tables[t].pop("_files")
 
-    n_official = len({aid for aid, _ in dirs}) if dirs else (tables["papers"]["rows"] or 0)
     statuses = {t: tables[t]["status"] for t in TABLES}
+    m1_info = describe_source(m1_corpus, spec.get("m1_snapshot")) if m1_corpus else None
+    m2_desc = ({**describe_source(m2_run or m2_dir, spec.get("m2_label")), "resolved": m2_info,
+                "parquet_dir": str(m2_dir) if m2_dir else None} if (m2_run or m2_dir) else None)
+    snapshot = spec.get("snapshot") or " + ".join(
+        f"{name}:{info['label']}" for name, info in (("m1", m1_info), ("m2", m2_desc)) if info) or "prebuilt-parquet"
+    all_issues = owner_issues.to_list() + [
+        {**i, "code": f"{t}.{i['code']}"} for t in TABLES for i in tables[t]["issues"]]
     return {
+        "N": n_papers,
+        "snapshot": snapshot,
+        "tables": {t: tables[t]["paths"] for t in TABLES},
+        # Only real counts: module E rejects null and compares every value with the data.
+        "row_counts": {t: tables[t]["rows"] for t in TABLES if tables[t]["rows"] is not None},
+        "warnings": _issue_lines(all_issues, "warning"),
+        "errors": _issue_lines(all_issues, "error"),
         "status": "ok" if all(s == "ok" for s in statuses.values()) and not owner_issues.has_errors()
         else ("missing" if all(s == "missing" for s in statuses.values()) else "incomplete"),
-        "n_official_papers": n_official,
-        "n_official_source": "m1_paper_folders" if dirs else "papers_rows",
-        "sources": {
-            "m1": describe_source(m1_corpus, spec.get("m1_snapshot")),
-            "m2": {**describe_source(m2_run or m2_dir, spec.get("m2_label")), "resolved": m2_info,
-                   "parquet_dir": str(m2_dir) if m2_dir else None},
-        },
         "table_status": statuses,
-        "row_counts": {t: tables[t]["rows"] for t in TABLES},
-        "tables": {t: tables[t]["paths"] for t in TABLES},
+        "m1_paper_folders": len(dirs) if m1_corpus else None,
+        "sources": {"m1": m1_info, "m2": m2_desc},
         "table_details": {t: {k: v for k, v in tables[t].items() if k != "paths"} for t in TABLES},
         "issues": owner_issues.to_list(),
     }
@@ -806,7 +850,8 @@ def prepare_inputs(source_config: Path, output_dir: Path, *, owners: Iterable[st
     output_dir.mkdir(parents=True, exist_ok=True)
 
     inventory: dict[str, Any] = {
-        "inventory_version": INVENTORY_VERSION,
+        "schema_version": INVENTORY_SCHEMA_VERSION,
+        "generator": "arxiv_pipeline.matching.data.prepare_inputs",
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "source_config": str(Path(source_config).resolve()),
         "paths_relative_to": "inventory.json directory",
@@ -821,8 +866,9 @@ def prepare_inputs(source_config: Path, output_dir: Path, *, owners: Iterable[st
         spec = config["owners"].get(owner)
         if spec is None:
             inventory["owners"][owner] = {
-                "status": "missing", "n_official_papers": None, "tables": {t: [] for t in TABLES},
-                "table_status": {t: "missing" for t in TABLES}, "row_counts": {t: None for t in TABLES},
+                "N": 0, "snapshot": "", "tables": {t: [] for t in TABLES}, "row_counts": {},
+                "warnings": [], "errors": ["owner_not_configured: owner absent from source config"],
+                "status": "missing", "table_status": {t: "missing" for t in TABLES},
                 "issues": [{"level": "error", "code": "owner_not_configured",
                             "message": "owner absent from source config", "count": 1, "examples": []}]}
             continue
@@ -884,15 +930,18 @@ def make_sample(inventory: Path, output_dir: Path, *, papers_per_owner: int = 3,
         preferred = sorted(bib_ids & ref_ids & set(all_ids)) or sorted(bib_ids | ref_ids) or all_ids
         chosen = sorted(rng.sample(preferred, min(papers_per_owner, len(preferred))))
         chosen_set = set(chosen)
-        owner_info: dict[str, Any] = {"status": info.get("status"), "sample_arxiv_ids": chosen,
-                                      "n_official_papers": info.get("n_official_papers"),
-                                      "tables": {}, "row_counts": {}, "table_status": {}}
+        # N counts the sample's own papers so module E's contract check passes on it.
+        owner_info: dict[str, Any] = {"N": len(chosen),
+                                      "snapshot": f"{info.get('snapshot')} (sample {len(chosen)} papers)",
+                                      "tables": {}, "row_counts": {}, "warnings": [], "errors": [],
+                                      "status": info.get("status"), "sample_arxiv_ids": chosen,
+                                      "full_N": info.get("N"), "table_status": {}}
         for t in TABLES:
             mask = [a in chosen_set for a in loaded[t].column("arxiv_id").to_pylist()]
             sub = loaded[t].filter(pa.array(mask, type=pa.bool_())) if mask else loaded[t]
             target = output_dir / "inputs" / owner / t
             target.mkdir(parents=True, exist_ok=True)
-            pq.write_table(sub, target / "part-00000.parquet")
+            pq.write_table(sub.cast(SCHEMAS[t]), target / "part-00000.parquet")
             owner_info["tables"][t] = [_rel(target / "part-00000.parquet", output_dir)]
             owner_info["row_counts"][t] = sub.num_rows
             owner_info["table_status"][t] = (info.get("table_status", {}).get(t)
@@ -956,7 +1005,7 @@ def summarize(inventory: Path) -> str:
         for t in TABLES:
             rows = info.get("row_counts", {}).get(t)
             cells.append(f"{(info.get('table_status', {}).get(t) or '?') + ':' + ('-' if rows is None else str(rows)):>18}")
-        n = info.get("n_official_papers")
+        n = info.get("N")
         lines.append(f"{owner:<10} {str(info.get('status')):<11} {('-' if n is None else n):>6}  " + "  ".join(cells))
         problems = [*info.get("issues", [])]
         for t, d in info.get("table_details", {}).items():
@@ -1010,7 +1059,15 @@ def main(argv: list[str] | None = None) -> int:
     print(summarize(path))
     print(f"\ninventory: {path}")
     data = _read_json(path)
-    return 0 if all(o.get("status") == "ok" for o in data["owners"].values()) else 2
+    ok = all(o.get("status") == "ok" for o in data["owners"].values())
+    if ok:
+        try:
+            contract_load_inventory(path)
+            print("module E contract (contracts.load_inventory): OK")
+        except ValueError as exc:
+            print(f"module E contract (contracts.load_inventory): FAILED: {exc}", file=sys.stderr)
+            return 2
+    return 0 if ok else 2
 
 
 if __name__ == "__main__":
