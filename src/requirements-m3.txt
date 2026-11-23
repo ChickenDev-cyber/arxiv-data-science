@@ -1,0 +1,3 @@
+# Module E: Parquet contracts, splitting, ranking and CPU orchestration.
+# Other members add their model/tokenizer dependencies when delivered.
+pyarrow==23.0.1
