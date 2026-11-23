@@ -1089,3 +1089,18 @@ after the range benchmark. See the [setup and API guide](src/arxiv_pipeline/stan
 and [Punkt/spaCy/SaT comparison](reports/module2-tokenizer-comparison.md), including
 known split/merge limitations. Download models explicitly before running the parser;
 no model binaries or corpus files are stored in this repository.
+
+## Milestone 3 — Reference matching và dataset
+
+Module E của Trọng cung cấp pool/split, predictions, export6 bảng Parquet và
+runner kết nối các module thành viên. Xem [contract và hướng dẫn M3](src/arxiv_pipeline/matching/README.md)
+và [notebook CPU](src/m3_colab_runbook.ipynb).
+
+```bash
+python -m pip install -r src/requirements-m3.txt
+PYTHONPATH=src python -m arxiv_pipeline.matching --config /path/run.json --preflight
+PYTHONPATH=src python -m arxiv_pipeline.matching --config /path/run.json
+```
+
+Chế độ `artifacts` dùng labels/scores đã có và chưa tính MRR; chế độ `full` yêu
+cầu A–D được bàn giao. Mỗi owner xuất dataset HF cá nhân từ cùng model/split nhóm.
