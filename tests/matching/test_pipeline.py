@@ -19,7 +19,7 @@ class PipelineTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.c = Corpus(self.root)
         self.pool = make_pool(self.c.inventory,self.c.manual,self.root/'expected-pool.parquet')
         self.labels = self.c.labels(self.pool)
