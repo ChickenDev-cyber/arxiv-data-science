@@ -1095,6 +1095,21 @@ and [Punkt/spaCy/SaT comparison](reports/module2-tokenizer-comparison.md), inclu
 known split/merge limitations. Download models explicitly before running the parser;
 no model binaries or corpus files are stored in this repository.
 
+## Milestone 3 — Reference matching và dataset
+
+Module E của Trọng cung cấp pool/split, predictions, export 6 bảng Parquet và
+runner kết nối các module thành viên. Xem [contract và hướng dẫn M3](src/arxiv_pipeline/matching/README.md)
+và [notebook CPU](src/m3_colab_runbook.ipynb).
+
+```bash
+python -m pip install -r src/requirements-m3.txt
+PYTHONPATH=src python -m arxiv_pipeline.matching --config /path/run.json --preflight
+PYTHONPATH=src python -m arxiv_pipeline.matching --config /path/run.json
+```
+
+Chế độ `artifacts` dùng labels/scores đã có và chưa tính MRR; chế độ `full` yêu
+cầu A–D được bàn giao. Mỗi owner xuất dataset HF cá nhân từ cùng model/split nhóm.
+
 ## Milestone 3 — Module B: Gán nhãn thủ công và Heuristic Matching tự động (Mẫn Nhi)
 
 Module B của Milestone 3 nằm trong `src/arxiv_pipeline/matching/`. Module chịu trách nhiệm:
@@ -1109,17 +1124,22 @@ Module B của Milestone 3 nằm trong `src/arxiv_pipeline/matching/`. Module ch
 src/arxiv_pipeline/matching/
 ├── __init__.py       # Export build_labels, generate_manual_template, validate_labels, run_heuristic_matcher
 ├── labeling.py       # Triển khai toàn bộ Module B: normalization, matcher, merger, quota validator
-└── README.md         # Hướng dẫn chi tiết quy trình gán nhãn
+├── contracts.py      # Module E: Contract definitions, schema validation, inventory loading
+├── splitting.py      # Module E: Pool creation and train/valid/test splitting
+├── export.py         # Module E: Predictions formatting and Parquet export
+├── pipeline.py       # Module E: Pipeline orchestrator
+└── README.md         # Tài liệu contract và hướng dẫn M3
 
 templates/
 ├── manual_labeling_template.csv     # File template mẫu dạng CSV
 └── manual_labeling_template.parquet # File template mẫu dạng Parquet
 
 manual/
-└── man-nhi.parquet   # Bộ nhãn thủ công 5 bài của Mẫn Nhi (881 matched pairs)
+└── man-nhi.parquet   # Bộ nhãn thủ công 5 bài của Mẫn Nhi (882 matched pairs)
 
 tests/
-└── test_matching_labeling.py        # 12 bài unit test tự động (pass 100%)
+├── test_matching_labeling.py        # Unit test tự động Module B
+└── matching/                        # Unit test tự động Module E
 ```
 
 ### Quy định Quota bắt buộc theo Đề bài Milestone 3
