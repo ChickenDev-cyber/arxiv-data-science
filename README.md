@@ -41,6 +41,10 @@ src/
 │       ├── cli.py         # Đọc tham số, gọi T2 và ghi preview JSON
 │       ├── service.py     # Kiểm tra input, chọn status, tính missing_fields
 │       └── api.py         # Client OAI-PMH và đọc arXivRaw XML
+│   └── matching/          # Milestone 3 - Reference Matching
+│       ├── __init__.py    # Xuất public API Module B
+│       ├── labeling.py    # Module B của Mẫn Nhi: gán nhãn manual, heuristic, quota validator
+│       └── README.md      # Hướng dẫn chi tiết quy trình gán nhãn M3
 └── requirements.txt
 tests/
 ├── fixtures/metadata/     # Phản hồi arXivRaw giả lập cho T2
@@ -49,7 +53,8 @@ tests/
 ├── test_references_resume.py
 ├── test_metadata.py
 ├── test_identifiers.py
-└── test_contract_examples.py
+├── test_contract_examples.py
+└── test_matching_labeling.py
 ```
 
 Để đọc T1, bắt đầu từ `contracts.py` để hiểu dữ liệu, rồi xem `config.py` để biết dải ID. Tiếp theo đọc `cli.py` để thấy cách chạy, `service.py` để hiểu luồng xử lý và `api.py` để xem cách giao tiếp với arXiv. `examples.py` dùng khi các thành viên cần đầu ra giả lập để phát triển task của mình.
@@ -1092,7 +1097,7 @@ no model binaries or corpus files are stored in this repository.
 
 ## Milestone 3 — Reference matching và dataset
 
-Module E của Trọng cung cấp pool/split, predictions, export6 bảng Parquet và
+Module E của Trọng cung cấp pool/split, predictions, export 6 bảng Parquet và
 runner kết nối các module thành viên. Xem [contract và hướng dẫn M3](src/arxiv_pipeline/matching/README.md)
 và [notebook CPU](src/m3_colab_runbook.ipynb).
 
@@ -1104,3 +1109,156 @@ PYTHONPATH=src python -m arxiv_pipeline.matching --config /path/run.json
 
 Chế độ `artifacts` dùng labels/scores đã có và chưa tính MRR; chế độ `full` yêu
 cầu A–D được bàn giao. Mỗi owner xuất dataset HF cá nhân từ cùng model/split nhóm.
+
+## Milestone 3 — Module B: Gán nhãn thủ công và Heuristic Matching tự động (Mẫn Nhi)
+
+Module B của Milestone 3 nằm trong `src/arxiv_pipeline/matching/`. Module chịu trách nhiệm:
+1. **Thiết kế template và hướng dẫn gán nhãn thủ công** cho tất cả thành viên trong nhóm (`man-nhi`, `trong`, `huynh-nhi`, `khang`, `hoang`).
+2. **Xây dựng Heuristic Matching tự động** độc lập với model, đóng băng quy tắc trước khi chia tập `train/valid/test`.
+3. **Hợp nhất nhãn, kiểm tra toàn vẹn (integrity) và giám sát quota** theo đúng hợp đồng Milestone 3.
+4. **Cung cấp dữ liệu nhãn thủ công của cá nhân Mẫn Nhi** (`manual/man-nhi.parquet`) đạt đầy đủ quota.
+
+### Vị trí mã nguồn & Tài liệu
+
+```text
+src/arxiv_pipeline/matching/
+├── __init__.py       # Export build_labels, generate_manual_template, validate_labels, run_heuristic_matcher
+├── labeling.py       # Triển khai toàn bộ Module B: normalization, matcher, merger, quota validator
+├── contracts.py      # Module E: Contract definitions, schema validation, inventory loading
+├── splitting.py      # Module E: Pool creation and train/valid/test splitting
+├── export.py         # Module E: Predictions formatting and Parquet export
+├── pipeline.py       # Module E: Pipeline orchestrator
+└── README.md         # Tài liệu contract và hướng dẫn M3
+
+templates/
+├── manual_labeling_template.csv     # File template mẫu dạng CSV
+└── manual_labeling_template.parquet # File template mẫu dạng Parquet
+
+manual/
+└── man-nhi.parquet   # Bộ nhãn thủ công 5 bài của Mẫn Nhi (882 matched pairs)
+
+tests/
+├── test_matching_labeling.py        # Unit test tự động Module B
+└── matching/                        # Unit test tự động Module E
+```
+
+### Quy định Quota bắt buộc theo Đề bài Milestone 3
+
+#### 1. Quota Gán nhãn Thủ công (Manual)
+- **Mỗi thành viên:** Gán thủ công ít nhất **5 bài báo**.
+- **Mỗi bài báo manual:** Tìm được ít nhất **20 cặp đúng** (`label_status == 'matched'`).
+- **Toàn nhóm:** Tối thiểu **25 bài báo** và **500 cặp đúng**.
+- **Nguyên tắc cô lập:** Bài thuộc tập manual **tuyệt đối không được chạy qua heuristic tự động**. Mọi entry của bài manual phải có một dòng trong nhãn (các entry chưa rà soát mang trạng thái `unreviewed`).
+
+#### 2. Quota Gán nhãn Tự động (Automatic Heuristic)
+- **Mỗi thành viên:** Có ít nhất `max(2, ceil(0.10 * (N - M)))` bài báo automatic (với $N$ là tổng số bài chính thức của owner, $M$ là số bài manual).
+- **Phạm vi xử lý:** Bộ heuristic tự động xử lý **mọi entry** của các bài automatic trong pool.
+
+### Schema Chuẩn Bảng Nhãn `labels.parquet`
+
+Tất cả các file nhãn thủ công (`manual/<owner>.parquet`) và file nhãn hợp nhất chung (`labels.parquet`) tuân thủ nghiêm ngặt schema:
+
+| Tên Cột | Kiểu Dữ Liệu | Nullable? | Mô Tả & Giá Trị Hợp Lệ |
+|---|---|---|---|
+| `arxiv_id` | `string` | Không | Mã định danh bài báo chứa trích dẫn (ví dụ: `2501.13787`) |
+| `citation_key` | `string` | Không | Key trích dẫn chuẩn hóa từ bảng BibTeX M2 (ví dụ: `Brown2020LanguageMA`) |
+| `groundtruth_arxiv_id` | `string` | **Có** | Mã arXiv ID của bài được trích dẫn (ví dụ: `2005.14165`). **Bắt buộc có giá trị khi `matched`, và PHẢI là null khi `no_match`, `ambiguous`, `unreviewed`**. |
+| `label_method` | `string` | Không | Phương pháp gán nhãn: `'manual'` hoặc `'automatic'` |
+| `labeler` | `string` | Không | Người gán nhãn (tên owner: `man-nhi`, `trong`,... cho manual; hoặc `'heuristic'` cho automatic) |
+| `label_status` | `string` | Không | Trạng thái nhãn: `'matched'`, `'no_match'`, `'ambiguous'`, `'unreviewed'` |
+| `evidence` | `string` | Không | Bằng chứng/lý do đưa ra quyết định nhãn |
+| `heuristic_version` | `string` | **Có** | Phiên bản heuristic (ví dụ: `'heuristic-v1.0.0'` cho automatic; **bắt buộc null đối với manual**) |
+
+#### Quy tắc logic về tính toàn vẹn:
+1. **Khóa duy nhất:** Cặp `(arxiv_id, citation_key)` là duy nhất trong toàn bộ bảng nhãn.
+2. **Ground Truth thuộc References của chính bài:** Nếu `label_status == 'matched'`, giá trị `groundtruth_arxiv_id` **phải tồn tại trong bảng references** của chính bài `arxiv_id` đó.
+3. **Không coi entry chưa biết là negative:** Chỉ các cặp `matched` mới được coi là ground truth positive cho huấn luyện và đánh giá MRR@5.
+
+### Hướng dẫn Gán nhãn Thủ công cho Thành viên
+
+#### Bước 1: Sinh file template gán nhãn cá nhân
+Chạy lệnh CLI sau để tạo template đã điền sẵn danh sách BibTeX và gợi ý ứng viên:
+
+```bash
+python -m arxiv_pipeline.matching.labeling template \
+    --inventory inventory.json \
+    --pool pool.parquet \
+    --owner <tên-thành-viên> \
+    --output manual/<tên-thành-viên>.parquet
+```
+*(Có thể đổi đuôi `--output manual/<tên-thành-viên>.csv` nếu muốn chỉnh sửa trên Excel/Google Sheets).*
+
+#### Bước 2: Rà soát và xác định nhãn cho từng entry
+Trong file template có các cột thông tin phụ trợ (bắt đầu bằng `_`) gồm `_bib_title`, `_bib_authors`, `_bib_year`, và `_candidate_ref_ids` (danh sách arXiv ID ứng viên tham khảo của bài). Template thủ công hoàn toàn độc lập, không gắn gợi ý heuristic:
+- **Trường hợp Khớp (`matched`):** Khi tiêu đề, tác giả, hoặc arXiv ID của BibTeX tương ứng chính xác với một mục trong danh sách candidate references. Điền:
+  - `label_status`: `matched`
+  - `groundtruth_arxiv_id`: `<ref_arxiv_id>` tương ứng
+  - `evidence`: `manual_verified:<lý do ngắn gọn>`
+- **Trường hợp Không khớp (`no_match`):** Khi bài trích dẫn là sách, website, bài báo tạp chí không có bản arXiv, hoặc không nằm trong danh sách candidate references được crawl từ Semantic Scholar. Điền:
+  - `label_status`: `no_match`
+  - `groundtruth_arxiv_id`: rỗng/null
+  - `evidence`: `manual_verified_no_match`
+- **Trường hợp Nhập nhằng (`ambiguous`):** Khi có từ 2 candidate references rất giống nhau hoặc không đủ thông tin phân định:
+  - `label_status`: `ambiguous`
+  - `groundtruth_arxiv_id`: rỗng/null
+- **Trường hợp Chưa xem (`unreviewed`):**
+  - `label_status`: `unreviewed`
+  - `groundtruth_arxiv_id`: rỗng/null
+
+> **Lưu ý:** Đảm bảo mỗi bài chọn làm manual phải đạt tối thiểu **20 cặp matched**.
+
+### Cơ chế Heuristic Matching Tự động (`heuristic-v1.0.0`)
+
+Module B cung cấp bộ matcher tự động hoàn toàn dựa trên luật và độ tương đồng văn bản, độc lập với model học máy:
+
+1. **Luật 1: Trích xuất trực tiếp arXiv ID (Direct ID Extraction):**
+   - Quét các trường `url`, `doi`, `journal`, `title` của BibTeX để tìm mẫu arXiv ID dạng mới (`\d{4}\.\d{4,5}`) hoặc dạng cũ (`[a-zA-Z\-]+/0\d{6}`).
+   - Khớp trực tiếp với `ref_arxiv_id` trong danh sách references của bài.
+2. **Luật 2: Khớp tiêu đề chuẩn hóa (Exact Normalized Title Match):**
+   - Làm sạch LaTeX commands (`\emph`, `\textbf`, dấu ngoặc nhọn `{}`), đưa về chữ thường, bỏ dấu câu và chuẩn hóa khoảng trắng.
+   - Nếu tiêu đề chuẩn hóa trùng khớp 100% với một reference duy nhất -> `matched`.
+3. **Luật 3: Tương đồng từ vựng & Metadata (Fuzzy Title + Author + Year):**
+   - Tính Jaccard similarity và Token Containment trên tập từ vựng tiêu đề (đã loại bỏ stopwords).
+   - Kiểm tra họ tác giả đầu tiên (`bib_authors[0] in ref_authors`).
+   - Kiểm tra tương thích năm xuất bản ($|year_{bib} - year_{ref}| \le 1$).
+   - Nếu điểm tổng hợp vượt ngưỡng $0.82$ -> `matched`.
+4. **Phát hiện Nhập nhằng (Ambiguity Gate):**
+   - Nếu ứng viên thứ 2 có điểm tương đồng rất sát ứng viên thứ 1 (khoảng cách điểm $< 0.10$) -> gán trạng thái `ambiguous` để tránh false positive.
+
+### Hợp nhất Nhãn & Báo cáo Quota (`build_labels`)
+
+Hàm giao diện theo Contract M3:
+
+```python
+from pathlib import Path
+from arxiv_pipeline.matching.labeling import build_labels
+
+labels_path = build_labels(
+    inventory=Path("inventory.json"),
+    pool=Path("pool.parquet"),
+    manual_dir=Path("manual"),
+    output_dir=Path("runs/matching_labels")
+)
+```
+
+Kết quả tạo ra:
+- `labels.parquet`: Bảng nhãn hợp nhất chuẩn schema PyArrow.
+- `label_report.json`: Báo cáo chi tiết gồm:
+  - Trạng thái kiểm tra Quota từng owner và toàn nhóm.
+  - Số lượng mẫu theo từng `label_status` và `label_method`.
+  - Danh sách cảnh báo/lỗi vi phạm tính toàn vẹn (nếu có).
+
+### Kiểm thử Unit Test
+
+Chạy bộ kiểm thử tự động của Module B từ thư mục gốc repository:
+
+```bash
+PYTHONPATH=src pytest tests/test_matching_labeling.py -v
+```
+
+Trên Windows PowerShell:
+
+```powershell
+$env:PYTHONPATH = "src"
+py -m pytest tests\test_matching_labeling.py -v
+```
