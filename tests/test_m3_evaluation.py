@@ -188,12 +188,19 @@ def test_inventory_multishard_and_relative_path_resolution(tmp_path: Path):
         "cand_1": "refA", "cand_2": "refB", "cand_3": None, "cand_4": None, "cand_5": None,
     }]), good_pred)
 
+    # Scores table covering all references (refA, refB)
+    scores_path = tmp_path / "scores.parquet"
+    pq.write_table(pa.Table.from_pylist([
+        {"arxiv_id": "2503.00001", "citation_key": "k1", "ref_arxiv_id": "refA", "score": 2.0},
+        {"arxiv_id": "2503.00001", "citation_key": "k1", "ref_arxiv_id": "refB", "score": 1.0},
+    ]), scores_path)
+
     out_val = tmp_path / "val_good.json"
     validate_prediction_rules(
         inventory_path=inv_path,
         labels_path=tmp_path / "dummy.parquet",
         split_path=split_path,
-        scores_path=tmp_path / "dummy_scores.parquet",
+        scores_path=scores_path,
         predictions_path=good_pred,
         output_path=out_val,
     )
@@ -252,6 +259,70 @@ def test_paper_without_references_must_reject_non_null_candidates(tmp_path: Path
         rep = json.load(f)
     assert rep["valid"] is False
     assert any("has no valid references" in iss for iss in rep["issues"])
+
+
+def test_validate_prediction_rules_scores_coverage_and_missing_file(tmp_path: Path):
+    """Test scores must cover all references of citing paper and missing scores file is fatal."""
+    inv_path = tmp_path / "inventory.json"
+    with open(inv_path, "w") as f:
+        json.dump({
+            "owners": {
+                "hoang": {
+                    "tables": {
+                        "references": ["refs.parquet"]
+                    }
+                }
+            }
+        }, f)
+
+    pq.write_table(pa.Table.from_pylist([
+        {"arxiv_id": "2503.00001", "ref_arxiv_id": "refA"},
+        {"arxiv_id": "2503.00001", "ref_arxiv_id": "refB"},
+    ]), tmp_path / "refs.parquet")
+
+    split_path = tmp_path / "split.parquet"
+    pq.write_table(pa.Table.from_pylist([{"arxiv_id": "2503.00001", "partition": "valid"}]), split_path)
+
+    pred_path = tmp_path / "pred.parquet"
+    pq.write_table(pa.Table.from_pylist([{
+        "arxiv_id": "2503.00001", "partition": "valid", "citation_key": "k1",
+        "cand_1": "refA", "cand_2": None, "cand_3": None, "cand_4": None, "cand_5": None
+    }]), pred_path)
+
+    # Case 1: Missing scores file entirely
+    out_missing = tmp_path / "out_missing.json"
+    validate_prediction_rules(
+        inventory_path=inv_path,
+        labels_path=tmp_path / "dummy.parquet",
+        split_path=split_path,
+        scores_path=tmp_path / "non_existent_scores.parquet",
+        predictions_path=pred_path,
+        output_path=out_missing,
+    )
+    with open(out_missing) as f:
+        rep_missing = json.load(f)
+    assert rep_missing["valid"] is False
+    assert any("Missing required scores file" in iss for iss in rep_missing["issues"])
+
+    # Case 2: Scores file only covers refA, missing refB
+    partial_scores = tmp_path / "partial_scores.parquet"
+    pq.write_table(pa.Table.from_pylist([
+        {"arxiv_id": "2503.00001", "citation_key": "k1", "ref_arxiv_id": "refA", "score": 1.5}
+    ]), partial_scores)
+
+    out_partial = tmp_path / "out_partial.json"
+    validate_prediction_rules(
+        inventory_path=inv_path,
+        labels_path=tmp_path / "dummy.parquet",
+        split_path=split_path,
+        scores_path=partial_scores,
+        predictions_path=pred_path,
+        output_path=out_partial,
+    )
+    with open(out_partial) as f:
+        rep_partial = json.load(f)
+    assert rep_partial["valid"] is False
+    assert any("Scores incomplete" in iss and "refB" in iss for iss in rep_partial["issues"])
 
 
 def test_validate_prediction_rules_cross_check_labels_and_scores(tmp_path: Path):
@@ -488,3 +559,180 @@ def test_validate_dataset_candidate_not_in_references_and_partition_mismatch(tmp
     assert rep["valid"] is False
     assert any("Partition mismatch" in iss for iss in rep["issues"])
     assert any("does not belong to references" in iss for iss in rep["issues"])
+
+
+def test_validate_dataset_detects_empty_or_missing_predictions_for_split(tmp_path: Path):
+    """Test validate_dataset detects empty predictions table or missing prediction entries for split papers."""
+    ds_dir = tmp_path / "dataset"
+    ds_dir.mkdir()
+
+    pq.write_table(pa.Table.from_pylist([
+        {"arxiv_id": "2503.00001", "title": "P1", "authors": ["A"], "submission_date": "2025", "revised_dates": [], "venue": None}
+    ]), ds_dir / "papers.parquet")
+    pq.write_table(pa.Table.from_pylist([
+        {"arxiv_id": "2503.00001", "ref_arxiv_id": "refA", "ref_title": "T", "ref_authors": ["A"], "ref_submission_date": "2020", "ref_s2_id": "s2"}
+    ]), ds_dir / "references.parquet")
+    pq.write_table(pa.Table.from_pylist([
+        {"element_id": "2503.00001#e1", "arxiv_id": "2503.00001", "kind": "p", "content": "c"}
+    ]), ds_dir / "elements.parquet")
+    pq.write_table(pa.Table.from_pylist([
+        {"arxiv_id": "2503.00001", "version": 1, "element_id": "2503.00001#e1", "parent_id": "root"}
+    ]), ds_dir / "hierarchy.parquet")
+    pq.write_table(pa.Table.from_pylist([
+        {"arxiv_id": "2503.00001", "citation_key": "k1", "entry_type": "article", "title": "T", "authors": ["A"], "year": 2020, "doi": "d", "journal": "j", "url": "u"}
+    ]), ds_dir / "bibtex.parquet")
+
+    # Case 1: predictions table is EMPTY (0 rows)
+    empty_schema = pa.schema([
+        ("arxiv_id", pa.string()), ("partition", pa.string()), ("citation_key", pa.string()),
+        ("groundtruth_arxiv_id", pa.string()), ("cand_1", pa.string()), ("cand_2", pa.string()),
+        ("cand_3", pa.string()), ("cand_4", pa.string()), ("cand_5", pa.string())
+    ])
+    pq.write_table(pa.Table.from_pylist([], schema=empty_schema), ds_dir / "predictions.parquet")
+
+    split_path = tmp_path / "split.parquet"
+    pq.write_table(pa.Table.from_pylist([{"arxiv_id": "2503.00001", "partition": "valid"}]), split_path)
+
+    out_val = tmp_path / "ds_val_empty.json"
+    validate_dataset(
+        dataset_dir=ds_dir,
+        inventory=tmp_path / "inv.json",
+        split=split_path,
+        output_path=out_val,
+    )
+
+    with open(out_val) as f:
+        rep = json.load(f)
+
+    assert rep["valid"] is False
+    assert any("Missing predictions in dataset" in iss and "k1" in iss for iss in rep["issues"])
+
+
+def test_validate_dataset_strict_contract_schema_types(tmp_path: Path):
+    """Test validate_dataset enforces strict schema types (e.g. authors must be list<string>, not list<int/null>)."""
+    ds_dir = tmp_path / "dataset"
+    ds_dir.mkdir()
+
+    # Bad papers: authors is list<int64> instead of list<string>
+    pq.write_table(pa.Table.from_pylist([
+        {"arxiv_id": "2503.00001", "title": "P1", "authors": [123, 456], "submission_date": "2025", "revised_dates": ["2025"], "venue": "V"}
+    ], schema=pa.schema([
+        ("arxiv_id", pa.string()), ("title", pa.string()), ("authors", pa.list_(pa.int64())),
+        ("submission_date", pa.string()), ("revised_dates", pa.list_(pa.string())), ("venue", pa.string())
+    ])), ds_dir / "papers.parquet")
+
+    # Bad bibtex: year is string instead of int
+    pq.write_table(pa.Table.from_pylist([
+        {"arxiv_id": "2503.00001", "citation_key": "k1", "entry_type": "article", "title": "T",
+         "authors": ["A"], "year": "2020", "doi": "d", "journal": "j", "url": "u"}
+    ], schema=pa.schema([
+        ("arxiv_id", pa.string()), ("citation_key", pa.string()), ("entry_type", pa.string()),
+        ("title", pa.string()), ("authors", pa.list_(pa.string())), ("year", pa.string()),
+        ("doi", pa.string()), ("journal", pa.string()), ("url", pa.string())
+    ])), ds_dir / "bibtex.parquet")
+
+    # Other valid tables
+    pq.write_table(pa.Table.from_pylist([
+        {"arxiv_id": "2503.00001", "ref_arxiv_id": "refA", "ref_title": "T", "ref_authors": ["A"], "ref_submission_date": "2020", "ref_s2_id": "s2"}
+    ], schema=pa.schema([
+        ("arxiv_id", pa.string()), ("ref_arxiv_id", pa.string()), ("ref_title", pa.string()),
+        ("ref_authors", pa.list_(pa.string())), ("ref_submission_date", pa.string()), ("ref_s2_id", pa.string())
+    ])), ds_dir / "references.parquet")
+    pq.write_table(pa.Table.from_pylist([
+        {"element_id": "2503.00001#e1", "arxiv_id": "2503.00001", "kind": "p", "content": "c"}
+    ]), ds_dir / "elements.parquet")
+    pq.write_table(pa.Table.from_pylist([
+        {"arxiv_id": "2503.00001", "version": 1, "element_id": "2503.00001#e1", "parent_id": "root"}
+    ]), ds_dir / "hierarchy.parquet")
+    pq.write_table(pa.Table.from_pylist([
+        {"arxiv_id": "2503.00001", "partition": "valid", "citation_key": "k1", "groundtruth_arxiv_id": "refA",
+         "cand_1": "refA", "cand_2": None, "cand_3": None, "cand_4": None, "cand_5": None}
+    ]), ds_dir / "predictions.parquet")
+
+    split_path = tmp_path / "split.parquet"
+    pq.write_table(pa.Table.from_pylist([{"arxiv_id": "2503.00001", "partition": "valid"}]), split_path)
+
+    out_val = tmp_path / "ds_val_types.json"
+    validate_dataset(
+        dataset_dir=ds_dir,
+        inventory=tmp_path / "inv.json",
+        split=split_path,
+        output_path=out_val,
+    )
+
+    with open(out_val) as f:
+        rep = json.load(f)
+
+    assert rep["valid"] is False
+    assert any("must be list<string>, but items are int64" in iss for iss in rep["issues"])
+    assert any("Column 'year' in table bibtex" in iss and "must be integer type, got string" in iss for iss in rep["issues"])
+
+
+def test_validate_dataset_candidate_duplicates_null_padding_and_gt_references(tmp_path: Path):
+    """Test validate_dataset checks duplicate candidates, null padding, and non-null GT belongs to references."""
+    ds_dir = tmp_path / "dataset"
+    ds_dir.mkdir()
+
+    pq.write_table(pa.Table.from_pylist([
+        {"arxiv_id": "2503.00001", "title": "P1", "authors": ["A"], "submission_date": "2025", "revised_dates": ["2025"], "venue": "V"}
+    ], schema=pa.schema([
+        ("arxiv_id", pa.string()), ("title", pa.string()), ("authors", pa.list_(pa.string())),
+        ("submission_date", pa.string()), ("revised_dates", pa.list_(pa.string())), ("venue", pa.string())
+    ])), ds_dir / "papers.parquet")
+
+    pq.write_table(pa.Table.from_pylist([
+        {"arxiv_id": "2503.00001", "ref_arxiv_id": "refA", "ref_title": "T", "ref_authors": ["A"], "ref_submission_date": "2020", "ref_s2_id": "s2"}
+    ], schema=pa.schema([
+        ("arxiv_id", pa.string()), ("ref_arxiv_id", pa.string()), ("ref_title", pa.string()),
+        ("ref_authors", pa.list_(pa.string())), ("ref_submission_date", pa.string()), ("ref_s2_id", pa.string())
+    ])), ds_dir / "references.parquet")
+
+    pq.write_table(pa.Table.from_pylist([
+        {"element_id": "2503.00001#e1", "arxiv_id": "2503.00001", "kind": "p", "content": "c"}
+    ]), ds_dir / "elements.parquet")
+
+    pq.write_table(pa.Table.from_pylist([
+        {"arxiv_id": "2503.00001", "version": 1, "element_id": "2503.00001#e1", "parent_id": "root"}
+    ]), ds_dir / "hierarchy.parquet")
+
+    pq.write_table(pa.Table.from_pylist([
+        {"arxiv_id": "2503.00001", "citation_key": "k1", "entry_type": "article", "title": "T",
+         "authors": ["A"], "year": 2020, "doi": "d", "journal": "j", "url": "u"},
+        {"arxiv_id": "2503.00001", "citation_key": "k2", "entry_type": "article", "title": "T2",
+         "authors": ["A"], "year": 2020, "doi": "d", "journal": "j", "url": "u"}
+    ], schema=pa.schema([
+        ("arxiv_id", pa.string()), ("citation_key", pa.string()), ("entry_type", pa.string()),
+        ("title", pa.string()), ("authors", pa.list_(pa.string())), ("year", pa.int32()),
+        ("doi", pa.string()), ("journal", pa.string()), ("url", pa.string())
+    ])), ds_dir / "bibtex.parquet")
+
+    # k1 has:
+    # 1. Duplicate candidates: cand_1="refA", cand_2="refA"
+    # 2. GT violation: "alien_gt" not in references
+    # k2 has:
+    # 3. Invalid null padding: cand_1=None, cand_2="refA"
+    pq.write_table(pa.Table.from_pylist([
+        {"arxiv_id": "2503.00001", "partition": "valid", "citation_key": "k1", "groundtruth_arxiv_id": "alien_gt",
+         "cand_1": "refA", "cand_2": "refA", "cand_3": None, "cand_4": None, "cand_5": None},
+        {"arxiv_id": "2503.00001", "partition": "valid", "citation_key": "k2", "groundtruth_arxiv_id": "refA",
+         "cand_1": None, "cand_2": "refA", "cand_3": None, "cand_4": None, "cand_5": None}
+    ]), ds_dir / "predictions.parquet")
+
+    split_path = tmp_path / "split.parquet"
+    pq.write_table(pa.Table.from_pylist([{"arxiv_id": "2503.00001", "partition": "valid"}]), split_path)
+
+    out_val = tmp_path / "ds_val_cands_gt.json"
+    validate_dataset(
+        dataset_dir=ds_dir,
+        inventory=tmp_path / "inv.json",
+        split=split_path,
+        output_path=out_val,
+    )
+
+    with open(out_val) as f:
+        rep = json.load(f)
+
+    assert rep["valid"] is False
+    assert any("Duplicate candidates in top 5" in iss for iss in rep["issues"])
+    assert any("Invalid null padding in top 5" in iss for iss in rep["issues"])
+    assert any("groundtruth_arxiv_id 'alien_gt' does not belong to references" in iss for iss in rep["issues"])

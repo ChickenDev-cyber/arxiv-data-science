@@ -7,6 +7,7 @@ and conducts independent auditing on the final 6-table Parquet dataset across al
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -40,6 +41,106 @@ def _collect_table_files(base_dir: Path, tbl_name: str) -> list[Path]:
         return [data_direct_file]
 
     return []
+
+
+CONTRACT_SCHEMAS: dict[str, dict[str, str]] = {
+    "papers": {
+        "arxiv_id": "string",
+        "title": "string",
+        "authors": "list<string>",
+        "submission_date": "string",
+        "revised_dates": "list<string>",
+        "venue": "string",
+    },
+    "references": {
+        "arxiv_id": "string",
+        "ref_arxiv_id": "string",
+        "ref_title": "string",
+        "ref_authors": "list<string>",
+        "ref_submission_date": "string",
+        "ref_s2_id": "string",
+    },
+    "elements": {
+        "element_id": "string",
+        "arxiv_id": "string",
+        "kind": "string",
+        "content": "string",
+    },
+    "hierarchy": {
+        "arxiv_id": "string",
+        "version": "int",
+        "element_id": "string",
+        "parent_id": "string",
+    },
+    "bibtex": {
+        "arxiv_id": "string",
+        "citation_key": "string",
+        "entry_type": "string",
+        "title": "string",
+        "authors": "list<string>",
+        "year": "int",
+        "doi": "string",
+        "journal": "string",
+        "url": "string",
+    },
+    "predictions": {
+        "arxiv_id": "string",
+        "partition": "string",
+        "citation_key": "string",
+        "groundtruth_arxiv_id": "string",
+        "cand_1": "string",
+        "cand_2": "string",
+        "cand_3": "string",
+        "cand_4": "string",
+        "cand_5": "string",
+    },
+}
+
+
+OPTIONAL_NULLABLE_STRING_FIELDS: set[tuple[str, str]] = {
+    ("papers", "venue"),
+    ("bibtex", "doi"),
+    ("bibtex", "journal"),
+    ("bibtex", "url"),
+    ("hierarchy", "parent_id"),
+    ("predictions", "groundtruth_arxiv_id"),
+    ("predictions", "cand_1"),
+    ("predictions", "cand_2"),
+    ("predictions", "cand_3"),
+    ("predictions", "cand_4"),
+    ("predictions", "cand_5"),
+}
+
+
+def _check_field_contract_type(tbl_name: str, col_name: str, field: pa.Field, shard_name: str) -> list[str]:
+    """Verify that an Arrow field strictly matches the contract schema type."""
+    issues: list[str] = []
+    expected_type = CONTRACT_SCHEMAS.get(tbl_name, {}).get(col_name)
+    if not expected_type:
+        return issues
+
+    f_type = field.type
+    if expected_type == "string":
+        is_valid_str = pa.types.is_string(f_type) or pa.types.is_large_string(f_type) or pa.types.is_dictionary(f_type)
+        if not is_valid_str:
+            # Allow pa.null() only if the field is an optional/nullable field where all values are None
+            if (tbl_name, col_name) in OPTIONAL_NULLABLE_STRING_FIELDS and pa.types.is_null(f_type):
+                pass
+            else:
+                issues.append(f"Column '{col_name}' in table {tbl_name} ({shard_name}) must be string type, got {f_type}")
+    elif expected_type == "int":
+        if not pa.types.is_integer(f_type):
+            issues.append(f"Column '{col_name}' in table {tbl_name} ({shard_name}) must be integer type, got {f_type}")
+    elif expected_type == "list<string>":
+        if not (pa.types.is_list(f_type) or pa.types.is_large_list(f_type)):
+            issues.append(f"Column '{col_name}' in table {tbl_name} ({shard_name}) must be list type, got {f_type}")
+        else:
+            val_type = f_type.value_type
+            if not (pa.types.is_string(val_type) or pa.types.is_large_string(val_type)):
+                issues.append(
+                    f"Column '{col_name}' in table {tbl_name} ({shard_name}) must be list<string>, but items are {val_type}"
+                )
+    return issues
 
 
 def validate_prediction_rules(
@@ -208,6 +309,23 @@ def validate_prediction_rules(
                 issues.append(f"Invalid null padding in top 5 for ({aid}, {ck}): {cands}")
                 break
 
+        # Check groundtruth origin: non-null GT must belong to citing paper's references
+        gt = pred.get("groundtruth_arxiv_id")
+        if gt is not None and str(gt).strip() not in {"", "None"}:
+            s_gt = str(gt).strip()
+            if ref_table_loaded:
+                valid_refs = ref_lookup.get(aid, set())
+                if valid_refs and s_gt not in valid_refs:
+                    issues.append(
+                        f"Ground truth violation for ({aid}, {ck}): groundtruth_arxiv_id '{s_gt}' "
+                        f"does not belong to references of citing paper {aid}"
+                    )
+                elif not valid_refs:
+                    issues.append(
+                        f"Ground truth violation for ({aid}, {ck}): paper {aid} has no references, "
+                        f"but groundtruth_arxiv_id is non-null '{s_gt}'"
+                    )
+
     # 6. Cross-check predictions against labels
     if label_lookup:
         for (l_aid, l_ck), l_row in label_lookup.items():
@@ -231,30 +349,47 @@ def validate_prediction_rules(
             if p_aid in paper_partitions and (p_aid, p_ck) not in label_lookup:
                 issues.append(f"Extraneous prediction: entry ({p_aid}, {p_ck}) for split paper {p_aid} not found in labels")
 
-    # 7. Check exhaustive tie-breaking and completeness against scores
+    # 7. Check exhaustive tie-breaking, completeness, and full reference coverage against scores
     scores_path = Path(scores_path)
-    if scores_path.exists():
+    if not scores_path.exists():
+        issues.append(f"Missing required scores file: {scores_path}")
+    else:
         try:
             scores_table = pq.read_table(scores_path)
             scores_rows = scores_table.to_pylist()
             grouped_scores: dict[tuple[str, str], list[tuple[str, float]]] = {}
             for s in scores_rows:
                 k = (str(s["arxiv_id"]), str(s["citation_key"]))
-                grouped_scores.setdefault(k, []).append((str(s["ref_arxiv_id"]), float(s["score"])))
+                score_val = float(s["score"])
+                if math.isnan(score_val) or math.isinf(score_val):
+                    issues.append(f"Non-finite score value for ({k[0]}, {k[1]}, {s.get('ref_arxiv_id')}): {score_val}")
+                grouped_scores.setdefault(k, []).append((str(s["ref_arxiv_id"]), score_val))
 
-            # Check that every prediction entry has corresponding scores if the paper has references
+            # Check that scores cover ALL references of the citing paper for every prediction entry
             for (p_aid, p_ck), p_row in pred_lookup.items():
                 p_cands = [p_row.get(f"cand_{i}") for i in range(1, 6)]
                 has_cands = any(c is not None for c in p_cands)
-                paper_has_refs = bool(ref_lookup.get(p_aid))
+                expected_refs = ref_lookup.get(p_aid, set()) if ref_table_loaded else set()
 
-                if paper_has_refs or has_cands:
+                if expected_refs or has_cands:
                     if (p_aid, p_ck) not in grouped_scores:
                         issues.append(
                             f"Missing scores: entry ({p_aid}, {p_ck}) in predictions has no candidate scores in {scores_path.name}"
                         )
                     else:
-                        scored_refs = set(cs[0] for cs in grouped_scores[(p_aid, p_ck)])
+                        cand_score_list = grouped_scores[(p_aid, p_ck)]
+                        scored_refs = set(cs[0] for cs in cand_score_list)
+
+                        # Verify full coverage: EVERY reference of the citing paper must have a score
+                        if expected_refs:
+                            missing_refs = expected_refs - scored_refs
+                            if missing_refs:
+                                issues.append(
+                                    f"Scores incomplete for ({p_aid}, {p_ck}): {len(missing_refs)} references of citing paper "
+                                    f"{p_aid} have no score in {scores_path.name} (missing: {sorted(list(missing_refs))[:3]})"
+                                )
+
+                        # Verify that all predicted top 5 candidates have scores
                         for c in p_cands:
                             if c is not None and str(c) not in scored_refs:
                                 issues.append(
@@ -336,9 +471,10 @@ def validate_dataset(
 
     # Store sets for full relational and foreign key validation
     paper_ids: set[str] = set()
-    element_keys: set[tuple[str, str]] = set()  # (arxiv_id, element_id)
-    bibtex_keys: set[tuple[str, str]] = set()   # (arxiv_id, citation_key)
-    paper_refs: dict[str, set[str]] = {}        # arxiv_id -> set(ref_arxiv_id)
+    element_keys: set[tuple[str, str]] = set()   # (arxiv_id, element_id)
+    bibtex_keys: set[tuple[str, str]] = set()    # (arxiv_id, citation_key)
+    seen_pred_pks: set[tuple[str, str]] = set()  # (arxiv_id, citation_key)
+    paper_refs: dict[str, set[str]] = {}         # arxiv_id -> set(ref_arxiv_id)
 
     # 1. Audit each table across all its shards
     for tbl_name in required_tables:
@@ -357,7 +493,13 @@ def validate_dataset(
             first_schema = first_pf.schema_arrow
             field_names = first_schema.names
 
-            # Check that all shards have uniform column names AND uniform data types
+            # Verify presence of all required columns from contract
+            expected_cols = CONTRACT_SCHEMAS.get(tbl_name, {})
+            for col in expected_cols:
+                if col not in field_names:
+                    all_issues.append(f"Table {tbl_name} missing required contract column '{col}'")
+
+            # Check that all shards have uniform column names, uniform data types, and match CONTRACT_SCHEMAS
             for s in shards:
                 pf = pq.ParquetFile(s)
                 total_rows += pf.metadata.num_rows
@@ -373,6 +515,9 @@ def validate_dataset(
                                 f"Inconsistent data type for column '{col}' in table {tbl_name} ({s.name}): "
                                 f"expected {t1}, got {t2}"
                             )
+                        # Strict contract type validation for each field on every shard
+                        field_obj = s_schema.field(col)
+                        all_issues.extend(_check_field_contract_type(tbl_name, col, field_obj, s.name))
 
             table_reports[tbl_name] = {
                 "exists": True,
@@ -381,19 +526,8 @@ def validate_dataset(
                 "columns": field_names,
             }
 
-            # Table-specific schema, list types, and cross-shard primary key audits
+            # Table-specific cross-shard primary key and referential audits
             if tbl_name == "papers":
-                for col in ["arxiv_id", "title", "authors", "submission_date", "revised_dates", "venue"]:
-                    if col not in field_names:
-                        all_issues.append(f"papers table missing column '{col}'")
-
-                for list_col in ["authors", "revised_dates"]:
-                    if list_col in field_names:
-                        f_field = first_schema.field(list_col)
-                        if not pa.types.is_list(f_field.type):
-                            all_issues.append(f"papers column '{list_col}' must be list type, got {f_field.type}")
-
-                # Accumulate and check cross-shard uniqueness of arxiv_id
                 seen_paper_pks: set[str] = set()
                 for s in shards:
                     t = pq.read_table(s, columns=["arxiv_id"])
@@ -409,15 +543,6 @@ def validate_dataset(
                         paper_ids.add(s_aid)
 
             elif tbl_name == "references":
-                for col in ["arxiv_id", "ref_arxiv_id", "ref_title", "ref_authors", "ref_submission_date", "ref_s2_id"]:
-                    if col not in field_names:
-                        all_issues.append(f"references table missing column '{col}'")
-
-                if "ref_authors" in field_names:
-                    f_field = first_schema.field(ref_authors := "ref_authors")
-                    if not pa.types.is_list(f_field.type):
-                        all_issues.append(f"references column 'ref_authors' must be list type, got {f_field.type}")
-
                 seen_ref_pks: set[tuple[str, str]] = set()
                 for s in shards:
                     t = pq.read_table(s, columns=["arxiv_id", "ref_arxiv_id"])
@@ -431,10 +556,6 @@ def validate_dataset(
                         paper_refs.setdefault(aid, set()).add(ref_aid)
 
             elif tbl_name == "elements":
-                for col in ["element_id", "arxiv_id", "kind", "content"]:
-                    if col not in field_names:
-                        all_issues.append(f"elements table missing column '{col}'")
-
                 seen_elem_pks: set[tuple[str, str]] = set()
                 for s in shards:
                     t = pq.read_table(s, columns=["arxiv_id", "element_id"])
@@ -448,21 +569,9 @@ def validate_dataset(
                         element_keys.add(k)
 
             elif tbl_name == "hierarchy":
-                for col in ["arxiv_id", "version", "element_id", "parent_id"]:
-                    if col not in field_names:
-                        all_issues.append(f"hierarchy table missing column '{col}'")
+                pass
 
             elif tbl_name == "bibtex":
-                # Check all 9 columns strictly according to assignment spec
-                for col in ["arxiv_id", "citation_key", "entry_type", "title", "authors", "year", "doi", "journal", "url"]:
-                    if col not in field_names:
-                        all_issues.append(f"bibtex table missing column '{col}'")
-
-                if "authors" in field_names:
-                    f_field = first_schema.field("authors")
-                    if not pa.types.is_list(f_field.type):
-                        all_issues.append(f"bibtex column 'authors' must be list type, got {f_field.type}")
-
                 seen_bibtex_pks: set[tuple[str, str]] = set()
                 for s in shards:
                     t = pq.read_table(s, columns=["arxiv_id", "citation_key"])
@@ -480,7 +589,6 @@ def validate_dataset(
                     if col not in field_names:
                         all_issues.append(f"predictions table missing column '{col}'")
 
-                seen_pred_pks: set[tuple[str, str]] = set()
                 for s in shards:
                     t = pq.read_table(s)
                     for row in t.to_pylist():
@@ -506,11 +614,29 @@ def validate_dataset(
                                     f"Paper {aid} in predictions ({s.name}) is not in frozen split.parquet"
                                 )
 
-                        # Vấn đề 3: Verify candidate belongs to references of citing paper
+                        # Verify candidates and groundtruth constraints
                         cands = [row.get(f"cand_{i}") for i in range(1, 6)]
                         non_null_cands = [str(c) for c in cands if c is not None]
                         valid_refs = paper_refs.get(aid, set())
 
+                        # 1. Duplicate candidates in top 5
+                        if len(non_null_cands) != len(set(non_null_cands)):
+                            all_issues.append(
+                                f"Duplicate candidates in top 5 in predictions ({s.name}) for ({aid}, {ck}): {non_null_cands}"
+                            )
+
+                        # 2. Null padding consistency
+                        seen_none = False
+                        for c in cands:
+                            if c is None:
+                                seen_none = True
+                            elif seen_none:
+                                all_issues.append(
+                                    f"Invalid null padding in top 5 in predictions ({s.name}) for ({aid}, {ck}): {cands}"
+                                )
+                                break
+
+                        # 3. Candidate origin check
                         if not valid_refs:
                             if non_null_cands:
                                 all_issues.append(
@@ -522,6 +648,21 @@ def validate_dataset(
                                     all_issues.append(
                                         f"Candidate {c} in predictions ({s.name}) for ({aid}, {ck}) does not belong to references of paper {aid}"
                                     )
+
+                        # 4. Non-null groundtruth must belong to references of citing paper
+                        gt = row.get("groundtruth_arxiv_id")
+                        if gt is not None and str(gt).strip() not in {"", "None"}:
+                            s_gt = str(gt).strip()
+                            if valid_refs and s_gt not in valid_refs:
+                                all_issues.append(
+                                    f"Ground truth violation in predictions ({s.name}) for ({aid}, {ck}): "
+                                    f"groundtruth_arxiv_id '{s_gt}' does not belong to references of citing paper {aid}"
+                                )
+                            elif not valid_refs:
+                                all_issues.append(
+                                    f"Ground truth violation in predictions ({s.name}) for ({aid}, {ck}): "
+                                    f"paper {aid} has no references, but groundtruth_arxiv_id is non-null '{s_gt}'"
+                                )
 
         except Exception as e:
             all_issues.append(f"Error auditing table {tbl_name}: {e}")
@@ -579,6 +720,19 @@ def validate_dataset(
                         break
             except Exception:
                 pass
+
+    # 3. Check predictions completeness: every bibtex citation of a split paper MUST have a prediction row
+    if split_partitions:
+        split_citations = {(aid, ck) for (aid, ck) in bibtex_keys if aid in split_partitions}
+        if split_citations:
+            missing_preds = split_citations - seen_pred_pks
+            if missing_preds:
+                all_issues.append(
+                    f"Missing predictions in dataset: {len(missing_preds)} citation entries belonging to split papers "
+                    f"have no corresponding row in predictions table (e.g. {sorted(list(missing_preds))[:5]})"
+                )
+        elif not bibtex_keys:
+            all_issues.append("Dataset audit warning: No bibtex entries found to match against split")
 
     audit_result = {
         "valid": len(all_issues) == 0,
