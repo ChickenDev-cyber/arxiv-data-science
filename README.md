@@ -1169,7 +1169,7 @@ python -m arxiv_pipeline.matching.labeling template \
 *(Có thể đổi đuôi `--output manual/<tên-thành-viên>.csv` nếu muốn chỉnh sửa trên Excel/Google Sheets).*
 
 #### Bước 2: Rà soát và xác định nhãn cho từng entry
-Trong file template có các cột thông tin phụ trợ (bắt đầu bằng `_`) như `_bib_title`, `_bib_authors`, `_candidate_ref_ids`, `_suggested_arxiv_id`:
+Trong file template có các cột thông tin phụ trợ (bắt đầu bằng `_`) gồm `_bib_title`, `_bib_authors`, `_bib_year`, và `_candidate_ref_ids` (danh sách arXiv ID ứng viên tham khảo của bài). Template thủ công hoàn toàn độc lập, không gắn gợi ý heuristic:
 - **Trường hợp Khớp (`matched`):** Khi tiêu đề, tác giả, hoặc arXiv ID của BibTeX tương ứng chính xác với một mục trong danh sách candidate references. Điền:
   - `label_status`: `matched`
   - `groundtruth_arxiv_id`: `<ref_arxiv_id>` tương ứng

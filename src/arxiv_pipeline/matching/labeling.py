@@ -15,6 +15,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -52,10 +53,15 @@ _PUNCT_RE = re.compile(r"[^a-z0-9\s]")
 _WHITESPACE_RE = re.compile(r"\s+")
 
 # arXiv ID patterns:
-# New style: e.g. 2106.09685, 2501.13787 (optional version v1, v2)
-# Old style: e.g. math/0501234, cs.CV/0102003
+# New style: e.g. 2106.09685, 2501.13787, 0704.1234
+# Old style: e.g. hep-th/0608012, math/0501234, cs.CV/0102003
 _ARXIV_NEW_RE = re.compile(r"\b(\d{4}\.\d{4,5})(?:v\d+)?\b", re.IGNORECASE)
 _ARXIV_OLD_RE = re.compile(r"\b([a-zA-Z\-]+(?:\.[a-zA-Z]{2})?/\d{7})(?:v\d+)?\b", re.IGNORECASE)
+
+_ROMAN_MAP = {
+    "i": "1", "ii": "2", "iii": "3", "iv": "4", "v": "5",
+    "vi": "6", "vii": "7", "viii": "8", "ix": "9", "x": "10"
+}
 
 
 def normalize_title(title: Optional[str]) -> str:
@@ -77,7 +83,7 @@ def normalize_title(title: Optional[str]) -> str:
 def extract_arxiv_id(text: Optional[str]) -> Optional[str]:
     """Extract and normalize an arXiv ID from text (URL, DOI, journal, or title).
     
-    Returns clean arXiv ID without version suffix (e.g. '2106.09685').
+    Returns clean arXiv ID without version suffix (e.g. '2106.09685', 'hep-th/0608012').
     """
     if not text or not isinstance(text, str):
         return None
@@ -90,13 +96,42 @@ def extract_arxiv_id(text: Optional[str]) -> Optional[str]:
     return None
 
 
-def get_title_tokens(norm_title: str) -> Set[str]:
-    """Extract set of informative title tokens (ignoring short stopwords)."""
+def extract_part_spec(title: Optional[str]) -> Optional[str]:
+    """Extract multi-part paper numeral ('Part I', 'Part II', 'Part 1', 'Part 2', etc.).
+    
+    Returns normalized arabic numeral string (e.g. '1', '2') or None.
+    """
+    if not title or not isinstance(title, str):
+        return None
+    # Check explicit "Part I", "Part 2", "Paper I", "Pt. 1"
+    m = re.search(r"\b(?:part|paper|pt\.?)\s*([ivx]+|\d+)\b", title, re.IGNORECASE)
+    if m:
+        val = m.group(1).lower()
+        return _ROMAN_MAP.get(val, val)
+    # Check ending numeral like "Title: I" or "Title - II" or "Title, Part 1"
+    m = re.search(r"[:\-,]\s*([ivx]+|\d+)\s*$", title, re.IGNORECASE)
+    if m:
+        val = m.group(1).lower()
+        return _ROMAN_MAP.get(val, val)
+    # Check roman numeral in parentheses like "(I)", "(II)"
+    m = re.search(r"\(([ivx]+|\d+)\)", title, re.IGNORECASE)
+    if m:
+        val = m.group(1).lower()
+        return _ROMAN_MAP.get(val, val)
+    return None
+
+
+def get_title_tokens(title: str) -> Set[str]:
+    """Extract set of informative title tokens (preserving hyphenated compound tokens)."""
+    if not title:
+        return set()
+    # Extract words, preserving hyphenated terms like lora-fa, gpt-4
+    words = re.findall(r"\b[a-z0-9]+(?:-[a-z0-9]+)*\b", title.lower())
     stopwords = {
         "a", "an", "the", "and", "or", "of", "in", "on", "at", "to", "for", "with",
         "by", "from", "via", "is", "are", "was", "were", "using", "based", "towards"
     }
-    return {w for w in norm_title.split() if len(w) > 2 and w not in stopwords}
+    return {w for w in words if len(w) > 2 and w not in stopwords}
 
 
 def jaccard_similarity(set1: Set[str], set2: Set[str]) -> float:
@@ -116,28 +151,51 @@ def token_containment(set_sub: Set[str], set_super: Set[str]) -> float:
 
 
 def extract_author_lastnames(authors: Any) -> List[str]:
-    """Extract lowercased last names from author list or string."""
-    if not authors:
+    """Extract lowercased last names safely from any authors representation.
+    
+    Handles: list, tuple, np.ndarray, pd.Series, JSON string, or string separated by 'and'/comma.
+    """
+    if authors is None:
         return []
-    names = []
+    if isinstance(authors, float) and pd.isna(authors):
+        return []
+
+    # If it's a JSON array string e.g. '["Emparan, Roberto", "Reall, Harvey S"]'
     if isinstance(authors, str):
-        # Could be "Author One and Author Two" or comma-separated
+        stripped = authors.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            try:
+                authors = json.loads(stripped)
+            except Exception:
+                pass
+
+    if isinstance(authors, str):
         raw_list = re.split(r"\s+and\s+|,|;", authors)
-    elif isinstance(authors, list):
-        raw_list = authors
+    elif isinstance(authors, (list, tuple, np.ndarray, pd.Series)):
+        raw_list = list(authors)
+    elif hasattr(authors, "__iter__") and not isinstance(authors, (bytes, dict)):
+        raw_list = list(authors)
     else:
         return []
 
-    for name in raw_list:
-        if not isinstance(name, str) or not name.strip():
+    names: List[str] = []
+    for item in raw_list:
+        if item is None or (isinstance(item, float) and pd.isna(item)):
             continue
-        # Clean LaTeX
+        if isinstance(item, dict):
+            # Dict representation like {"name": "Emparan, Roberto"} or Semantic Scholar author dict
+            name = str(item.get("name", ""))
+        elif isinstance(item, str):
+            name = item
+        else:
+            name = str(item)
+
         clean = _BRACES_RE.sub("", name).strip()
-        # If "Last, First"
+        if not clean:
+            continue
         if "," in clean:
             last = clean.split(",")[0].strip().lower()
         else:
-            # "First Middle Last" -> Last
             parts = clean.split()
             last = parts[-1].strip().lower() if parts else ""
         last_clean = _PUNCT_RE.sub("", last)
@@ -148,7 +206,7 @@ def extract_author_lastnames(authors: Any) -> List[str]:
 
 def parse_year(val: Any) -> Optional[int]:
     """Extract integer year from string, int, or ISO date."""
-    if val is None or pd.isna(val):
+    if val is None or (isinstance(val, float) and pd.isna(val)):
         return None
     s = str(val).strip()
     m = re.search(r"\b(19\d\d|20\d\d)\b", s)
@@ -182,7 +240,7 @@ def match_bibtex_entry_to_candidates(
         return "no_match", None, "no_candidates_available"
 
     # Step 1: Direct arXiv ID extraction from BibTeX metadata
-    # (url, doi, journal, title, citation_key)
+    # (url, doi, journal, title)
     extracted_arxiv_id = (
         extract_arxiv_id(bib_row.get("url"))
         or extract_arxiv_id(bib_row.get("doi"))
@@ -193,7 +251,7 @@ def match_bibtex_entry_to_candidates(
     if extracted_arxiv_id:
         matched_by_id = [
             r for r in candidate_refs
-            if r.get("ref_arxiv_id") == extracted_arxiv_id
+            if str(r.get("ref_arxiv_id")) == str(extracted_arxiv_id)
         ]
         if len(matched_by_id) == 1:
             return (
@@ -207,21 +265,37 @@ def match_bibtex_entry_to_candidates(
                 matched_by_id[0]["ref_arxiv_id"],
                 f"direct_arxiv_id_match_dedup:{extracted_arxiv_id}"
             )
+        else:
+            # CRITICAL RULE: When BibTeX explicitly cites an arXiv ID, but that ID
+            # does not exist in the crawled references of this paper, DO NOT fall back
+            # to title matching to pick a different paper!
+            return (
+                "no_match",
+                None,
+                f"explicit_arxiv_id_not_in_references:{extracted_arxiv_id}"
+            )
 
     # Step 2: Title-based & Metadata Matching
-    norm_bib_title = normalize_title(bib_row.get("title"))
-    bib_tokens = get_title_tokens(norm_bib_title)
+    raw_bib_title = str(bib_row.get("title", "")) if bib_row.get("title") else ""
+    norm_bib_title = normalize_title(raw_bib_title)
+    bib_tokens = get_title_tokens(raw_bib_title)
     bib_authors = extract_author_lastnames(bib_row.get("authors"))
     bib_year = parse_year(bib_row.get("year"))
+    bib_part = extract_part_spec(raw_bib_title)
 
     if not norm_bib_title:
         return "no_match", None, "missing_title"
 
-    # Check exact normalized title match
+    # Step 2.1: Check exact normalized title match
     exact_title_matches = []
     for ref in candidate_refs:
-        norm_ref_title = normalize_title(ref.get("ref_title"))
+        ref_title_raw = str(ref.get("ref_title", "")) if ref.get("ref_title") else ""
+        norm_ref_title = normalize_title(ref_title_raw)
         if norm_ref_title and norm_ref_title == norm_bib_title:
+            # Check part numeral consistency
+            ref_part = extract_part_spec(ref_title_raw)
+            if bib_part and ref_part and bib_part != ref_part:
+                continue
             exact_title_matches.append(ref)
 
     if len(exact_title_matches) == 1:
@@ -244,25 +318,55 @@ def match_bibtex_entry_to_candidates(
         return "no_match", None, "insufficient_title_tokens_for_fuzzy"
 
     # Step 3: Fuzzy / Token Similarity with Author & Year validation
+    # Extract hyphenated compound tokens (e.g. lora-fa, resnet-50) from bib title
+    bib_compounds = {w for w in bib_tokens if "-" in w}
+
     scored_candidates = []
     for ref in candidate_refs:
-        norm_ref_title = normalize_title(ref.get("ref_title"))
-        ref_tokens = get_title_tokens(norm_ref_title)
+        ref_title_raw = str(ref.get("ref_title", "")) if ref.get("ref_title") else ""
+        ref_part = extract_part_spec(ref_title_raw)
+
+        # Multi-part veto: Part I vs Part II must NEVER match!
+        if (bib_part or ref_part) and (bib_part != ref_part):
+            continue
+
+        ref_tokens = get_title_tokens(ref_title_raw)
         if not ref_tokens:
             continue
 
+        # Compound token veto: e.g. LoRA-FA vs LoRA
+        ref_compounds = {w for w in ref_tokens if "-" in w}
+        if bib_compounds != ref_compounds:
+            # If one title has a compound model variant like 'lora-fa' that differs from ref
+            mismatch_compound = False
+            for c in bib_compounds:
+                base = c.split("-")[0]
+                if base in ref_tokens and c not in ref_tokens:
+                    mismatch_compound = True
+                    break
+            for c in ref_compounds:
+                base = c.split("-")[0]
+                if base in bib_tokens and c not in bib_tokens:
+                    mismatch_compound = True
+                    break
+            if mismatch_compound:
+                continue
+
         jaccard = jaccard_similarity(bib_tokens, ref_tokens)
-        containment = max(
-            token_containment(bib_tokens, ref_tokens),
-            token_containment(ref_tokens, bib_tokens),
-        )
-        title_score = max(jaccard, containment * 0.9)
+        contain_bib_in_ref = token_containment(bib_tokens, ref_tokens)
+        contain_ref_in_bib = token_containment(ref_tokens, bib_tokens)
+        min_contain = min(contain_bib_in_ref, contain_ref_in_bib)
+
+        # Both titles must contain a substantial fraction of each other
+        if min_contain < 0.65 or jaccard < 0.65:
+            continue
+
+        title_score = (jaccard + min_contain) / 2.0
 
         # Check author agreement
         ref_authors = extract_author_lastnames(ref.get("ref_authors"))
         author_match = False
         if bib_authors and ref_authors:
-            # First author match or common author
             if bib_authors[0] in ref_authors or ref_authors[0] in bib_authors:
                 author_match = True
             elif set(bib_authors) & set(ref_authors):
@@ -388,8 +492,10 @@ def generate_manual_template(
     """Generate a manual labeling template for a specific owner.
     
     Pre-populates all BibTeX entries for the owner's manual papers in the pool,
-    along with candidate references and hints, so the owner can label accurately.
+    along with candidate references. Does NOT run heuristic matching or suggest
+    labels, preserving unbiased manual labeling.
     """
+    inventory_path = Path(inventory_path)
     inventory_data = load_inventory(inventory_path)
     pool_df = pd.read_parquet(pool_path)
 
@@ -402,13 +508,17 @@ def generate_manual_template(
     if not owner_manual_papers:
         raise ValueError(f"No manual papers found for owner '{owner}' in pool '{pool_path}'")
 
-    bibtex_df = load_table_from_inventory(inventory_data, "bibtex", owner=owner)
+    bibtex_df = load_table_from_inventory(
+        inventory_data, "bibtex", inventory_dir=inventory_path.parent, owner=owner
+    )
     owner_bib = bibtex_df[bibtex_df["arxiv_id"].isin(owner_manual_papers)].copy()
 
-    refs_df = load_table_from_inventory(inventory_data, "references", owner=owner)
+    refs_df = load_table_from_inventory(
+        inventory_data, "references", inventory_dir=inventory_path.parent, owner=owner
+    )
     owner_refs = refs_df[refs_df["arxiv_id"].isin(owner_manual_papers)].copy()
 
-    # Create candidate hints map
+    # Create candidate ref list map
     refs_by_paper: Dict[str, List[Dict[str, Any]]] = {}
     for r in owner_refs.to_dict(orient="records"):
         refs_by_paper.setdefault(str(r["arxiv_id"]), []).append(r)
@@ -419,10 +529,7 @@ def generate_manual_template(
         ckey = str(bib["citation_key"])
         cands = refs_by_paper.get(paper_id, [])
 
-        # Provide a candidate suggestion hint to ease manual review
-        status, suggested_gt, hint_ev = match_bibtex_entry_to_candidates(bib, cands)
-
-        # Default template row: unreviewed
+        # Default template row: unreviewed, NO heuristic suggestions
         template_rows.append({
             "arxiv_id": paper_id,
             "citation_key": ckey,
@@ -436,9 +543,7 @@ def generate_manual_template(
             "_bib_title": bib.get("title", ""),
             "_bib_authors": str(bib.get("authors", "")),
             "_bib_year": str(bib.get("year", "")),
-            "_suggested_arxiv_id": suggested_gt if status == "matched" else "",
-            "_suggested_hint": hint_ev,
-            "_candidate_ref_ids": ",".join([r.get("ref_arxiv_id", "") for r in cands]),
+            "_candidate_ref_ids": ",".join([str(r.get("ref_arxiv_id", "")) for r in cands]),
         })
 
     res_df = pd.DataFrame(template_rows)
@@ -469,7 +574,9 @@ def validate_labels(
     
     Verifies:
     1. Schema compliance (required columns, non-null fields, allowed values).
-    2. Key uniqueness: (arxiv_id, citation_key) must be unique.
+    2. Key uniqueness and conflict check:
+       (arxiv_id, citation_key) must be unique. Duplicate keys with conflicting GT
+       or different methods are strictly flagged as fatal errors.
     3. Completeness: every paper in the pool must have its entries represented.
     4. Isolation: manual papers must have label_method == 'manual' and heuristic_version is null.
     5. Ground truth integrity:
@@ -478,7 +585,8 @@ def validate_labels(
     6. Quotas:
        - Manual quota: each owner >= 5 manual papers, each paper >= 20 matched pairs.
        - Group manual quota: >= 25 papers, >= 500 matched pairs.
-       - Automatic quota: each owner >= max(2, ceil(0.10 * (N - M))) papers.
+       - Automatic quota: each owner >= max(2, ceil(0.10 * (N - M))) papers (read from key N).
+         Failing automatic quota marks validation as NOT PASSED.
     """
     errors: List[str] = []
     warnings: List[str] = []
@@ -508,10 +616,21 @@ def validate_labels(
     if invalid_statuses:
         errors.append(f"Invalid label_status values: {invalid_statuses}")
 
-    # 2. Key uniqueness
-    dup_keys = labels_df.duplicated(subset=["arxiv_id", "citation_key"]).sum()
-    if dup_keys > 0:
-        errors.append(f"Found {dup_keys} duplicate (arxiv_id, citation_key) pairs in labels")
+    # 2. Key uniqueness and Conflict check
+    dup_mask = labels_df.duplicated(subset=["arxiv_id", "citation_key"], keep=False)
+    if dup_mask.any():
+        conflicts = []
+        for (pid, ckey), group in labels_df[dup_mask].groupby(["arxiv_id", "citation_key"]):
+            gts = set(group["groundtruth_arxiv_id"].dropna().unique())
+            methods = set(group["label_method"].unique())
+            statuses = set(group["label_status"].unique())
+            conflicts.append(
+                f"({pid}, {ckey}): methods={methods}, statuses={statuses}, groundtruths={gts}"
+            )
+        errors.append(
+            f"Found {len(conflicts)} duplicate/conflicting (arxiv_id, citation_key) entries: "
+            + "; ".join(conflicts[:5])
+        )
 
     # Build reference lookup: (arxiv_id, ref_arxiv_id)
     ref_lookup: Set[Tuple[str, str]] = set()
@@ -545,10 +664,8 @@ def validate_labels(
 
     # 4. Isolation: manual papers must not be processed by automatic heuristic
     pool_methods = dict(zip(pool_df["arxiv_id"], pool_df["label_method"]))
-    pool_owners = dict(zip(pool_df["arxiv_id"], pool_df["owner"]))
 
     manual_papers_in_pool = {p for p, m in pool_methods.items() if m == "manual"}
-    automatic_papers_in_pool = {p for p, m in pool_methods.items() if m == "automatic"}
 
     # Check if any manual paper was labeled as automatic
     auto_on_manual = labels_df[
@@ -616,28 +733,30 @@ def validate_labels(
             "matched_per_paper": matched_counts_per_paper,
         }
 
-    # Automatic Quotas
+    # Automatic Quotas (strict check reading N)
     for owner in owners_in_pool:
         owner_pool_auto = pool_df[
             (pool_df["owner"] == owner) & (pool_df["label_method"] == "automatic")
         ]["arxiv_id"].unique()
         auto_count = len(owner_pool_auto)
 
-        # Formula: max(2, ceil(0.10 * (N - M)))
+        # Read N from official_counts dict or default 5000
         n_official = official_counts.get(owner, 5000) if official_counts else 5000
         m_manual = len(pool_df[(pool_df["owner"] == owner) & (pool_df["label_method"] == "manual")])
         required_auto = max(2, math.ceil(0.10 * (n_official - m_manual)))
 
         auto_passed = auto_count >= required_auto
         if not auto_passed:
-            # If dataset is a sample run, we record warning or error accordingly
-            warnings.append(
-                f"Owner '{owner}' automatic papers count = {auto_count} (full quota target: {required_auto})"
+            quota_report["automatic"]["passed"] = False
+            errors.append(
+                f"Owner '{owner}' automatic papers count = {auto_count} "
+                f"(FAILED QUOTA: required at least {required_auto} from formula max(2, ceil(0.10 * (N - M))) with N={n_official}, M={m_manual})"
             )
 
         quota_report["automatic"]["by_owner"][owner] = {
             "n_automatic_papers": auto_count,
             "required_papers": required_auto,
+            "n_official_N": n_official,
             "passed": auto_passed,
         }
 
@@ -671,13 +790,31 @@ def load_inventory(inventory_input: Path | dict) -> dict:
         return json.load(f)
 
 
+def _resolve_shard_path(raw_path: str | Path, base_dir: Optional[Path] = None) -> Path:
+    """Resolve a shard path against base directory if relative and not found at cwd."""
+    p = Path(raw_path)
+    if p.is_absolute() and p.exists():
+        return p
+    if p.exists():
+        return p.resolve()
+    if base_dir:
+        cand = (base_dir / p).resolve()
+        if cand.exists():
+            return cand
+        return cand
+    return p
+
+
 def load_table_from_inventory(
     inventory_data: dict,
     table_name: str,
+    inventory_dir: Optional[Path] = None,
     owner: Optional[str] = None,
 ) -> pd.DataFrame:
-    """Load a table DataFrame from inventory paths."""
+    """Load a table DataFrame from inventory paths, verifying all shards exist."""
     dfs = []
+    shard_paths: List[str] = []
+
     # Structure 1: inventory["owners"][owner]["tables"][table_name]
     if "owners" in inventory_data:
         owners_dict = inventory_data["owners"]
@@ -687,32 +824,31 @@ def load_table_from_inventory(
                 paths = owners_dict[o]["tables"].get(table_name, [])
                 if isinstance(paths, str):
                     paths = [paths]
-                for p in paths:
-                    p_path = Path(p)
-                    if p_path.exists():
-                        dfs.append(pd.read_parquet(p_path))
+                shard_paths.extend(paths)
 
     # Structure 2: inventory["tables"][table_name]
     elif "tables" in inventory_data:
         paths = inventory_data["tables"].get(table_name, [])
         if isinstance(paths, str):
             paths = [paths]
-        for p in paths:
-            p_path = Path(p)
-            if p_path.exists():
-                dfs.append(pd.read_parquet(p_path))
+        shard_paths.extend(paths)
 
     # Structure 3: direct key
     elif table_name in inventory_data:
         paths = inventory_data[table_name]
         if isinstance(paths, str):
             paths = [paths]
-        for p in paths:
-            p_path = Path(p)
-            if p_path.exists():
-                dfs.append(pd.read_parquet(p_path))
+        shard_paths.extend(paths)
 
-    if dfs:
+    if shard_paths:
+        for p in shard_paths:
+            resolved = _resolve_shard_path(p, base_dir=inventory_dir)
+            if not resolved.exists():
+                raise FileNotFoundError(
+                    f"Missing required shard: '{p}' (resolved to '{resolved}') for table '{table_name}'. "
+                    "All declared shards must exist."
+                )
+            dfs.append(pd.read_parquet(resolved))
         return pd.concat(dfs, ignore_index=True)
 
     # Fallback to direct check on inputs/<owner>/<table_name>
@@ -735,14 +871,7 @@ def build_labels(
 ) -> Path:
     """Milestone 3 Contract Function: Build unified labels.parquet and label_report.json.
     
-    Args:
-        inventory: Path to inventory.json
-        pool: Path to pool.parquet (owner, arxiv_id, label_method)
-        manual_dir: Directory containing manual label files (e.g. manual/<owner>.parquet)
-        output_dir: Output directory to write labels.parquet and label_report.json
-        
-    Returns:
-        Path to generated labels.parquet
+    Halts export if validation fails or conflicting duplicate labels exist.
     """
     inventory_path = Path(inventory)
     pool_path = Path(pool)
@@ -753,9 +882,13 @@ def build_labels(
     inventory_data = load_inventory(inventory_path)
     pool_df = pd.read_parquet(pool_path)
 
-    # 1. Load bibtex and references tables
-    bibtex_df = load_table_from_inventory(inventory_data, "bibtex")
-    references_df = load_table_from_inventory(inventory_data, "references")
+    # 1. Load bibtex and references tables (resolving shards via inventory parent dir)
+    bibtex_df = load_table_from_inventory(
+        inventory_data, "bibtex", inventory_dir=inventory_path.parent
+    )
+    references_df = load_table_from_inventory(
+        inventory_data, "references", inventory_dir=inventory_path.parent
+    )
 
     # 2. Separate pool into manual and automatic
     manual_pool = pool_df[pool_df["label_method"] == "manual"]
@@ -768,7 +901,6 @@ def build_labels(
     manual_dfs = []
     # Search for <owner>.parquet or <owner>.csv in manual_dir
     for owner in pool_df["owner"].unique():
-        # Check candidate files
         candidates = [
             manual_dir_path / f"{owner}.parquet",
             manual_dir_path / f"manual_{owner}.parquet",
@@ -780,11 +912,16 @@ def build_labels(
             if found_file.suffix.lower() == ".parquet":
                 m_df = pd.read_parquet(found_file)
             else:
-                m_df = pd.read_csv(found_file)
+                # Force string types to avoid loss of ID formatting (e.g. leading zeros)
+                m_df = pd.read_csv(found_file, dtype=str, keep_default_na=False)
 
             # Filter out auxiliary columns starting with '_'
             clean_cols = [c for c in m_df.columns if not c.startswith("_")]
             m_df = m_df[clean_cols].copy()
+
+            # Ensure ID columns are string
+            m_df["arxiv_id"] = m_df["arxiv_id"].astype(str)
+            m_df["citation_key"] = m_df["citation_key"].astype(str)
 
             # Filter to manual papers of this owner in the pool
             owner_manual_ids = set(
@@ -801,6 +938,12 @@ def build_labels(
             # Clean groundtruth_arxiv_id: only non-null if matched
             m_df.loc[m_df["label_status"] != "matched", "groundtruth_arxiv_id"] = None
 
+            # Clean empty strings to None
+            m_df["groundtruth_arxiv_id"] = m_df["groundtruth_arxiv_id"].where(
+                m_df["groundtruth_arxiv_id"].notna() & (m_df["groundtruth_arxiv_id"] != "") & (m_df["groundtruth_arxiv_id"] != "nan"),
+                None
+            )
+
             manual_dfs.append(m_df)
 
     if manual_dfs:
@@ -814,7 +957,7 @@ def build_labels(
     # Ensure every entry of manual papers is represented (fill missing as unreviewed)
     manual_bib = bibtex_df[bibtex_df["arxiv_id"].isin(manual_paper_ids)].copy()
     existing_manual_keys = set(
-        zip(manual_labels_df["arxiv_id"], manual_labels_df["citation_key"])
+        zip(manual_labels_df["arxiv_id"].astype(str), manual_labels_df["citation_key"].astype(str))
     ) if not manual_labels_df.empty else set()
 
     missing_manual_rows = []
@@ -860,11 +1003,11 @@ def build_labels(
 
     # Nullable string handling
     unified_df["groundtruth_arxiv_id"] = unified_df["groundtruth_arxiv_id"].where(
-        unified_df["groundtruth_arxiv_id"].notna() & (unified_df["groundtruth_arxiv_id"] != ""),
+        unified_df["groundtruth_arxiv_id"].notna() & (unified_df["groundtruth_arxiv_id"] != "") & (unified_df["groundtruth_arxiv_id"] != "nan"),
         None
     )
     unified_df["heuristic_version"] = unified_df["heuristic_version"].where(
-        unified_df["heuristic_version"].notna() & (unified_df["heuristic_version"] != ""),
+        unified_df["heuristic_version"].notna() & (unified_df["heuristic_version"] != "") & (unified_df["heuristic_version"] != "nan"),
         None
     )
 
@@ -875,17 +1018,14 @@ def build_labels(
     ]
     unified_df = unified_df[ordered_cols].copy()
 
-    # Deduplicate in case of duplicate entry keys
-    unified_df = unified_df.drop_duplicates(subset=["arxiv_id", "citation_key"], keep="first")
-
-    # 6. Extract official counts from inventory if present
-    official_counts = {}
+    # 6. Extract official counts N from inventory
+    official_counts: Dict[str, int] = {}
     if "owners" in inventory_data:
         for o, info in inventory_data["owners"].items():
-            if "n_official" in info:
-                official_counts[o] = info["n_official"]
-            elif "n_papers" in info:
-                official_counts[o] = info["n_papers"]
+            if isinstance(info, dict):
+                n_val = info.get("N", info.get("n_official", info.get("n_papers", None)))
+                if n_val is not None:
+                    official_counts[o] = int(n_val)
 
     # 7. Run full validation & quota checking
     report = validate_labels(
@@ -895,14 +1035,20 @@ def build_labels(
         official_counts=official_counts,
     )
 
-    # 8. Write outputs
-    labels_parquet_path = output_dir_path / "labels.parquet"
-    arrow_table = pa.Table.from_pandas(unified_df, schema=LABELS_ARROW_SCHEMA, preserve_index=False)
-    pq.write_table(arrow_table, labels_parquet_path)
-
+    # Always write label_report.json
     label_report_path = output_dir_path / "label_report.json"
     with open(label_report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2, ensure_ascii=False)
+
+    # 8. HALT IF VALIDATION FAILS
+    if not report["passed"]:
+        error_msg = f"Validation failed with {len(report['errors'])} error(s). labels.parquet export was ABORTED.\n" + "\n".join(report["errors"])
+        raise ValueError(error_msg)
+
+    # 9. Write outputs if validation passed
+    labels_parquet_path = output_dir_path / "labels.parquet"
+    arrow_table = pa.Table.from_pandas(unified_df, schema=LABELS_ARROW_SCHEMA, preserve_index=False)
+    pq.write_table(arrow_table, labels_parquet_path)
 
     return labels_parquet_path
 
