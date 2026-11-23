@@ -251,9 +251,6 @@ class ValidationTest(unittest.TestCase):
         self.assertFalse(in_owner_range("khang", "2506.20787"))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class DriveLayoutTest(unittest.TestCase):
     """M1 as the Drive zip (read in place) and M2 as milestone 2/<owner>/<run>/handoff.json."""
@@ -393,3 +390,7 @@ class ReviewFixesTest(unittest.TestCase):
         self.assertTrue(target.is_file())
         with contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(main(["scan", "--drive-root", str(self.root), "--write", str(target)]), 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
