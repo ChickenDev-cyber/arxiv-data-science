@@ -1,3 +1,9 @@
 # Module E: Parquet contracts, splitting, ranking and CPU orchestration.
 # Other members add their model/tokenizer dependencies when delivered.
 pyarrow==23.0.1
+# Module C: features, Logistic Regression and LightGBM ranker (CPU only, no pretrained models).
+numpy==2.5.5
+scipy==1.18.1
+scikit-learn==1.9.1
+rapidfuzz==3.14.6
+lightgbm==4.7.0
