@@ -45,8 +45,9 @@ class PipelineTests(unittest.TestCase):
     def test_missing_modules_and_bad_config_are_preflight_errors(self):
         self.cfg['mode']='full'
         self.cfg['manual_dir']=str(self.root/'manual')
-        with self.assertRaisesRegex(RuntimeError, r'Full mode requires module'):
-            self.run_config()
+        with patch.dict('sys.modules', {'arxiv_pipeline.matching.modeling': None}):
+            with self.assertRaisesRegex(RuntimeError, r'Full mode requires module'):
+                self.run_config()
         self.assertFalse((self.root/'run').exists())
         self.cfg['mode']='unknown'
         with self.assertRaises(ValueError): self.run_config()
