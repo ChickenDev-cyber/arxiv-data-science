@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Published Six-Table Columnar Data Schema</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Serif:ital@0;1&family=Noto+Sans+KR:wght@400;500;600&family=Noto+Serif+KR:wght@400&family=Noto+Sans+TC:wght@400;500;600&family=Noto+Serif+TC:wght@400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper:   #f5f5f5;
+      --color-ink:     #2d3142;
+      --color-muted:   #4f5d75;
+      --color-accent:  #bf4520;
+      --font-sans:     'Geist', system-ui, sans-serif;
+      --font-serif:    'Instrument Serif', 'Noto Serif', serif;
+      --font-mono:     'Geist Mono', ui-monospace, monospace;
+    }
+
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem 2rem;
+    }
+
+    .frame { max-width: 1280px; width: 100%; }
+    .diagram-container { width: 100%; overflow-x: auto; }
+
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.66rem;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 0.5rem;
+    }
+
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.5rem, 2.4vw + 0.75rem, 2rem);
+      font-weight: 400;
+      letter-spacing: -0.02em;
+      line-height: 1.15;
+      color: var(--color-ink);
+      margin-bottom: 1.5rem;
+    }
+
+    svg { width: 100%; min-width: 1280px; display: block; }
+    @media print {
+      .diagram-container { overflow-x: visible; }
+      svg { min-width: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <p class="eyebrow">DATA MODEL · SIX PUBLISHED PARQUET TABLES</p>
+    <h1>Published Six-Table Columnar Data Schema</h1>
+
+    <div class="diagram-container">
+      <svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="data-schema-er-title data-schema-er-desc">
+        <title id="data-schema-er-title">Published Six-Table Columnar Data Schema</title>
+        <desc id="data-schema-er-desc">Entity-relationship model of the six published Parquet tables spanning Milestone 1 papers and references, Milestone 2 deduplicated elements, hierarchy edges, and BibTeX, and Milestone 3 citation matching predictions.</desc>
+        <defs>
+          <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+          <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#bf4520"/></marker>
+          <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+        </defs>
+
+        <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+        <!-- Three Milestone Tier Zones -->
+        <rect x="40" y="36" width="360" height="608" rx="8"
+              fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+        <rect x="132" y="40" width="176" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="220" y="49" fill="#5a6580" font-size="7" font-family="'Geist Mono', ui-monospace, monospace"
+              text-anchor="middle" letter-spacing="0.14em">MILESTONE 1 · ACQUISITION</text>
+
+        <rect x="460" y="36" width="360" height="608" rx="8"
+              fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+        <rect x="544" y="40" width="192" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="640" y="49" fill="#5a6580" font-size="7" font-family="'Geist Mono', ui-monospace, monospace"
+              text-anchor="middle" letter-spacing="0.14em">MILESTONE 2 · PARSING &amp; DEDUP</text>
+
+        <rect x="880" y="36" width="360" height="608" rx="8"
+              fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+        <rect x="976" y="40" width="168" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="1060" y="49" fill="#5a6580" font-size="7" font-family="'Geist Mono', ui-monospace, monospace"
+              text-anchor="middle" letter-spacing="0.14em">MILESTONE 3 · MATCHING</text>
+
+        <!-- Orthogonal Relationship Connectors (drawn before entity cards) -->
+        <!-- 1. Papers -> References (1:N) -->
+        <line x1="220" y1="288" x2="220" y2="380" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <!-- 2. Papers -> Elements (1:N) -->
+        <line x1="372" y1="156" x2="488" y2="156" stroke="#bf4520" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+        <!-- 3. Papers -> Hierarchy (1:M per version) -->
+        <path d="M 372,224 H 428 Q 436,224 436,232 V 352 Q 436,360 444,360 H 488"
+              fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <!-- 4. Papers -> BibTeX (1:N, inner channel left of x=436) -->
+        <path d="M 372,260 H 408 Q 416,260 416,268 V 528 Q 416,536 424,536 H 488"
+              fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <!-- 5. Elements -> Hierarchy (Shared Node 1:M) -->
+        <line x1="640" y1="244" x2="640" y2="288" stroke="#bf4520" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+        <!-- 6. BibTeX -> Predictions (1:1 split query, single-bend L-path) -->
+        <path d="M 792,536 H 1044 Q 1052,536 1052,528 V 472"
+              fill="none" stroke="#bf4520" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+        <!-- 7. References -> Predictions (Candidate Pool, bottom channel) -->
+        <path d="M 220,588 V 616 Q 220,624 228,624 H 1132 Q 1140,624 1140,616 V 472"
+              fill="none" stroke="#2e5aa8" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arrow-link)"/>
+
+        <!-- Relationship & Cardinality Labels (opaque mask + >=6px gap from stroke) -->
+        <rect x="228" y="328" width="68" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="262" y="337" fill="#4f5d75" font-size="8" font-family="'Geist Mono', ui-monospace, monospace"
+              text-anchor="middle" letter-spacing="0.06em">1 : N REFS</text>
+
+        <rect x="392" y="136" width="76" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="430" y="145" fill="#bf4520" font-size="8" font-family="'Geist Mono', ui-monospace, monospace"
+              text-anchor="middle" letter-spacing="0.06em">1 : N NODES</text>
+
+        <rect x="444" y="296" width="36" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="462" y="305" fill="#4f5d75" font-size="8" font-family="'Geist Mono', ui-monospace, monospace"
+              text-anchor="middle" letter-spacing="0.06em">1 : M</text>
+
+        <rect x="424" y="516" width="52" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="450" y="525" fill="#4f5d75" font-size="8" font-family="'Geist Mono', ui-monospace, monospace"
+              text-anchor="middle" letter-spacing="0.06em">1 : N</text>
+
+        <rect x="648" y="260" width="84" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="690" y="269" fill="#bf4520" font-size="8" font-family="'Geist Mono', ui-monospace, monospace"
+              text-anchor="middle" letter-spacing="0.06em">SHARED NODE</text>
+
+        <rect x="892" y="516" width="84" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="934" y="525" fill="#bf4520" font-size="8" font-family="'Geist Mono', ui-monospace, monospace"
+              text-anchor="middle" letter-spacing="0.06em">1 : 1 QUERY</text>
+
+        <rect x="812" y="604" width="92" height="12" rx="2" fill="#f5f5f5"/>
+        <text x="858" y="613" fill="#2e5aa8" font-size="8" font-family="'Geist Mono', ui-monospace, monospace"
+              text-anchor="middle" letter-spacing="0.06em">M : N POOL</text>
+
+        <!-- Entity 1: Papers (Focal Coral Aggregate Root) -->
+        <rect x="68" y="76" width="304" height="212" rx="6" fill="#f5f5f5"/>
+        <rect x="68" y="76" width="304" height="212" rx="6" fill="rgba(191,69,32,0.05)" stroke="#bf4520" stroke-width="1"/>
+        <rect x="68" y="76" width="304" height="44" rx="6" fill="rgba(191,69,32,0.10)"/>
+        <rect x="68" y="112" width="304" height="8" fill="rgba(191,69,32,0.10)"/>
+        <line x1="68" y1="120" x2="372" y2="120" stroke="rgba(191,69,32,0.40)" stroke-width="1"/>
+        <text x="84" y="92" fill="#bf4520" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.12em">ROOT · 25,000 ROWS · 3.73 MIB</text>
+        <text x="84" y="110" fill="#2d3142" font-size="13" font-weight="600" font-family="'Geist', system-ui, sans-serif">Papers</text>
+        <text x="84" y="140" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace"># Paper ID</text>
+        <text x="356" y="140" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">PK · string</text>
+        <text x="84" y="162" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Title</text>
+        <text x="356" y="162" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">string</text>
+        <text x="84" y="184" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Authors</text>
+        <text x="356" y="184" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">list&lt;string&gt;</text>
+        <text x="84" y="206" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Submission Date</text>
+        <text x="356" y="206" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">ISO string</text>
+        <text x="84" y="228" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Revised Dates</text>
+        <text x="356" y="228" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">list&lt;string&gt;</text>
+        <text x="84" y="250" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Journal Venue</text>
+        <text x="356" y="250" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">nullable · 17.1%</text>
+        <text x="84" y="272" fill="#4f5d75" font-size="8" font-family="'Geist Mono', ui-monospace, monospace">40,896 declared versions across 5 ranges</text>
+
+        <!-- Entity 2: References -->
+        <rect x="68" y="380" width="304" height="208" rx="6" fill="#f5f5f5"/>
+        <rect x="68" y="380" width="304" height="208" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <rect x="68" y="380" width="304" height="44" rx="6" fill="rgba(45,49,66,0.04)"/>
+        <rect x="68" y="416" width="304" height="8" fill="rgba(45,49,66,0.04)"/>
+        <line x1="68" y1="424" x2="372" y2="424" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+        <text x="84" y="396" fill="#4f5d75" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.12em">TABLE · 466,763 ROWS · 75.0 MIB</text>
+        <text x="84" y="414" fill="#2d3142" font-size="13" font-weight="600" font-family="'Geist', system-ui, sans-serif">References</text>
+        <text x="84" y="444" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">-&gt; Paper ID</text>
+        <text x="356" y="444" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">FK · Citing</text>
+        <text x="84" y="466" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace"># Cited Paper ID</text>
+        <text x="356" y="466" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">PK · arXiv ID</text>
+        <text x="84" y="488" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Cited Title</text>
+        <text x="356" y="488" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">string</text>
+        <text x="84" y="510" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Cited Authors</text>
+        <text x="356" y="510" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">list&lt;string&gt;</text>
+        <text x="84" y="532" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Cited Subm. Date</text>
+        <text x="356" y="532" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">ISO string</text>
+        <text x="84" y="554" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Semantic Scholar ID</text>
+        <text x="356" y="554" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">string</text>
+        <text x="84" y="576" fill="#4f5d75" font-size="8" font-family="'Geist Mono', ui-monospace, monospace">20,878 citing papers · 99.77% complete</text>
+
+        <!-- Entity 3: Elements (Focal Coral Shared Store) -->
+        <rect x="488" y="76" width="304" height="168" rx="6" fill="#f5f5f5"/>
+        <rect x="488" y="76" width="304" height="168" rx="6" fill="rgba(191,69,32,0.05)" stroke="#bf4520" stroke-width="1"/>
+        <rect x="488" y="76" width="304" height="44" rx="6" fill="rgba(191,69,32,0.10)"/>
+        <rect x="488" y="112" width="304" height="8" fill="rgba(191,69,32,0.10)"/>
+        <line x1="488" y1="120" x2="792" y2="120" stroke="rgba(191,69,32,0.40)" stroke-width="1"/>
+        <text x="504" y="92" fill="#bf4520" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.12em">SHARED · 11.10M ROWS · 902.4 MIB</text>
+        <text x="504" y="110" fill="#2d3142" font-size="13" font-weight="600" font-family="'Geist', system-ui, sans-serif">Elements</text>
+        <text x="504" y="140" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace"># Element ID</text>
+        <text x="776" y="140" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">PK · Dedup ID</text>
+        <text x="504" y="162" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">-&gt; Paper ID</text>
+        <text x="776" y="162" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">FK · Papers</text>
+        <text x="504" y="184" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Element Type</text>
+        <text x="776" y="184" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">enum (11)</text>
+        <text x="504" y="206" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Normalized Content</text>
+        <text x="776" y="206" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">text · math</text>
+        <text x="504" y="228" fill="#4f5d75" font-size="8" font-family="'Geist Mono', ui-monospace, monospace">-31.59% deduplicated across versions</text>
+
+        <!-- Entity 4: Hierarchy (Join / Edge Table) -->
+        <rect x="488" y="288" width="304" height="148" rx="6" fill="#f5f5f5"/>
+        <rect x="488" y="288" width="304" height="148" rx="6" fill="rgba(45,49,66,0.04)" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3"/>
+        <rect x="488" y="288" width="304" height="44" rx="6" fill="rgba(45,49,66,0.06)"/>
+        <rect x="488" y="324" width="304" height="8" fill="rgba(45,49,66,0.06)"/>
+        <line x1="488" y1="332" x2="792" y2="332" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+        <text x="504" y="304" fill="#4f5d75" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.12em">EDGES · 16.19M ROWS · 88.5 MIB</text>
+        <text x="504" y="322" fill="#2d3142" font-size="13" font-weight="600" font-family="'Geist', system-ui, sans-serif">Hierarchy</text>
+        <text x="504" y="352" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">-&gt; Paper ID</text>
+        <text x="776" y="352" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">FK · Papers</text>
+        <text x="504" y="374" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Version Number</text>
+        <text x="776" y="374" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">integer</text>
+        <text x="504" y="396" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">-&gt; Parent Element ID</text>
+        <text x="776" y="396" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">FK · Elements</text>
+        <text x="504" y="418" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">-&gt; Child Element ID</text>
+        <text x="776" y="418" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">FK · Elements</text>
+
+        <!-- Entity 5: BibTeX -->
+        <rect x="488" y="472" width="304" height="128" rx="6" fill="#f5f5f5"/>
+        <rect x="488" y="472" width="304" height="128" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <rect x="488" y="472" width="304" height="44" rx="6" fill="rgba(45,49,66,0.04)"/>
+        <rect x="488" y="508" width="304" height="8" fill="rgba(45,49,66,0.04)"/>
+        <line x1="488" y1="516" x2="792" y2="516" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+        <text x="504" y="488" fill="#4f5d75" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.12em">TABLE · 975,674 ROWS · 126.4 MIB</text>
+        <text x="504" y="506" fill="#2d3142" font-size="13" font-weight="600" font-family="'Geist', system-ui, sans-serif">BibTeX</text>
+        <text x="504" y="536" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">-&gt; Paper ID</text>
+        <text x="776" y="536" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">FK · 19,204</text>
+        <text x="504" y="558" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace"># Citation Key</text>
+        <text x="776" y="558" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">PK · Canonical</text>
+        <text x="504" y="580" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Entry Type &amp; Fields</text>
+        <text x="776" y="580" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">title · year · DOI</text>
+
+        <!-- Entity 6: Predictions -->
+        <rect x="908" y="216" width="304" height="256" rx="6" fill="#f5f5f5"/>
+        <rect x="908" y="216" width="304" height="256" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+        <rect x="908" y="216" width="304" height="44" rx="6" fill="rgba(45,49,66,0.04)"/>
+        <rect x="908" y="252" width="304" height="8" fill="rgba(45,49,66,0.04)"/>
+        <line x1="908" y1="260" x2="1212" y2="260" stroke="rgba(45,49,66,0.22)" stroke-width="1"/>
+        <text x="924" y="232" fill="#4f5d75" font-size="7" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.12em">SPLIT · 101,441 ROWS · 3.44 MIB</text>
+        <text x="924" y="250" fill="#2d3142" font-size="13" font-weight="600" font-family="'Geist', system-ui, sans-serif">Predictions</text>
+        <text x="924" y="280" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">-&gt; Paper ID</text>
+        <text x="1196" y="280" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">FK · 2,525 pool</text>
+        <text x="924" y="302" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Split Partition</text>
+        <text x="1196" y="302" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">dict · train/val/test</text>
+        <text x="924" y="324" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">-&gt; Citation Key</text>
+        <text x="1196" y="324" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">FK · BibTeX</text>
+        <text x="924" y="346" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Ground-Truth ID</text>
+        <text x="1196" y="346" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">nullable · 35,373</text>
+        <text x="924" y="368" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Rank-1 Candidate</text>
+        <text x="1196" y="368" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">arXiv ID · best</text>
+        <text x="924" y="390" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Rank-2 to Rank-4</text>
+        <text x="1196" y="390" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">3 nullable cols</text>
+        <text x="924" y="412" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Rank-5 Candidate</text>
+        <text x="1196" y="412" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end">arXiv ID · 5th</text>
+        <line x1="924" y1="428" x2="1196" y2="428" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
+        <text x="924" y="446" fill="#4f5d75" font-size="8" font-family="'Geist Mono', ui-monospace, monospace">9 flat cols · split papers only</text>
+        <text x="924" y="460" fill="#4f5d75" font-size="8" font-family="'Geist Mono', ui-monospace, monospace">Release: 1.171 GiB · 0 audit issues</text>
+
+        <!-- Horizontal Legend Strip -->
+        <line x1="40" y1="664" x2="1240" y2="664" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
+        <text x="40" y="688" fill="#4f5d75" font-size="8" font-family="'Geist Mono', ui-monospace, monospace"
+              letter-spacing="0.14em">LEGEND</text>
+
+        <rect x="120" y="678" width="16" height="12" rx="2" fill="rgba(191,69,32,0.08)" stroke="#bf4520" stroke-width="1"/>
+        <text x="144" y="688" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Aggregate root / shared store</text>
+
+        <rect x="372" y="678" width="16" height="12" rx="2" fill="rgba(45,49,66,0.04)" stroke="#4f5d75" stroke-width="1" stroke-dasharray="3,2"/>
+        <text x="396" y="688" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Per-version edge table</text>
+
+        <text x="580" y="688" fill="#2d3142" font-size="9" font-weight="600" font-family="'Geist Mono', ui-monospace, monospace">#</text>
+        <text x="594" y="688" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Primary key</text>
+
+        <text x="692" y="688" fill="#2d3142" font-size="9" font-weight="600" font-family="'Geist Mono', ui-monospace, monospace">-&gt;</text>
+        <text x="712" y="688" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Foreign key</text>
+
+        <line x1="816" y1="684" x2="848" y2="684" stroke="#2e5aa8" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arrow-link)"/>
+        <text x="856" y="688" fill="#2d3142" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">Candidate reference pool</text>
+      </svg>
+    </div>
+  </div>
+</body>
+</html>

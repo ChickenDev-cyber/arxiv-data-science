@@ -1,0 +1,1677 @@
+{
+  "rows": [
+    {
+      "backend": "spacy",
+      "outer_batch": 1,
+      "papers": 93,
+      "blocks": 7525,
+      "seconds": 17.277040118002333,
+      "peak_rss_mib": 151.54296875,
+      "load_seconds_median": 1.528128726000432,
+      "sentences": 31607,
+      "output_sha256": "6664c1e9f9ae87d2526fb4e4c4156964837a2ea32d56f036bfdaeea24dc78511",
+      "seconds_per_version": 0.18577462492475627,
+      "hours_for_40000_tex_versions": 2.0641624991639587,
+      "characters_per_second": 278013.5351422324
+    },
+    {
+      "backend": "spacy",
+      "outer_batch": 32,
+      "papers": 93,
+      "blocks": 7525,
+      "seconds": 9.699630553004681,
+      "peak_rss_mib": 163.59375,
+      "load_seconds_median": 1.1305590929987375,
+      "sentences": 31607,
+      "output_sha256": "6664c1e9f9ae87d2526fb4e4c4156964837a2ea32d56f036bfdaeea24dc78511",
+      "seconds_per_version": 0.10429710272048044,
+      "hours_for_40000_tex_versions": 1.158856696894227,
+      "characters_per_second": 495199.37628058257
+    },
+    {
+      "backend": "sat",
+      "outer_batch": 1,
+      "internal_batch": 1,
+      "papers": 93,
+      "blocks": 7525,
+      "seconds": 1283.9098936170194,
+      "peak_rss_mib": 1310.13671875,
+      "load_seconds_median": 9.70986169949174,
+      "sentences": 31343,
+      "seconds_per_version": 13.805482727064724,
+      "hours_for_40000_tex_versions": 153.3942525229414,
+      "characters_per_second": 3741.112225927572
+    }
+  ],
+  "preparation": {
+    "papers": [
+      {
+        "paper": "2506.20788",
+        "status": "ok",
+        "blocks": 118,
+        "seconds": 0.5639936969964765,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 10,
+          "figure": 10,
+          "paragraph": 14,
+          "subsection": 8,
+          "itemize": 7,
+          "item": 36,
+          "formula": 34,
+          "enumerate": 3
+        }
+      },
+      {
+        "paper": "2506.20835",
+        "status": "ok",
+        "blocks": 46,
+        "seconds": 0.25447845199960284,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 7,
+          "formula": 34,
+          "figure": 6,
+          "subsection": 2
+        }
+      },
+      {
+        "paper": "2506.20881",
+        "status": "ok",
+        "blocks": 35,
+        "seconds": 0.2543623719975585,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 9,
+          "subsection": 7,
+          "enumerate": 3,
+          "item": 7,
+          "figure": 4
+        }
+      },
+      {
+        "paper": "2506.20928",
+        "status": "ok",
+        "blocks": 42,
+        "seconds": 0.22608530199795496,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 8,
+          "itemize": 2,
+          "item": 6,
+          "formula": 20,
+          "subsection": 6,
+          "figure": 6
+        }
+      },
+      {
+        "paper": "2506.20974",
+        "status": "ok",
+        "blocks": 55,
+        "seconds": 0.37963200399826746,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 10,
+          "subsection": 14,
+          "figure": 3,
+          "formula": 28
+        }
+      },
+      {
+        "paper": "2506.21021",
+        "status": "ok",
+        "blocks": 22,
+        "seconds": 0.6698252680071164,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 6,
+          "figure": 28,
+          "subsection": 2,
+          "subsubsection": 6
+        }
+      },
+      {
+        "paper": "2506.21067",
+        "status": "ok",
+        "blocks": 38,
+        "seconds": 0.3071877600013977,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 6,
+          "subsection": 11,
+          "figure": 12,
+          "subsubsection": 10,
+          "formula": 4
+        }
+      },
+      {
+        "paper": "2506.21114",
+        "status": "ok",
+        "blocks": 91,
+        "seconds": 0.1598605830076849,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 7,
+          "itemize": 3,
+          "item": 25,
+          "enumerate": 2,
+          "formula": 83
+        }
+      },
+      {
+        "paper": "2506.21160",
+        "status": "ok",
+        "blocks": 19,
+        "seconds": 0.18615971399412956,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "figure": 4,
+          "formula": 1,
+          "section": 1,
+          "subsection": 3
+        }
+      },
+      {
+        "paper": "2506.21207",
+        "status": "ok",
+        "blocks": 79,
+        "seconds": 0.214182340001571,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 12,
+          "formula": 52,
+          "subsection": 5,
+          "figure": 4,
+          "enumerate": 1,
+          "item": 3
+        }
+      },
+      {
+        "paper": "2506.21254",
+        "status": "ok",
+        "blocks": 146,
+        "seconds": 0.8517960669996683,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 7,
+          "figure": 7,
+          "subsection": 14,
+          "subsubsection": 2,
+          "itemize": 23,
+          "item": 65,
+          "formula": 31
+        }
+      },
+      {
+        "paper": "2506.21300",
+        "status": "ok",
+        "blocks": 159,
+        "seconds": 0.5911362979968544,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 9,
+          "enumerate": 3,
+          "item": 79,
+          "figure": 22,
+          "subsection": 22,
+          "subsubsection": 17,
+          "itemize": 17,
+          "paragraph": 7
+        }
+      },
+      {
+        "paper": "2506.21347",
+        "status": "ok",
+        "blocks": 31,
+        "seconds": 0.29542814700107556,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 9,
+          "figure": 15,
+          "subsection": 7,
+          "formula": 9,
+          "subsubsection": 2
+        }
+      },
+      {
+        "paper": "2506.21393",
+        "status": "ok",
+        "blocks": 65,
+        "seconds": 0.7391812749992823,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "figure": 40,
+          "section": 14,
+          "itemize": 2,
+          "item": 15,
+          "subsection": 26,
+          "formula": 10,
+          "paragraph": 5,
+          "enumerate": 1
+        }
+      },
+      {
+        "paper": "2506.21440",
+        "status": "ok",
+        "blocks": 60,
+        "seconds": 0.4167745099985041,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 8,
+          "subsection": 14,
+          "formula": 36,
+          "subsubsection": 3,
+          "figure": 10
+        }
+      },
+      {
+        "paper": "2506.21486",
+        "status": "ok",
+        "blocks": 45,
+        "seconds": 0.35558557699550875,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 7,
+          "figure": 7,
+          "itemize": 1,
+          "item": 3,
+          "paragraph": 11,
+          "subsection": 9,
+          "formula": 17
+        }
+      },
+      {
+        "paper": "2506.21533",
+        "status": "ok",
+        "blocks": 111,
+        "seconds": 0.6374796330055688,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 7,
+          "formula": 103,
+          "enumerate": 2,
+          "item": 5,
+          "figure": 1
+        }
+      },
+      {
+        "paper": "2506.21579",
+        "status": "ok",
+        "blocks": 54,
+        "seconds": 0.29154399399703834,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 7,
+          "figure": 10,
+          "subsection": 12,
+          "subsubsection": 10,
+          "formula": 4,
+          "itemize": 3,
+          "item": 12
+        }
+      },
+      {
+        "paper": "2506.21626",
+        "status": "ok",
+        "blocks": 24,
+        "seconds": 0.16603424699860625,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 5,
+          "subsection": 6,
+          "figure": 11,
+          "formula": 3,
+          "subsubsection": 2
+        }
+      },
+      {
+        "paper": "2506.21672",
+        "status": "ok",
+        "blocks": 73,
+        "seconds": 0.2699813070066739,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "formula": 60,
+          "figure": 3,
+          "section": 8
+        }
+      },
+      {
+        "paper": "2506.21719",
+        "status": "ok",
+        "blocks": 118,
+        "seconds": 0.7701320829946781,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 13,
+          "subsection": 17,
+          "formula": 41,
+          "itemize": 10,
+          "item": 55,
+          "enumerate": 5,
+          "figure": 36,
+          "subsubsection": 3
+        }
+      },
+      {
+        "paper": "2506.21766",
+        "status": "ok",
+        "blocks": 22,
+        "seconds": 0.32806561999314,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 4,
+          "subsection": 6,
+          "formula": 6,
+          "figure": 8
+        }
+      },
+      {
+        "paper": "2506.21812",
+        "status": "ok",
+        "blocks": 25,
+        "seconds": 0.2649854210030753,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 7,
+          "subsection": 5,
+          "figure": 2,
+          "subsubsection": 12
+        }
+      },
+      {
+        "paper": "2506.21859",
+        "status": "download_missing"
+      },
+      {
+        "paper": "2506.21905",
+        "status": "ok",
+        "blocks": 44,
+        "seconds": 0.2769091660011327,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 6,
+          "itemize": 2,
+          "item": 10,
+          "subsection": 13,
+          "figure": 5,
+          "enumerate": 2,
+          "subsubsection": 3,
+          "formula": 8
+        }
+      },
+      {
+        "paper": "2506.21952",
+        "status": "ok",
+        "blocks": 24,
+        "seconds": 0.338365210001939,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 4,
+          "figure": 7,
+          "subsection": 5,
+          "formula": 12
+        }
+      },
+      {
+        "paper": "2506.21998",
+        "status": "ok",
+        "blocks": 51,
+        "seconds": 0.4626444419991458,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 8,
+          "figure": 16,
+          "paragraph": 18,
+          "subsection": 16,
+          "formula": 3,
+          "itemize": 1,
+          "item": 2
+        }
+      },
+      {
+        "paper": "2506.22045",
+        "status": "ok",
+        "blocks": 45,
+        "seconds": 0.2550155529897893,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 5,
+          "formula": 39
+        }
+      },
+      {
+        "paper": "2506.22091",
+        "status": "ok",
+        "blocks": 88,
+        "seconds": 0.12929518800228834,
+        "missing_includes": [
+          "Special_p-groups.tex: \\input xy"
+        ],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 5,
+          "formula": 69,
+          "subsection": 4,
+          "enumerate": 3,
+          "item": 6,
+          "subsubsection": 2,
+          "figure": 1
+        }
+      },
+      {
+        "paper": "2506.22138",
+        "status": "ok",
+        "blocks": 37,
+        "seconds": 0.3364063719927799,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 7,
+          "subsection": 10,
+          "formula": 19,
+          "figure": 11,
+          "subsubsection": 4
+        }
+      },
+      {
+        "paper": "2506.22185",
+        "status": "ok",
+        "blocks": 28,
+        "seconds": 0.1596234419994289,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 8,
+          "enumerate": 1,
+          "item": 5,
+          "subsection": 10,
+          "figure": 2
+        }
+      },
+      {
+        "paper": "2506.22231",
+        "status": "ok",
+        "blocks": 58,
+        "seconds": 0.2205709349946119,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 10,
+          "subsection": 12,
+          "subsubsection": 16,
+          "itemize": 1,
+          "item": 21,
+          "enumerate": 5
+        }
+      },
+      {
+        "paper": "2506.22278",
+        "status": "ok",
+        "blocks": 286,
+        "seconds": 0.4751278210023884,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 6,
+          "subsection": 5,
+          "formula": 193,
+          "itemize": 20,
+          "item": 80,
+          "enumerate": 6
+        }
+      },
+      {
+        "paper": "2506.22324",
+        "status": "ok",
+        "blocks": 182,
+        "seconds": 0.6153158700035419,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 14,
+          "subsection": 23,
+          "formula": 141,
+          "enumerate": 1,
+          "item": 5,
+          "figure": 26
+        }
+      },
+      {
+        "paper": "2506.22371",
+        "status": "ok",
+        "blocks": 158,
+        "seconds": 0.5410667319956701,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 7,
+          "formula": 138,
+          "enumerate": 3,
+          "item": 8
+        }
+      },
+      {
+        "paper": "2506.22417",
+        "status": "ok",
+        "blocks": 72,
+        "seconds": 0.4010089649964357,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "paragraph": 6,
+          "figure": 6,
+          "formula": 47,
+          "section": 5,
+          "itemize": 1,
+          "item": 3,
+          "subsection": 5
+        }
+      },
+      {
+        "paper": "2506.22464",
+        "status": "ok",
+        "blocks": 24,
+        "seconds": 0.15791436299332418,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 6,
+          "figure": 6,
+          "subsection": 10,
+          "formula": 8
+        }
+      },
+      {
+        "paper": "2506.22510",
+        "status": "ok",
+        "blocks": 63,
+        "seconds": 0.24566767599026207,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 12,
+          "figure": 14,
+          "paragraph": 11,
+          "formula": 8,
+          "subsection": 10,
+          "subsubsection": 5,
+          "itemize": 3,
+          "item": 10
+        }
+      },
+      {
+        "paper": "2506.22557",
+        "status": "ok",
+        "blocks": 73,
+        "seconds": 0.5074630189919844,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 15,
+          "itemize": 5,
+          "item": 22,
+          "figure": 9,
+          "subsection": 21,
+          "enumerate": 1,
+          "subsubsection": 10,
+          "paragraph": 1,
+          "formula": 1
+        }
+      },
+      {
+        "paper": "2506.22603",
+        "status": "ok",
+        "blocks": 91,
+        "seconds": 0.6235348089976469,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 9,
+          "formula": 65,
+          "subsection": 4,
+          "itemize": 3,
+          "item": 7,
+          "figure": 10,
+          "subsubsection": 3
+        }
+      },
+      {
+        "paper": "2506.22650",
+        "status": "ok",
+        "blocks": 66,
+        "seconds": 0.5426081309997244,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 11,
+          "subsection": 6,
+          "figure": 7,
+          "formula": 36,
+          "subsubsection": 3
+        }
+      },
+      {
+        "paper": "2506.22697",
+        "status": "ok",
+        "blocks": 104,
+        "seconds": 0.7428031980089145,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 12,
+          "subsection": 20,
+          "figure": 18,
+          "formula": 40,
+          "subsubsection": 15
+        }
+      },
+      {
+        "paper": "2506.22743",
+        "status": "ok",
+        "blocks": 175,
+        "seconds": 1.7328277509950567,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 13,
+          "figure": 17,
+          "subsection": 7,
+          "formula": 137,
+          "subsubsection": 2,
+          "enumerate": 1,
+          "item": 3
+        }
+      },
+      {
+        "paper": "2506.22790",
+        "status": "ok",
+        "blocks": 36,
+        "seconds": 0.16462161400704645,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 6,
+          "itemize": 7,
+          "item": 15,
+          "formula": 3,
+          "figure": 7,
+          "subsection": 5
+        }
+      },
+      {
+        "paper": "2506.22836",
+        "status": "ok",
+        "blocks": 31,
+        "seconds": 0.15868577800574712,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 5,
+          "figure": 6,
+          "itemize": 2,
+          "item": 6,
+          "subsection": 9,
+          "formula": 8,
+          "subsubsection": 7
+        }
+      },
+      {
+        "paper": "2506.22883",
+        "status": "ok",
+        "blocks": 237,
+        "seconds": 0.4651580460049445,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 5,
+          "formula": 204,
+          "enumerate": 3,
+          "item": 25,
+          "itemize": 5,
+          "figure": 6,
+          "subsection": 6
+        }
+      },
+      {
+        "paper": "2506.22929",
+        "status": "ok",
+        "blocks": 26,
+        "seconds": 0.2965493530064123,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "figure": 10,
+          "itemize": 1,
+          "item": 3,
+          "subsubsection": 2,
+          "formula": 7,
+          "subsection": 3
+        }
+      },
+      {
+        "paper": "2506.22976",
+        "status": "ok",
+        "blocks": 96,
+        "seconds": 0.13066344500111882,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 7,
+          "formula": 83,
+          "subsection": 2,
+          "enumerate": 3,
+          "item": 9
+        }
+      },
+      {
+        "paper": "2506.23022",
+        "status": "empty_source",
+        "blocks": 0,
+        "seconds": 0.008567997996578924,
+        "missing_includes": [],
+        "non_sentence_nodes": {}
+      },
+      {
+        "paper": "2506.23069",
+        "status": "ok",
+        "blocks": 461,
+        "seconds": 1.5702770450006938,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 13,
+          "formula": 394,
+          "subsection": 25,
+          "itemize": 3,
+          "item": 23,
+          "enumerate": 5,
+          "subsubsection": 2,
+          "figure": 14
+        }
+      },
+      {
+        "paper": "2506.23116",
+        "status": "empty_source",
+        "blocks": 0,
+        "seconds": 0.00830957198922988,
+        "missing_includes": [],
+        "non_sentence_nodes": {}
+      },
+      {
+        "paper": "2506.23162",
+        "status": "ok",
+        "blocks": 39,
+        "seconds": 0.22537386500334833,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 6,
+          "subsection": 5,
+          "formula": 23,
+          "figure": 3,
+          "paragraph": 1
+        }
+      },
+      {
+        "paper": "2506.23209",
+        "status": "ok",
+        "blocks": 21,
+        "seconds": 0.15975026501109824,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 5,
+          "enumerate": 1,
+          "item": 3,
+          "figure": 4,
+          "subsection": 8,
+          "formula": 6,
+          "subsubsection": 2
+        }
+      },
+      {
+        "paper": "2506.23255",
+        "status": "ok",
+        "blocks": 20,
+        "seconds": 0.30891838000388816,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "figure": 5,
+          "section": 3,
+          "subsection": 9
+        }
+      },
+      {
+        "paper": "2506.23302",
+        "status": "ok",
+        "blocks": 51,
+        "seconds": 0.4165930430026492,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 8,
+          "subsection": 5,
+          "formula": 36,
+          "figure": 16,
+          "subsubsection": 6
+        }
+      },
+      {
+        "paper": "2506.23348",
+        "status": "ok",
+        "blocks": 340,
+        "seconds": 0.523995265000849,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 8,
+          "subsection": 23,
+          "formula": 228,
+          "itemize": 22,
+          "item": 61
+        }
+      },
+      {
+        "paper": "2506.23395",
+        "status": "ok",
+        "blocks": 117,
+        "seconds": 0.7912262459867634,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 7,
+          "subsection": 29,
+          "item": 43,
+          "itemize": 8,
+          "figure": 1,
+          "enumerate": 4,
+          "formula": 26,
+          "subsubsection": 4,
+          "paragraph": 1
+        }
+      },
+      {
+        "paper": "2506.23441",
+        "status": "ok",
+        "blocks": 7,
+        "seconds": 0.10943215599399991,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "figure": 4,
+          "section": 1
+        }
+      },
+      {
+        "paper": "2506.23488",
+        "status": "ok",
+        "blocks": 74,
+        "seconds": 0.27573932500672527,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 6,
+          "itemize": 2,
+          "item": 8,
+          "subsection": 14,
+          "figure": 6,
+          "formula": 39,
+          "subsubsection": 8
+        }
+      },
+      {
+        "paper": "2506.23534",
+        "status": "ok",
+        "blocks": 85,
+        "seconds": 0.40110800199909136,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 11,
+          "itemize": 6,
+          "item": 24,
+          "subsection": 17,
+          "subsubsection": 11,
+          "figure": 9,
+          "formula": 12
+        }
+      },
+      {
+        "paper": "2506.23581",
+        "status": "ok",
+        "blocks": 41,
+        "seconds": 0.2529693499964196,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 11,
+          "itemize": 1,
+          "item": 7,
+          "subsection": 18,
+          "formula": 3,
+          "figure": 17,
+          "subsubsection": 2,
+          "enumerate": 1
+        }
+      },
+      {
+        "paper": "2506.23628",
+        "status": "ok",
+        "blocks": 46,
+        "seconds": 0.19056653999723494,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 9,
+          "figure": 12,
+          "subsection": 8,
+          "itemize": 3,
+          "item": 22,
+          "enumerate": 5
+        }
+      },
+      {
+        "paper": "2506.23674",
+        "status": "ok",
+        "blocks": 39,
+        "seconds": 0.3766077760083135,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 8,
+          "figure": 12,
+          "enumerate": 1,
+          "item": 3,
+          "subsection": 16,
+          "formula": 9
+        }
+      },
+      {
+        "paper": "2506.23721",
+        "status": "ok",
+        "blocks": 14,
+        "seconds": 0.18226636500912718,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 7,
+          "figure": 5,
+          "formula": 4
+        }
+      },
+      {
+        "paper": "2506.23767",
+        "status": "ok",
+        "blocks": 79,
+        "seconds": 0.7921790480031632,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 13,
+          "enumerate": 2,
+          "item": 9,
+          "subsection": 25,
+          "formula": 32,
+          "figure": 43,
+          "subsubsection": 10
+        }
+      },
+      {
+        "paper": "2506.23814",
+        "status": "ok",
+        "blocks": 86,
+        "seconds": 0.4147549820045242,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 14,
+          "itemize": 2,
+          "item": 8,
+          "figure": 22,
+          "paragraph": 36,
+          "subsection": 7,
+          "subsubsection": 15,
+          "formula": 5
+        }
+      },
+      {
+        "paper": "2506.23860",
+        "status": "ok",
+        "blocks": 73,
+        "seconds": 0.21571346100245137,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 7,
+          "formula": 67,
+          "enumerate": 1,
+          "item": 3,
+          "subsection": 4
+        }
+      },
+      {
+        "paper": "2506.23907",
+        "status": "ok",
+        "blocks": 20,
+        "seconds": 0.07816913699207362,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 4,
+          "figure": 5,
+          "formula": 7,
+          "subsection": 5
+        }
+      },
+      {
+        "paper": "2506.23953",
+        "status": "ok",
+        "blocks": 34,
+        "seconds": 0.07218967599328607,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 6,
+          "formula": 28
+        }
+      },
+      {
+        "paper": "2506.24000",
+        "status": "ok",
+        "blocks": 50,
+        "seconds": 0.24975691399595235,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 10,
+          "itemize": 1,
+          "item": 11,
+          "subsection": 3,
+          "figure": 22,
+          "enumerate": 3,
+          "formula": 4
+        }
+      },
+      {
+        "paper": "2507.00001",
+        "status": "ok",
+        "blocks": 111,
+        "seconds": 0.3689143770025112,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 7,
+          "formula": 72,
+          "subsection": 14,
+          "enumerate": 4,
+          "item": 14
+        }
+      },
+      {
+        "paper": "2507.00058",
+        "status": "empty_source",
+        "blocks": 0,
+        "seconds": 0.0005007080035284162,
+        "missing_includes": [],
+        "non_sentence_nodes": {}
+      },
+      {
+        "paper": "2507.00115",
+        "status": "ok",
+        "blocks": 54,
+        "seconds": 0.23412226399523206,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 8,
+          "formula": 27,
+          "itemize": 2,
+          "item": 7,
+          "subsection": 4,
+          "subsubsection": 1,
+          "figure": 5
+        }
+      },
+      {
+        "paper": "2507.00172",
+        "status": "ok",
+        "blocks": 60,
+        "seconds": 0.08053210099751595,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 8,
+          "subsection": 21,
+          "enumerate": 1,
+          "item": 34,
+          "subsubsection": 9,
+          "itemize": 11,
+          "figure": 3
+        }
+      },
+      {
+        "paper": "2507.00230",
+        "status": "ok",
+        "blocks": 67,
+        "seconds": 0.23629576800158247,
+        "missing_includes": [
+          "main_arxiv.tex: \\input{ref.bbl}"
+        ],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 7,
+          "itemize": 3,
+          "item": 11,
+          "subsection": 9,
+          "formula": 22,
+          "figure": 10,
+          "paragraph": 18,
+          "enumerate": 1
+        }
+      },
+      {
+        "paper": "2507.00287",
+        "status": "ok",
+        "blocks": 14,
+        "seconds": 0.11679871099477168,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "figure": 7,
+          "section": 5,
+          "subsection": 6
+        }
+      },
+      {
+        "paper": "2507.00344",
+        "status": "ok",
+        "blocks": 41,
+        "seconds": 0.35393036500317976,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 8,
+          "subsection": 7,
+          "formula": 17,
+          "figure": 34
+        }
+      },
+      {
+        "paper": "2507.00401",
+        "status": "ok",
+        "blocks": 141,
+        "seconds": 0.6282631850044709,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 11,
+          "figure": 23,
+          "subsection": 22,
+          "formula": 10,
+          "subsubsection": 21,
+          "paragraph": 2,
+          "itemize": 4,
+          "item": 73,
+          "enumerate": 9
+        }
+      },
+      {
+        "paper": "2507.00458",
+        "status": "ok",
+        "blocks": 29,
+        "seconds": 0.14628782600630075,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 7,
+          "figure": 5,
+          "enumerate": 1,
+          "item": 11,
+          "itemize": 3,
+          "subsection": 9
+        }
+      },
+      {
+        "paper": "2507.00515",
+        "status": "ok",
+        "blocks": 191,
+        "seconds": 0.3215538460062817,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 7,
+          "formula": 138,
+          "subsection": 14,
+          "itemize": 5,
+          "item": 22,
+          "paragraph": 1,
+          "enumerate": 2
+        }
+      },
+      {
+        "paper": "2507.00572",
+        "status": "ok",
+        "blocks": 272,
+        "seconds": 0.7853126069967402,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 7,
+          "formula": 226,
+          "subsection": 15,
+          "figure": 6,
+          "itemize": 2,
+          "item": 16,
+          "enumerate": 4
+        }
+      },
+      {
+        "paper": "2507.00630",
+        "status": "empty_source",
+        "blocks": 0,
+        "seconds": 0.00062233601056505,
+        "missing_includes": [],
+        "non_sentence_nodes": {}
+      },
+      {
+        "paper": "2507.00687",
+        "status": "ok",
+        "blocks": 32,
+        "seconds": 0.2683767410053406,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 6,
+          "formula": 7,
+          "subsection": 8,
+          "figure": 12,
+          "subsubsection": 2
+        }
+      },
+      {
+        "paper": "2507.00744",
+        "status": "ok",
+        "blocks": 49,
+        "seconds": 0.23728446499444544,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 6,
+          "figure": 6,
+          "subsection": 9,
+          "formula": 28
+        }
+      },
+      {
+        "paper": "2507.00801",
+        "status": "empty_source",
+        "blocks": 0,
+        "seconds": 0.0009045350016094744,
+        "missing_includes": [],
+        "non_sentence_nodes": {}
+      },
+      {
+        "paper": "2507.00858",
+        "status": "ok",
+        "blocks": 22,
+        "seconds": 0.2933484600071097,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 6,
+          "subsection": 11,
+          "figure": 6,
+          "formula": 6
+        }
+      },
+      {
+        "paper": "2507.00915",
+        "status": "ok",
+        "blocks": 64,
+        "seconds": 0.1300724890024867,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 6,
+          "figure": 8,
+          "subsection": 12,
+          "formula": 11,
+          "itemize": 6,
+          "item": 26
+        }
+      },
+      {
+        "paper": "2507.00972",
+        "status": "ok",
+        "blocks": 23,
+        "seconds": 0.22120339100365527,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 7,
+          "figure": 8,
+          "formula": 9,
+          "subsection": 3
+        }
+      },
+      {
+        "paper": "2507.01029",
+        "status": "ok",
+        "blocks": 16,
+        "seconds": 0.13969513999472838,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 4,
+          "figure": 5,
+          "subsection": 10,
+          "formula": 3,
+          "subsubsection": 2
+        }
+      },
+      {
+        "paper": "2507.01087",
+        "status": "ok",
+        "blocks": 41,
+        "seconds": 0.23744076000002678,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "formula": 21,
+          "figure": 10,
+          "section": 5
+        }
+      },
+      {
+        "paper": "2507.01144",
+        "status": "ok",
+        "blocks": 226,
+        "seconds": 0.4762720370054012,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 7,
+          "formula": 217,
+          "enumerate": 1,
+          "item": 4,
+          "subsection": 3
+        }
+      },
+      {
+        "paper": "2507.01201",
+        "status": "ok",
+        "blocks": 121,
+        "seconds": 0.4020398239954375,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 10,
+          "subsection": 16,
+          "itemize": 14,
+          "item": 41,
+          "figure": 13,
+          "paragraph": 7,
+          "formula": 29,
+          "subsubsection": 7,
+          "enumerate": 1
+        }
+      },
+      {
+        "paper": "2507.01258",
+        "status": "ok",
+        "blocks": 20,
+        "seconds": 0.24542917301005218,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 5,
+          "subsection": 4,
+          "figure": 9,
+          "formula": 11
+        }
+      },
+      {
+        "paper": "2507.01315",
+        "status": "ok",
+        "blocks": 73,
+        "seconds": 0.31640584699925967,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 8,
+          "itemize": 9,
+          "item": 31,
+          "figure": 9,
+          "subsection": 16,
+          "subsubsection": 18,
+          "formula": 2
+        }
+      },
+      {
+        "paper": "2507.01372",
+        "status": "ok",
+        "blocks": 103,
+        "seconds": 0.4765004660002887,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 12,
+          "figure": 12,
+          "formula": 64,
+          "paragraph": 11,
+          "subsection": 18,
+          "itemize": 1,
+          "item": 4
+        }
+      },
+      {
+        "paper": "2507.01429",
+        "status": "ok",
+        "blocks": 82,
+        "seconds": 0.6955485590005992,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 7,
+          "subsection": 10,
+          "figure": 44,
+          "subsubsection": 17,
+          "formula": 8,
+          "itemize": 3,
+          "item": 8
+        }
+      },
+      {
+        "paper": "2507.01487",
+        "status": "ok",
+        "blocks": 119,
+        "seconds": 0.6211849769897526,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 8,
+          "paragraph": 15,
+          "enumerate": 1,
+          "item": 20,
+          "itemize": 4,
+          "subsection": 29,
+          "formula": 4,
+          "subsubsection": 35,
+          "figure": 11
+        }
+      },
+      {
+        "paper": "2507.01544",
+        "status": "ok",
+        "blocks": 238,
+        "seconds": 0.5720952870033216,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "figure": 21,
+          "section": 16,
+          "itemize": 34,
+          "item": 138,
+          "subsection": 25,
+          "enumerate": 1,
+          "subsubsection": 22,
+          "paragraph": 14
+        }
+      },
+      {
+        "paper": "2507.01601",
+        "status": "ok",
+        "blocks": 46,
+        "seconds": 0.3979731409926899,
+        "missing_includes": [],
+        "non_sentence_nodes": {
+          "document": 1,
+          "section": 9,
+          "subsection": 12,
+          "formula": 10,
+          "itemize": 2,
+          "item": 8,
+          "figure": 10
+        }
+      },
+      {
+        "paper": "2507.01658",
+        "status": "empty_source",
+        "blocks": 0,
+        "seconds": 0.000588991999393329,
+        "missing_includes": [],
+        "non_sentence_nodes": {}
+      }
+    ],
+    "seconds": 35.88736533399788,
+    "blocks": 7525,
+    "characters": 4803251
+  },
+  "pilot": [
+    {
+      "backend": "sat",
+      "batch": 1,
+      "bucket": true,
+      "papers": 3,
+      "paper_ids": [
+        "2506.20788",
+        "2506.20793",
+        "2506.20798"
+      ],
+      "blocks": 236,
+      "characters": 144345,
+      "sentences": 907,
+      "model_load_seconds": 9.587991268999758,
+      "inference_seconds": 29.529691240997636,
+      "seconds_per_paper": 9.843230413665879,
+      "hours_for_40000_versions": 109.36922681850976,
+      "peak_rss_mib": 1306.4296875,
+      "baseline_rss_mib": 25.6171875,
+      "output_sha256": "a24053978c778ef3b47ab0029d4698b4c015c038ca0e0fe66ce0ae112d4615c2",
+      "cpu_count": 8
+    },
+    {
+      "backend": "sat",
+      "batch": 1,
+      "bucket": true,
+      "internal_batch": 32,
+      "papers": 3,
+      "paper_ids": [
+        "2506.20788",
+        "2506.20793",
+        "2506.20798"
+      ],
+      "blocks": 236,
+      "characters": 144345,
+      "sentences": 907,
+      "model_load_seconds": 9.637447590997908,
+      "inference_seconds": 33.14755551700364,
+      "seconds_per_paper": 11.049185172334546,
+      "hours_for_40000_versions": 122.76872413705051,
+      "peak_rss_mib": 1734.640625,
+      "baseline_rss_mib": 25.7109375,
+      "output_sha256": "a24053978c778ef3b47ab0029d4698b4c015c038ca0e0fe66ce0ae112d4615c2",
+      "cpu_count": 8
+    },
+    {
+      "backend": "sat",
+      "batch": 8,
+      "bucket": true,
+      "papers": 3,
+      "paper_ids": [
+        "2506.20788",
+        "2506.20793",
+        "2506.20798"
+      ],
+      "blocks": 236,
+      "characters": 144345,
+      "sentences": 907,
+      "model_load_seconds": 10.80234872699657,
+      "inference_seconds": 32.48455025200383,
+      "seconds_per_paper": 10.828183417334609,
+      "hours_for_40000_versions": 120.31314908149565,
+      "peak_rss_mib": 1344.375,
+      "baseline_rss_mib": 25.29296875,
+      "output_sha256": "a24053978c778ef3b47ab0029d4698b4c015c038ca0e0fe66ce0ae112d4615c2",
+      "cpu_count": 8
+    },
+    {
+      "backend": "sat",
+      "batch": 32,
+      "bucket": true,
+      "papers": 3,
+      "paper_ids": [
+        "2506.20788",
+        "2506.20793",
+        "2506.20798"
+      ],
+      "blocks": 236,
+      "characters": 144345,
+      "sentences": 907,
+      "model_load_seconds": 10.391863611002918,
+      "inference_seconds": 37.33827278400713,
+      "seconds_per_paper": 12.446090928002377,
+      "hours_for_40000_versions": 138.2898992000264,
+      "peak_rss_mib": 2270.78125,
+      "baseline_rss_mib": 25.6171875,
+      "output_sha256": "a24053978c778ef3b47ab0029d4698b4c015c038ca0e0fe66ce0ae112d4615c2",
+      "cpu_count": 8
+    }
+  ],
+  "spacy_batch_outputs_equal": true,
+  "pilot_outputs_equal": true,
+  "coverage": {
+    "ok": 93,
+    "download_missing": 1,
+    "empty_source": 6
+  }
+}

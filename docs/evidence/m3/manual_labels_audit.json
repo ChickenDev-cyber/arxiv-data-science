@@ -1,0 +1,101 @@
+{
+  "by_owner": {
+    "hoang": {
+      "rows": 183,
+      "unique_papers": 5,
+      "status_counts": {
+        "matched": 157,
+        "unreviewed": 26
+      },
+      "matched_per_paper": {
+        "2503.08122": 31,
+        "2503.08548": 26,
+        "2503.09321": 33,
+        "2503.09867": 35,
+        "2503.10700": 32
+      },
+      "min_matched_per_paper": 26,
+      "duplicate_keys": 0,
+      "duplicate_gt_in_paper": 0
+    },
+    "huynh-nhi": {
+      "rows": 637,
+      "unique_papers": 5,
+      "status_counts": {
+        "matched": 510,
+        "unreviewed": 127
+      },
+      "matched_per_paper": {
+        "2409.03757": 99,
+        "2409.05851": 105,
+        "2409.06365": 101,
+        "2409.07070": 103,
+        "2409.07702": 102
+      },
+      "min_matched_per_paper": 99,
+      "duplicate_keys": 0,
+      "duplicate_gt_in_paper": 0
+    },
+    "khang": {
+      "rows": 159,
+      "unique_papers": 5,
+      "status_counts": {
+        "matched": 142,
+        "no_match": 17
+      },
+      "matched_per_paper": {
+        "2506.20946": 28,
+        "2506.21030": 28,
+        "2506.21576": 29,
+        "2506.21627": 30,
+        "2506.22007": 27
+      },
+      "min_matched_per_paper": 27,
+      "duplicate_keys": 0,
+      "duplicate_gt_in_paper": 0
+    },
+    "man-nhi": {
+      "rows": 1262,
+      "unique_papers": 5,
+      "status_counts": {
+        "matched": 882,
+        "no_match": 380
+      },
+      "matched_per_paper": {
+        "2501.13104": 226,
+        "2501.13152": 171,
+        "2501.13162": 138,
+        "2501.13180": 128,
+        "2501.13787": 219
+      },
+      "min_matched_per_paper": 128,
+      "duplicate_keys": 0,
+      "duplicate_gt_in_paper": 0
+    },
+    "trong": {
+      "rows": 278,
+      "unique_papers": 5,
+      "status_counts": {
+        "matched": 189,
+        "unreviewed": 89
+      },
+      "matched_per_paper": {
+        "2504.17525": 45,
+        "2504.17528": 27,
+        "2504.17545": 37,
+        "2504.17613": 31,
+        "2504.17622": 49
+      },
+      "min_matched_per_paper": 27,
+      "duplicate_keys": 0,
+      "duplicate_gt_in_paper": 0
+    }
+  },
+  "totals": {
+    "papers": 25,
+    "rows": 2519,
+    "matched": 1880,
+    "no_match": 397,
+    "unreviewed": 242
+  }
+}

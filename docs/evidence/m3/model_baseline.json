@@ -1,0 +1,7 @@
+{
+  "field": "title",
+  "kind": "token_set_ratio",
+  "missing_title_score": 0.0,
+  "normalization": "features.normalize_text",
+  "scale": 0.01
+}

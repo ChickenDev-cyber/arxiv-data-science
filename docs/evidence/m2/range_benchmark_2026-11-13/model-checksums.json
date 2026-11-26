@@ -1,0 +1,8 @@
+{
+  "sat-3l-sm/config.json": "d61498bc239f773126ee794446cdcad88822967e0b02ae7bd070f725c98be791",
+  "sat-3l-sm/model_optimized.onnx": "8573277b4dbea9c5fb1b4cfd8c21e5aa628069ac8258d1342ba664e1b64ada6d",
+  "xlm-roberta-base-tokenizer/config.json": "d66ed8cd4f2a93b358c245e50736fa389ed4f35c0bae7aad0b32abb20c62b579",
+  "xlm-roberta-base-tokenizer/tokenizer_config.json": "994f46754c5bf4014f1aa92d34b1374319c3a6b3f702105cd5b742beaecd18ce",
+  "xlm-roberta-base-tokenizer/sentencepiece.bpe.model": "cfc8146abe2a0488e9e2a0c56de7952f7c11ab059eca145a0a727afce0db2865",
+  "xlm-roberta-base-tokenizer/tokenizer.json": "a898ea75433890f6610f4e470b8ebeb0c21dce5c8dd61f892eb09eb5919d2e2c"
+}

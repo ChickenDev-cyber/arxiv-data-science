@@ -13,7 +13,9 @@ preview/
 *.sqlite
 *.sqlite-*
 /context/
-/docs/
+/docs/*
+!/docs/report/
+!/docs/evidence/
 _build/
 _build
 

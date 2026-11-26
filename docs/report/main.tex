@@ -1,0 +1,126 @@
+\documentclass[a4paper]{article}
+\usepackage{svg}
+\usepackage{vntex}
+\usepackage{pdflscape}
+\usepackage{subcaption}
+\usepackage{rotating}
+\usepackage{a4wide,amssymb,epsfig,latexsym,multicol,array,hhline,fancyhdr}
+\usepackage{booktabs}
+\usepackage{float}
+\usepackage{longtable}
+\usepackage{placeins}
+\usepackage{capt-of}
+\usepackage{tabularx}
+\usepackage{caption}
+\usepackage{amsmath}
+\usepackage{lastpage}
+\usepackage{enumerate}
+\usepackage{color}
+\usepackage{graphicx}
+\usepackage{multirow}
+\usepackage[framemethod=tikz]{mdframed}
+\usepackage{wrapfig}
+\usepackage{geometry}
+\usepackage{setspace}
+\usepackage{tikz}
+\usetikzlibrary{arrows,snakes,backgrounds,positioning,shapes}
+\usepackage{hyperref}
+\usepackage{indentfirst}
+\usepackage{cases}
+\usepackage{xcolor}
+\usepackage[most]{tcolorbox}
+\usepackage[shortlabels]{enumitem}
+
+\renewcommand{\baselinestretch}{1.45}
+\renewcommand{\figurename}{Hình}
+\renewcommand{\tablename}{Bảng}
+
+\newtcolorbox{softbox}{
+    colback=black!3,
+    colframe=black!3,
+    arc=8pt,
+    boxrule=0pt,
+    left=10pt, right=10pt, top=8pt, bottom=8pt,
+    fontupper=\itshape\color{black!80}
+}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    citecolor=red,
+    urlcolor=blue,
+    filecolor=magenta
+}
+
+\setlength{\headheight}{40pt}
+\pagestyle{fancy}
+\fancyhead{}
+\fancyhead[L]{
+ \begin{tabular}{rl}
+    \begin{picture}(25,15)(0,0)
+    \put(0,-8){\includegraphics[width=8mm, height=8mm]{images/khtn.png}}
+    \end{picture}&
+	\begin{tabular}{l}
+		\textbf{\bf \ttfamily Ho Chi Minh University of Science - VNUHCM}\\
+		\textbf{\bf \ttfamily Faculty of Information Technology}
+	\end{tabular}  	
+ \end{tabular}
+}
+\fancyhead[R]{
+	\begin{tabular}{l}
+		\tiny \bf \\
+		\tiny \bf 
+	\end{tabular}  }
+\fancyfoot{}
+\fancyfoot[L]{\scriptsize \ttfamily Introduction to Data Science -- arXiv Term Project}
+\fancyfoot[R]{\scriptsize \ttfamily Trang {\thepage}/\pageref{LastPage}}
+\renewcommand{\headrulewidth}{0.3pt}
+\renewcommand{\footrulewidth}{0.3pt}
+
+\setcounter{secnumdepth}{4}
+\setcounter{tocdepth}{3}
+\makeatletter
+\newcounter {subsubsubsection}[subsubsection]
+\renewcommand\thesubsubsubsection{\thesubsubsection .\@alph\c@subsubsubsection}
+\newcommand\subsubsubsection{\@startsection{subsubsubsection}{4}{\z@}%
+                                    {-3.25ex\@plus -1ex \@minus -.2ex}%
+                                    {1.5ex \@plus .2ex}%
+                                    {\normalfont\normalsize\bfseries}}
+\newcommand*\l@subsubsubsection{\@dottedtocline{3}{10.0em}{4.1em}}
+\newcommand*{\subsubsubsectionmark}[1]{}
+\makeatother
+
+\begin{document}
+
+\input{sections/title}
+
+\pagenumbering{roman}
+\renewcommand{\contentsname}{Mục lục}
+\renewcommand{\tablename}{Bảng}
+\renewcommand{\figurename}{Hình}
+\renewcommand{\refname}{Tài liệu tham khảo}
+\renewcommand{\listfigurename}{Danh mục hình vẽ}
+\renewcommand{\listtablename}{Danh mục bảng biểu}
+
+\tableofcontents
+\newpage
+\listoffigures
+\vspace{1.2cm}
+\listoftables
+
+\newpage
+\pagenumbering{arabic}
+\renewcommand{\arraystretch}{1.28}
+\setcounter{page}{1}
+
+\include{sections/overview}
+\include{sections/milestone1}
+\include{sections/milestone2}
+\include{sections/milestone3}
+\include{sections/discussion}
+\include{sections/contribution}
+
+\newpage
+\bibliographystyle{IEEEtran}
+\bibliography{ref}
+\end{document}
