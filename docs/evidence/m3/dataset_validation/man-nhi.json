@@ -1,0 +1,88 @@
+{
+  "valid": true,
+  "dataset_directory": "/run/media/trong/DATA/PhamTrong/KHDL/project/arXiv/runs/m3-delivery/export/man-nhi",
+  "tables": {
+    "papers": {
+      "exists": true,
+      "shards_count": 1,
+      "total_rows": 5000,
+      "columns": [
+        "arxiv_id",
+        "title",
+        "authors",
+        "submission_date",
+        "revised_dates",
+        "venue"
+      ]
+    },
+    "references": {
+      "exists": true,
+      "shards_count": 1,
+      "total_rows": 78635,
+      "columns": [
+        "arxiv_id",
+        "ref_arxiv_id",
+        "ref_title",
+        "ref_authors",
+        "ref_submission_date",
+        "ref_s2_id"
+      ]
+    },
+    "elements": {
+      "exists": true,
+      "shards_count": 9,
+      "total_rows": 2221136,
+      "columns": [
+        "element_id",
+        "arxiv_id",
+        "kind",
+        "content"
+      ]
+    },
+    "hierarchy": {
+      "exists": true,
+      "shards_count": 14,
+      "total_rows": 3269197,
+      "columns": [
+        "arxiv_id",
+        "version",
+        "element_id",
+        "parent_id"
+      ]
+    },
+    "bibtex": {
+      "exists": true,
+      "shards_count": 1,
+      "total_rows": 195360,
+      "columns": [
+        "arxiv_id",
+        "citation_key",
+        "entry_type",
+        "title",
+        "authors",
+        "year",
+        "doi",
+        "journal",
+        "url"
+      ]
+    },
+    "predictions": {
+      "exists": true,
+      "shards_count": 1,
+      "total_rows": 21899,
+      "columns": [
+        "arxiv_id",
+        "partition",
+        "citation_key",
+        "groundtruth_arxiv_id",
+        "cand_1",
+        "cand_2",
+        "cand_3",
+        "cand_4",
+        "cand_5"
+      ]
+    }
+  },
+  "issues": [],
+  "total_issues": 0
+}

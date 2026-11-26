@@ -1,0 +1,124 @@
+{
+  "passed": true,
+  "total_rows": 101441,
+  "status_distribution": {
+    "no_match": 65816,
+    "matched": 35373,
+    "unreviewed": 242,
+    "ambiguous": 10
+  },
+  "method_distribution": {
+    "automatic": 98922,
+    "manual": 2519
+  },
+  "quota_report": {
+    "manual": {
+      "passed": true,
+      "by_owner": {
+        "huynh-nhi": {
+          "n_manual_papers": 5,
+          "total_matched_pairs": 510,
+          "passed": true,
+          "papers_below_20_matches": [],
+          "matched_per_paper": {
+            "2409.03757": 99,
+            "2409.05851": 105,
+            "2409.06365": 101,
+            "2409.07070": 103,
+            "2409.07702": 102
+          }
+        },
+        "man-nhi": {
+          "n_manual_papers": 5,
+          "total_matched_pairs": 882,
+          "passed": true,
+          "papers_below_20_matches": [],
+          "matched_per_paper": {
+            "2501.13104": 226,
+            "2501.13152": 171,
+            "2501.13162": 138,
+            "2501.13180": 128,
+            "2501.13787": 219
+          }
+        },
+        "hoang": {
+          "n_manual_papers": 5,
+          "total_matched_pairs": 157,
+          "passed": true,
+          "papers_below_20_matches": [],
+          "matched_per_paper": {
+            "2503.08122": 31,
+            "2503.08548": 26,
+            "2503.09321": 33,
+            "2503.09867": 35,
+            "2503.10700": 32
+          }
+        },
+        "trong": {
+          "n_manual_papers": 5,
+          "total_matched_pairs": 189,
+          "passed": true,
+          "papers_below_20_matches": [],
+          "matched_per_paper": {
+            "2504.17525": 45,
+            "2504.17528": 27,
+            "2504.17545": 37,
+            "2504.17613": 31,
+            "2504.17622": 49
+          }
+        },
+        "khang": {
+          "n_manual_papers": 5,
+          "total_matched_pairs": 142,
+          "passed": true,
+          "papers_below_20_matches": [],
+          "matched_per_paper": {
+            "2506.20946": 28,
+            "2506.21030": 28,
+            "2506.21576": 29,
+            "2506.21627": 30,
+            "2506.22007": 27
+          }
+        }
+      }
+    },
+    "automatic": {
+      "passed": true,
+      "by_owner": {
+        "huynh-nhi": {
+          "n_automatic_papers": 500,
+          "required_papers": 500,
+          "n_official_N": 5000,
+          "passed": true
+        },
+        "man-nhi": {
+          "n_automatic_papers": 500,
+          "required_papers": 500,
+          "n_official_N": 5000,
+          "passed": true
+        },
+        "hoang": {
+          "n_automatic_papers": 500,
+          "required_papers": 500,
+          "n_official_N": 5000,
+          "passed": true
+        },
+        "trong": {
+          "n_automatic_papers": 500,
+          "required_papers": 500,
+          "n_official_N": 5000,
+          "passed": true
+        },
+        "khang": {
+          "n_automatic_papers": 500,
+          "required_papers": 500,
+          "n_official_N": 5000,
+          "passed": true
+        }
+      }
+    }
+  },
+  "errors": [],
+  "warnings": [],
+  "heuristic_version": "heuristic-v1.0.0"
+}

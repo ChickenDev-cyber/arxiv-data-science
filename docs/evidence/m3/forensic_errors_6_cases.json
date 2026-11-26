@@ -1,0 +1,173 @@
+{
+  "total_evaluated_queries": 35373,
+  "total_disagreements": 6,
+  "cases": [
+    {
+      "arxiv_id": "2504.18841",
+      "owner": "trong",
+      "citation_key": "ATLAS:2014vxr",
+      "partition": "train",
+      "label_method": "automatic",
+      "error_type": "rank_2",
+      "rank": 2,
+      "root_cause_classification": "heuristic_label_noise_model_correct",
+      "heuristic_evidence": "high_similarity_match:score=0.849,title_jaccard=0.769",
+      "bibtex_title": "Measurement of the total cross section from elastic scattering in pp collisions at $ s=7$ TeV with the ATLAS detector",
+      "bibtex_authors": [
+        "G. Aad",
+        "others",
+        "ATLAS"
+      ],
+      "bibtex_year": 2014,
+      "heuristic_groundtruth": {
+        "ref_arxiv_id": "1607.06605",
+        "ref_title": "Measurement of the total cross section from elastic scattering in pp collisions at View the MathML sources=8 TeV with the ATLAS detector",
+        "ref_submission_date": "2016-07-22T09:13:40Z"
+      },
+      "model_cand_1": {
+        "ref_arxiv_id": "1408.5778",
+        "ref_title": "Measurement of the total cross section from elastic scattering in pp",
+        "ref_submission_date": "2014-08-25T14:45:51Z"
+      }
+    },
+    {
+      "arxiv_id": "2501.17010",
+      "owner": "man-nhi",
+      "citation_key": "Constacyclic2014",
+      "partition": "train",
+      "label_method": "automatic",
+      "error_type": "rank_2",
+      "rank": 2,
+      "root_cause_classification": "heuristic_false_positive_unmatchable",
+      "heuristic_evidence": "high_similarity_match:score=0.894,title_jaccard=0.774",
+      "bibtex_title": "Constacyclic Codes and Some New Quantum MDS Codes",
+      "bibtex_authors": [
+        "X. Kai",
+        "S. Zhu",
+        "P. Li"
+      ],
+      "bibtex_year": 2014,
+      "heuristic_groundtruth": {
+        "ref_arxiv_id": "1405.5421",
+        "ref_title": "New quantum MDS codes derived from constacyclic codes",
+        "ref_submission_date": "2014-05-21T13:43:16Z"
+      },
+      "model_cand_1": {
+        "ref_arxiv_id": "1403.2499",
+        "ref_title": "Application of Constacyclic Codes to Quantum MDS Codes",
+        "ref_submission_date": "2014-03-11T08:39:08Z"
+      }
+    },
+    {
+      "arxiv_id": "2501.17217",
+      "owner": "man-nhi",
+      "citation_key": "Gutowski:2004ez",
+      "partition": "train",
+      "label_method": "automatic",
+      "error_type": "rank_2",
+      "rank": 2,
+      "root_cause_classification": "heuristic_label_noise_model_correct",
+      "heuristic_evidence": "high_similarity_match:score=0.880,title_jaccard=0.800",
+      "bibtex_title": "Supersymmetric AdS(5) black holes",
+      "bibtex_authors": [
+        "Gutowski, Jan B.",
+        "Reall, Harvey S"
+      ],
+      "bibtex_year": 2004,
+      "heuristic_groundtruth": {
+        "ref_arxiv_id": "hep-th/0601156",
+        "ref_title": "Supersymmetric multi-charge AdS 5 black holes",
+        "ref_submission_date": "2006-01-20T20:54:11Z"
+      },
+      "model_cand_1": {
+        "ref_arxiv_id": "hep-th/0401129",
+        "ref_title": "General supersymmetric AdS5 black holes",
+        "ref_submission_date": "2004-01-20T18:47:34Z"
+      }
+    },
+    {
+      "arxiv_id": "2507.01070",
+      "owner": "khang",
+      "citation_key": "Adhikary:2021xym",
+      "partition": "train",
+      "label_method": "automatic",
+      "error_type": "rank_2",
+      "rank": 2,
+      "root_cause_classification": "genuine_model_rank2_hyphenation_subsumption",
+      "heuristic_evidence": "high_similarity_match:score=0.894,title_jaccard=0.774",
+      "bibtex_title": "Barrow holographic dark energy in a nonflat universe",
+      "bibtex_authors": [
+        "Adhikary, Priyanka",
+        "Das, Sudipta",
+        "Basilakos, Spyros",
+        "Saridakis, Emmanuel N"
+      ],
+      "bibtex_year": 2021,
+      "heuristic_groundtruth": {
+        "ref_arxiv_id": "2104.13118",
+        "ref_title": "Barrow Holographic Dark Energy in non-flat Universe",
+        "ref_submission_date": "2021-04-27T11:34:43Z"
+      },
+      "model_cand_1": {
+        "ref_arxiv_id": "2005.04115",
+        "ref_title": "Barrow holographic dark energy",
+        "ref_submission_date": "2020-05-08T15:40:54Z"
+      }
+    },
+    {
+      "arxiv_id": "2503.10268",
+      "owner": "hoang",
+      "citation_key": "LAN__2",
+      "partition": "train",
+      "label_method": "automatic",
+      "error_type": "rank_2",
+      "rank": 2,
+      "root_cause_classification": "heuristic_label_noise_model_correct",
+      "heuristic_evidence": "high_similarity_match:score=1.040,title_jaccard=1.000",
+      "bibtex_title": "The saturation number of $C_6$",
+      "bibtex_authors": [
+        "Y. Lan",
+        "Y. Shi",
+        "Y. Wang",
+        "J. Zhang"
+      ],
+      "bibtex_year": 2025,
+      "heuristic_groundtruth": {
+        "ref_arxiv_id": "2503.11473",
+        "ref_title": "The saturation number of W4",
+        "ref_submission_date": "2025-03-14T15:02:42Z"
+      },
+      "model_cand_1": {
+        "ref_arxiv_id": "2108.03910",
+        "ref_title": "The saturation number of C6",
+        "ref_submission_date": "2021-08-09T09:53:45Z"
+      }
+    },
+    {
+      "arxiv_id": "2503.10326",
+      "owner": "hoang",
+      "citation_key": "Soker2024CounterJet",
+      "partition": "train",
+      "label_method": "automatic",
+      "error_type": "unranked",
+      "rank": null,
+      "root_cause_classification": "upstream_m2_bibitem_parsing_and_id_prefix",
+      "heuristic_evidence": "direct_arxiv_id_match:2311.03286",
+      "bibtex_title": "---. 2024 e, The Open Journal of Astrophysics, 7, 12, ọdoi10.21105/astro.2311.03286",
+      "bibtex_authors": [
+        "---. 2024 e, The Open Journal of Astrophysics, 7, 12, ọdoi10.21105/astro.2311.03286"
+      ],
+      "bibtex_year": 2024,
+      "heuristic_groundtruth": {
+        "ref_arxiv_id": "2311.03286",
+        "ref_title": "Jet - counter-jet asymmetry in the jittering jets explosion mechanism of supernovae",
+        "ref_submission_date": "2023-11-06T17:26:37Z"
+      },
+      "model_cand_1": {
+        "ref_arxiv_id": "2409.02058",
+        "ref_title": "It's written in the massive stars: The role of stellar physics in the formation of black holes",
+        "ref_submission_date": "2024-09-03T17:07:23Z"
+      }
+    }
+  ]
+}

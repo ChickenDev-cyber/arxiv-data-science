@@ -1,0 +1,14 @@
+{
+  "date": "2026-11-13",
+  "timezone": "Asia/Bangkok",
+  "cpu": "Intel(R) Core(TM) i5-8365U CPU @ 1.60GHz",
+  "os": "Linux-7.2.11-arch1-1-x86_64-with-glibc2.44",
+  "model": "sat-3l-sm",
+  "onnx_threads": 2,
+  "inter_op_threads": 1,
+  "sampling": "70 evenly spaced June IDs 2506.20788..2506.24000 plus 30 July IDs 2507.00001..2507.01658; v1 only",
+  "includes": "masking, model inference, offset mapping, preservation checks and hashing",
+  "excludes": "network download, model download/load/warmup, gathering/cleanup/hierarchy preparation, bibliography, deduplication and database writes",
+  "experiment_script_sha256": "c4ee58a0251c29584a7dd619c101cd552419f306521a0bb6b08e988c3cfb6aaf",
+  "script_snapshot_note": "Final source snapshot; internal-batch CLI option added after initial pilot runs. Default internal batch equals outer batch, unchanged for those runs."
+}

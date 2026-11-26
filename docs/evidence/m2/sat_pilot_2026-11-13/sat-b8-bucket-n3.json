@@ -1,0 +1,22 @@
+{
+  "backend": "sat",
+  "batch": 8,
+  "bucket": true,
+  "papers": 3,
+  "paper_ids": [
+    "2506.20788",
+    "2506.20793",
+    "2506.20798"
+  ],
+  "blocks": 236,
+  "characters": 144345,
+  "sentences": 907,
+  "model_load_seconds": 10.80234872699657,
+  "inference_seconds": 32.48455025200383,
+  "seconds_per_paper": 10.828183417334609,
+  "hours_for_40000_versions": 120.31314908149565,
+  "peak_rss_mib": 1344.375,
+  "baseline_rss_mib": 25.29296875,
+  "output_sha256": "a24053978c778ef3b47ab0029d4698b4c015c038ca0e0fe66ce0ae112d4615c2",
+  "cpu_count": 8
+}

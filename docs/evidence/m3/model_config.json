@@ -1,0 +1,75 @@
+{
+  "feature_groups": {
+    "author": [
+      "first_author_match",
+      "author_jaccard",
+      "author_overlap",
+      "entry_authors_missing"
+    ],
+    "group": [
+      "title_rank_in_entry",
+      "gap_to_best",
+      "z_in_entry",
+      "mutual_best",
+      "n_candidates"
+    ],
+    "id": [
+      "id_exact",
+      "entry_has_id",
+      "id_conflict"
+    ],
+    "title": [
+      "jaccard",
+      "contain_e_in_r",
+      "contain_r_in_e",
+      "token_set_ratio",
+      "partial_ratio",
+      "tfidf_char_cos",
+      "len_ratio",
+      "title_exact",
+      "entry_title_missing"
+    ],
+    "year": [
+      "year_delta",
+      "abs_year_delta_le1",
+      "year_missing"
+    ]
+  },
+  "feature_order": [
+    "id_exact",
+    "entry_has_id",
+    "id_conflict",
+    "jaccard",
+    "contain_e_in_r",
+    "contain_r_in_e",
+    "token_set_ratio",
+    "partial_ratio",
+    "tfidf_char_cos",
+    "len_ratio",
+    "title_exact",
+    "entry_title_missing",
+    "first_author_match",
+    "author_jaccard",
+    "author_overlap",
+    "entry_authors_missing",
+    "year_delta",
+    "abs_year_delta_le1",
+    "year_missing",
+    "title_rank_in_entry",
+    "gap_to_best",
+    "z_in_entry",
+    "mutual_best",
+    "n_candidates"
+  ],
+  "feature_version": "features-v1",
+  "model": {
+    "augment": false,
+    "file": "logistic.json",
+    "kind": "logistic",
+    "params": {
+      "C": 0.1
+    }
+  },
+  "seed": 42,
+  "selection_metric": "cv_mrr@5_manual"
+}

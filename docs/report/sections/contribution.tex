@@ -1,0 +1,38 @@
+\section{Phân công nhiệm vụ và tổng kết đóng góp}
+
+Đồ án được triển khai xuyên suốt ba giai đoạn kỹ thuật trên kho dữ liệu gồm $25{,}000$ bài báo khoa học arXiv, chia đều thành năm dải mã định danh độc lập với quy mô $5{,}000$ bài báo mỗi thành viên. Mô hình phối hợp của nhóm kết hợp giữa trách nhiệm sở hữu từng công đoạn kỹ thuật cốt lõi và nghĩa vụ vận hành song song trên dải dữ liệu cá nhân, bao gồm thu thập toàn bộ phiên bản nguồn, vận hành phân tích cú pháp, gán nhãn thủ công độc lập đạt chuẩn định mức tối thiểu hai mươi cặp trích dẫn đúng trên mỗi bài báo và kiểm chứng chéo chất lượng dữ liệu trước khi đóng gói phát hành. Bảng~\ref{tab:contribution} tổng hợp phạm vi đảm nhiệm kỹ thuật và đóng góp của từng thành viên trong nhóm ChickenDev qua cả ba cột mốc của đồ án.
+
+\begin{table}[H]
+    \centering
+    \scriptsize
+    \setlength{\tabcolsep}{4pt}
+    \renewcommand{\arraystretch}{1.05}
+    \begin{tabularx}{\textwidth}{l p{0.17\textwidth} X c}
+        \toprule
+        \textbf{Họ và tên} & \textbf{Dải dữ liệu} &
+        \textbf{Phạm vi kỹ thuật và vận hành đảm nhiệm} & \textbf{Đóng góp} \\
+        \midrule
+        Phạm Minh Trọng & 2504.17523 -- 2505.00665 \newline (5{,}000 bài)
+            & Thiết kế cơ chế dò tìm bài báo theo lô xuyên ranh giới tháng, bộ điều phối tiến trình đa giai đoạn có lưu điểm phục hồi quan hệ và xuất bản giao dịch hai pha ở Giai đoạn 1; xây dựng quy trình tích hợp khử trùng lặp liên phiên bản, lưu trữ cột phân mảnh và cơ chế sao lưu bất biến ở Giai đoạn 2; quản trị hợp đồng dữ liệu liên giai đoạn, chiến lược chọn mẫu, chia tập theo bài báo, xuất bản sáu bảng dữ liệu cuối cùng và vận hành lượt chạy tổng hợp toàn nhóm ở Giai đoạn 3; thực hiện gán nhãn thủ công 5 bài báo (189 cặp khớp).
+            & 100\% \\
+        \midrule
+        Nguyễn Phúc Khang & 2506.20788 -- 2507.01658 \newline (5{,}000 bài)
+            & Thiết kế hệ thống tải và lọc nguồn toàn văn đa định dạng theo nguyên tắc trích xuất chọn lọc chỉ giữ mã nguồn văn bản và thư mục tham khảo ở Giai đoạn 1; xây dựng bộ chuẩn hóa cú pháp, chuẩn hóa công thức toán học và kiến trúc tách câu theo lát cắt bù trừ không dùng chuỗi giữ chỗ kèm thực nghiệm so sánh bốn bộ tách câu trên CPU ở Giai đoạn 2; thiết kế hệ thống 24 đặc trưng năm nhóm, huấn luyện và kiểm định chéo nhóm mô hình Hồi quy Logistic và xếp hạng tăng cường độ dốc, thiết kế thí nghiệm che mã định danh và nghiên cứu loại trừ đặc trưng ở Giai đoạn 3; thực hiện gán nhãn thủ công 5 bài báo (142 cặp khớp).
+            & 100\% \\
+        \midrule
+        Trịnh Huỳnh Nhi & 2409.03594 -- 2409.08593 \newline (5{,}000 bài)
+            & Thiết kế thành phần thu thập siêu dữ liệu và lịch sử phiên bản đầy đủ qua giao thức thu hoạch siêu dữ liệu OAI-PMH cùng bộ kiểm định hợp đồng và chất lượng kho dữ liệu ở Giai đoạn 1; xây dựng thành phần gom tệp đa nguồn theo đường biên dịch thực tế của tài liệu ở Giai đoạn 2; thiết kế công đoạn kiểm kê, chuẩn hóa kiểu dữ liệu và kiểm định toàn vẹn tham chiếu năm bảng đầu vào cho toàn nhóm ở Giai đoạn 3; thực hiện gán nhãn thủ công 5 bài báo (510 cặp khớp).
+            & 100\% \\
+        \midrule
+        Ngô Mẫn Nhi & 2501.12642 -- 2501.17641 \newline (5{,}000 bài)
+            & Thiết kế thành phần thu thập mạng lưới trích dẫn qua giao diện đồ thị tri thức học thuật Semantic Scholar kết hợp tra cứu ngày nộp gốc từ arXiv và khắc phục lỗi phân biệt hoa thường tiêu đề khóa API ở Giai đoạn 1; xây dựng bộ trích xuất, chuyển đổi tài liệu tham khảo nội tuyến sang BibTeX chuẩn, hợp nhất khóa trích dẫn và gộp trường thông tin liên phiên bản ở Giai đoạn 2; xây dựng bộ quy tắc đối sánh tự động ba tầng, quy trình gán nhãn thủ công và kiểm tra định mức nhãn cho Giai đoạn 3; thực hiện gán nhãn thủ công 5 bài báo (882 cặp khớp).
+            & 100\% \\
+        \midrule
+        Huỳnh Huy Hoàng & 2503.06914 -- 2503.11913 \newline (5{,}000 bài)
+            & Xây dựng hệ thống thống kê kho dữ liệu, bộ đo lường hiệu năng thời gian thực thi, bộ nhớ tiến trình và dung lượng lưu trữ trên môi trường điện toán đám mây cùng hạ tầng báo cáo trực tuyến ở Giai đoạn 1; xây dựng bộ dựng cây cấu trúc phân cấp tự động theo ngăn xếp và trình kiểm định bất biến cấu trúc cây ở Giai đoạn 2; xây dựng bộ đánh giá xếp hạng MRR@5 phân tầng, xuất bản tập lỗi chi tiết và kiểm định độc lập toàn vẹn sáu bảng dữ liệu phát hành ở Giai đoạn 3; thực hiện gán nhãn thủ công 5 bài báo (157 cặp khớp).
+            & 100\% \\
+        \bottomrule
+    \end{tabularx}
+    \caption{Phân công nhiệm vụ kỹ thuật và đóng góp của năm thành viên nhóm ChickenDev}
+    \label{tab:contribution}
+\end{table}
